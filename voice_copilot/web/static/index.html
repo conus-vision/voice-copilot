@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>voice-copilot</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="popup">
+  <header>
+    <div class="brand">
+      <span class="dot" id="conn-dot" data-state="disconnected"></span>
+      <span>voice-copilot</span>
+    </div>
+    <a href="/settings" class="settings-link" title="Settings">⚙</a>
+  </header>
+
+  <main>
+    <div class="controls">
+      <button id="btn-play"      title="Resume narration">▶</button>
+      <button id="btn-pause"     title="Pause narration">⏸</button>
+      <button id="btn-mute"      title="Mute (M)">🔇</button>
+      <button id="btn-speak"     title="Push-to-talk (hold Alt+Space)">🎙</button>
+      <button id="btn-interrupt" title="Interrupt agent">✋</button>
+    </div>
+
+    <div class="status" id="status">waiting for events…</div>
+
+    <ul id="feed" class="feed"></ul>
+
+    <audio id="tts-player" preload="auto" hidden></audio>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

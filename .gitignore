@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.env.local
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# voice-copilot runtime
+~/.voice-copilot/
+logs/
+recordings/
+
+# editor
+.vscode/
+.idea/
+
+# claude code
+.claude/
