@@ -1,0 +1,103 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "voice-copilot"
+version = "0.0.1"
+description = "Voice pair-programmer for LLM coding CLIs (Claude Code, Codex, ...)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "voice-copilot contributors" }]
+keywords = ["llm", "cli", "voice", "tts", "stt", "claude", "codex", "pair-programming"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Software Development",
+]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "websockets>=13",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "rich>=13.7",
+    "anthropic>=0.40",
+    "openai>=1.50",
+    "httpx>=0.27",
+    "edge-tts>=6.1",
+    "pynput>=1.7",
+    "pystray>=0.19",
+    "pillow>=10.3",
+    "platformdirs>=4.2",
+    "keyring>=25.0",
+    "python-dotenv>=1.0",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+local-tts = [
+    "torch>=2.2",
+    "torchaudio>=2.2",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+]
+local-stt = [
+    "faster-whisper>=1.0",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+]
+proxy = [
+    "mitmproxy>=11.0",
+]
+deepgram = ["deepgram-sdk>=3.7"]
+elevenlabs = ["elevenlabs>=1.5"]
+all = [
+    "voice-copilot[local-tts,local-stt,proxy,deepgram,elevenlabs]",
+]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.23",
+    "types-pyyaml",
+]
+
+[project.scripts]
+voice-copilot = "voice_copilot.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/voice-copilot/voice-copilot"
+Issues = "https://github.com/voice-copilot/voice-copilot/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["voice_copilot"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
