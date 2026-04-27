@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an idea or improvement
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or pain point should this solve?
+      placeholder: When using Voice Copilot with...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like Voice Copilot to do?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI adapter
+        - Proxy
+        - Commentator / narration
+        - TTS provider
+        - STT provider
+        - Web UI
+        - Hotkeys / tray
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Are there other ways to solve this?

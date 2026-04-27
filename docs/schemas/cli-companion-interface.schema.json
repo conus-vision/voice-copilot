@@ -1,0 +1,514 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conus.vision/schemas/voice-copilot/cli-companion-interface-v0.1.schema.json",
+  "title": "Voice Copilot CLI Companion Interface v0.1",
+  "description": "Normative schema for RFC 0001 CLI companion integration messages.",
+  "oneOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/helloAck" },
+    { "$ref": "#/$defs/controlSetEnabled" },
+    { "$ref": "#/$defs/controlSetSubscriptions" },
+    { "$ref": "#/$defs/sessionStartedEvent" },
+    { "$ref": "#/$defs/sessionEndedEvent" },
+    { "$ref": "#/$defs/sessionSelectedEvent" },
+    { "$ref": "#/$defs/turnStartedEvent" },
+    { "$ref": "#/$defs/turnEndedEvent" },
+    { "$ref": "#/$defs/userMessageEvent" },
+    { "$ref": "#/$defs/agentOutputEvent" },
+    { "$ref": "#/$defs/agentAwaitingInputEvent" },
+    { "$ref": "#/$defs/agentThinkingEvent" },
+    { "$ref": "#/$defs/toolCallStartedEvent" },
+    { "$ref": "#/$defs/toolCallFinishedEvent" },
+    { "$ref": "#/$defs/fileEditedEvent" },
+    { "$ref": "#/$defs/errorEvent" },
+    { "$ref": "#/$defs/interruptCommand" },
+    { "$ref": "#/$defs/sendUserMessageCommand" },
+    { "$ref": "#/$defs/pauseCommand" },
+    { "$ref": "#/$defs/resumeCommand" },
+    { "$ref": "#/$defs/selectSessionCommand" },
+    { "$ref": "#/$defs/commandResult" }
+  ],
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "dateTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "protocolVersion": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "messageDelivery": {
+      "type": "string",
+      "enum": ["native", "queue", "manual"]
+    },
+    "subscription": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sessionId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "requestId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "eventId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "commandName": {
+      "type": "string",
+      "enum": ["interrupt", "send_user_message", "pause", "resume", "select_session"]
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "subscriptions": { "type": "boolean" },
+        "interrupt": { "type": "boolean" },
+        "pause": { "type": "boolean" },
+        "resume": { "type": "boolean" },
+        "send_user_message": { "type": "boolean" },
+        "select_session": { "type": "boolean" },
+        "session_selection_events": { "type": "boolean" },
+        "tool_events": { "type": "boolean" },
+        "file_events": { "type": "boolean" },
+        "thinking_events": { "type": "boolean" },
+        "message_delivery": { "$ref": "#/$defs/messageDelivery" }
+      },
+      "required": [
+        "subscriptions",
+        "interrupt",
+        "pause",
+        "resume",
+        "send_user_message",
+        "select_session",
+        "session_selection_events",
+        "tool_events",
+        "file_events",
+        "thinking_events",
+        "message_delivery"
+      ],
+      "additionalProperties": false
+    },
+    "hello": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "hello" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "cli_name": { "$ref": "#/$defs/nonEmptyString" },
+        "cli_version": { "type": "string" },
+        "instance_id": { "$ref": "#/$defs/identifier" },
+        "capabilities": { "$ref": "#/$defs/capabilities" }
+      },
+      "required": ["type", "protocol_version", "cli_name", "instance_id", "capabilities"],
+      "additionalProperties": false
+    },
+    "helloAck": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "hello_ack" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "enabled": { "type": "boolean" },
+        "subscriptions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/subscription" },
+          "uniqueItems": true
+        }
+      },
+      "required": ["type", "protocol_version", "enabled", "subscriptions"],
+      "additionalProperties": false
+    },
+    "controlSetEnabled": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "control.set_enabled" },
+        "enabled": { "type": "boolean" }
+      },
+      "required": ["type", "enabled"],
+      "additionalProperties": false
+    },
+    "controlSetSubscriptions": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "control.set_subscriptions" },
+        "subscriptions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/subscription" },
+          "uniqueItems": true
+        }
+      },
+      "required": ["type", "subscriptions"],
+      "additionalProperties": false
+    },
+    "eventMeta": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "event" },
+        "session_id": { "$ref": "#/$defs/sessionId" },
+        "event_id": { "$ref": "#/$defs/eventId" },
+        "ts": { "$ref": "#/$defs/dateTime" }
+      },
+      "required": ["type", "session_id"],
+      "additionalProperties": true
+    },
+    "sessionStartedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "session.started" },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "cwd": { "type": "string" },
+                "active": { "type": "boolean" }
+              },
+              "additionalProperties": true
+            }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "sessionEndedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "session.ended" },
+            "payload": { "type": "object", "additionalProperties": true }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "sessionSelectedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "session.selected" },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "active": { "type": "boolean" }
+              },
+              "required": ["active"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "turnStartedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "turn.started" },
+            "payload": { "type": "object", "additionalProperties": true }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "turnEndedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "turn.ended" },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "status": { "type": "string" }
+              },
+              "additionalProperties": true
+            }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "userMessageEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "user.message" },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "text": { "$ref": "#/$defs/nonEmptyString" }
+              },
+              "required": ["text"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "agentOutputEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "agent.output" },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "text": { "$ref": "#/$defs/nonEmptyString" }
+              },
+              "required": ["text"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "agentAwaitingInputEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "agent.awaiting_input" },
+            "payload": { "type": "object", "additionalProperties": true }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "agentThinkingEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "agent.thinking" },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "text": { "$ref": "#/$defs/nonEmptyString" }
+              },
+              "required": ["text"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "toolCallStartedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "tool.call.started" },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "tool": { "$ref": "#/$defs/nonEmptyString" },
+                "args": { "type": "object", "additionalProperties": true }
+              },
+              "required": ["tool"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "toolCallFinishedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "tool.call.finished" },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "tool": { "$ref": "#/$defs/nonEmptyString" },
+                "ok": { "type": "boolean" }
+              },
+              "required": ["tool", "ok"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "fileEditedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "file.edited" },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "path": { "$ref": "#/$defs/nonEmptyString" }
+              },
+              "required": ["path"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "errorEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/eventMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "error" },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "message": { "$ref": "#/$defs/nonEmptyString" },
+                "code": { "type": "string" }
+              },
+              "required": ["message"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["kind", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "commandMeta": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "command" },
+        "session_id": { "$ref": "#/$defs/sessionId" },
+        "request_id": { "$ref": "#/$defs/requestId" }
+      },
+      "required": ["type", "session_id"],
+      "additionalProperties": true
+    },
+    "interruptCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/commandMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "interrupt" }
+          },
+          "required": ["name"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "pauseCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/commandMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "pause" }
+          },
+          "required": ["name"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "resumeCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/commandMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "resume" }
+          },
+          "required": ["name"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "selectSessionCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/commandMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "select_session" }
+          },
+          "required": ["name"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "sendUserMessageCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/commandMeta" },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "send_user_message" },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "text": { "$ref": "#/$defs/nonEmptyString" },
+                "urgent": { "type": "boolean" }
+              },
+              "required": ["text"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["name", "payload"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "commandResult": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "command_result" },
+        "name": { "$ref": "#/$defs/commandName" },
+        "session_id": { "$ref": "#/$defs/sessionId" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "ok": { "type": "boolean" },
+        "error": { "type": "string" }
+      },
+      "required": ["type", "name", "session_id", "ok"],
+      "additionalProperties": false
+    }
+  }
+}

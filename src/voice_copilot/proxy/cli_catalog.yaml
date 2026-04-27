@@ -1,0 +1,47 @@
+claude:
+  label: Claude Code
+  command: claude
+  description: Injects the proxy only for the Claude process while keeping the original CLI untouched.
+  website_url: https://docs.anthropic.com/en/docs/claude-code/overview
+  provider: anthropic
+  base_url_env: ANTHROPIC_BASE_URL
+
+codex:
+  label: Codex CLI
+  command: codex
+  description: Wraps the codex command through a PATH shim and points it at the selected proxy route.
+  website_url: https://github.com/openai/codex
+  provider: openai
+  base_url_env: OPENAI_BASE_URL
+
+copilot:
+  label: GitHub Copilot CLI
+  command: copilot
+  description: Useful for copilot / gh copilot style OpenAI-compatible flows that should hit the local proxy.
+  website_url: https://docs.github.com/en/copilot/how-tos/cli/install-github-copilot-cli
+  provider: openai
+  base_url_env: OPENAI_BASE_URL
+
+aider:
+  label: Aider
+  command: aider
+  description: Launches the interactive Aider terminal with the selected proxy route and working folder.
+  website_url: https://aider.chat/
+  provider: anthropic
+  base_url_env: ANTHROPIC_BASE_URL
+
+opencode:
+  label: OpenCode
+  command: opencode
+  description: Launches OpenCode with a temporary runtime config override so Zen models can use the local proxy without editing your opencode.json.
+  website_url: https://opencode.ai/
+  provider: opencode-zen
+  base_url_env: OPENCODE_CONFIG_CONTENT
+
+kimi:
+  label: Kimi CLI
+  command: kimi
+  description: Routes the Kimi CLI through the local proxy while preserving the original binary and auth flow.
+  website_url: https://www.kimi.com/
+  provider: openai
+  base_url_env: OPENAI_BASE_URL

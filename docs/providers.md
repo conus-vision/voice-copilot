@@ -51,3 +51,31 @@ server back to the browser, only `{name: is_set}` flags.
 - **stt** — constructs the provider (no audio probe yet).
 
 The settings page has a **Test** button per provider that uses this endpoint.
+
+## Proxy routes (external CLIs)
+
+When you run `voice-copilot proxy` (or any command with `--proxy`), the
+reverse-proxy exposes these paths for external CLIs to point at via
+`*_BASE_URL` env vars:
+
+| Proxy path     | Upstream                                        | Parser      |
+| ---            | ---                                             | ---         |
+| `/anthropic/*` | `api.anthropic.com`                             | Anthropic SSE |
+| `/openai/*`    | `api.openai.com`                                | OpenAI SSE  |
+| `/openrouter/*`| `openrouter.ai/api`                             | OpenAI SSE  |
+| `/groq/*`      | `api.groq.com/openai`                           | OpenAI SSE  |
+| `/mistral/*`   | `api.mistral.ai`                                | OpenAI SSE  |
+| `/ollama/*`    | `127.0.0.1:11434`                               | OpenAI SSE (on `/v1/*`) |
+| `/gemini/*`    | `generativelanguage.googleapis.com`             | _pass-through_ |
+
+Gemini's stream format is not OpenAI/Anthropic-shaped, so today we forward
+the bytes without narration — it still works for your CLI, you just won't
+hear what it's doing. A Gemini parser can land as a separate change.
+
+### Sessions
+
+Each distinct `(user-agent, authorization-prefix)` tuple becomes one
+**session**. The popup shows a dropdown in the header letting you pick
+which session to narrate; events from non-active sessions stay silent (they
+still appear in the feed — we don't drop them, just skip TTS). Sessions
+live in memory for the lifetime of the proxy process.

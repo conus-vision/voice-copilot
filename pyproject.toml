@@ -5,14 +5,15 @@ build-backend = "hatchling.build"
 [project]
 name = "voice-copilot"
 version = "0.0.1"
-description = "Voice pair-programmer for LLM coding CLIs (Claude Code, Codex, ...)"
+description = "Voice-first narrator and control layer for LLM coding CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "voice-copilot contributors" }]
+authors = [{ name = "Volodymyr Moskvin", email = "info@conus.vision" }]
+maintainers = [{ name = "Conus Vision", email = "info@conus.vision" }]
 keywords = ["llm", "cli", "voice", "tts", "stt", "claude", "codex", "pair-programming"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Environment :: Web Environment",
     "Intended Audience :: Developers",
@@ -78,11 +79,12 @@ dev = [
 voice-copilot = "voice_copilot.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/voice-copilot/voice-copilot"
-Issues = "https://github.com/voice-copilot/voice-copilot/issues"
+Homepage = "https://conus.vision"
+Repository = "https://github.com/conus-vision/voice-copilot"
+Issues = "https://github.com/conus-vision/voice-copilot/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["voice_copilot"]
+packages = ["src/voice_copilot"]
 
 [tool.ruff]
 line-length = 100
@@ -97,6 +99,7 @@ python_version = "3.11"
 strict = true
 warn_unused_ignores = true
 ignore_missing_imports = true
+mypy_path = "src"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
