@@ -22,12 +22,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
-
-try:
-    import winreg
-except ImportError:  # pragma: no cover - non-Windows fallback
-    winreg = None  # type: ignore[assignment]
+from typing import Any, cast
 
 from voice_copilot.core.config import (
     Config,
@@ -37,6 +32,16 @@ from voice_copilot.core.config import (
 )
 from voice_copilot.proxy.cli_catalog import CLI_CATALOG, CliCatalogEntry
 from voice_copilot.proxy.server import base_urls_for
+
+_winreg: Any | None
+try:
+    import winreg as _imported_winreg
+except ImportError:  # pragma: no cover - non-Windows fallback
+    _winreg = None
+else:
+    _winreg = _imported_winreg
+
+winreg: Any | None = _winreg
 
 _WINDOWS_ENV_KEY = r"Environment"
 _HWND_BROADCAST = 0xFFFF
@@ -590,7 +595,7 @@ def _write_posix_managed_path_entries(entries: list[str]) -> None:
 
 
 def _broadcast_environment_change() -> None:
-    user32 = ctypes.windll.user32
+    user32 = cast(Any, ctypes).windll.user32
     user32.SendMessageTimeoutW(
         _HWND_BROADCAST,
         _WM_SETTINGCHANGE,
