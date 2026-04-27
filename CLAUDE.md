@@ -76,7 +76,7 @@ All of **TTS**, **STT**, **commentator LLM** implement a small interface and are
 ## Directory layout
 
 ```
-voice_copilot/
+src/voice_copilot/
   core/        event bus, event types, config
   adapters/    CLI adapters (claude_code, codex, proxy, pty_fallback)
   llm/         commentator LLM providers
@@ -106,7 +106,7 @@ voice_copilot/
 - Python 3.11+. Formatter: **ruff format**. Linter: **ruff**. Type checker: **mypy** (strict on new code).
 - Package manager: **uv** (`uv sync`, `uv run voice-copilot ...`). pipx also supported.
 - Config lives at `~/.voice-copilot/config.yaml`; secrets in OS keyring or `.env`.
-- Prompt files are markdown in `voice_copilot/commentator/prompts/<lang>.md` — treat them as product surface.
+- Prompt files are markdown in `src/voice_copilot/commentator/prompts/<lang>.md` — treat them as product surface.
 - No hidden retries, no silent fallbacks between providers: if configured provider fails, surface the error to the popup and stop narrating. Fail loud.
 
 ## Non-goals (at least for v1)

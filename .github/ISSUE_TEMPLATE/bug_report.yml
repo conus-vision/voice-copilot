@@ -1,0 +1,56 @@
+name: Bug report
+description: Report something that is not working as expected
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please remove any API keys, tokens, and private file paths before submitting.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+      placeholder: Voice Copilot...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: How can we reproduce the issue?
+      placeholder: |
+        1. Run `voice-copilot ...`
+        2. Open ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Versions and platform details
+      value: |
+        - OS:
+        - Python:
+        - Voice Copilot version or commit:
+        - Target CLI and version:
+        - TTS provider:
+        - STT provider:
+        - Commentator provider:
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant logs. Redact secrets and tokens.
+      render: text

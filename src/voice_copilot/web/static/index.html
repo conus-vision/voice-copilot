@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Voice Copilot - 0.0.1 alpha</title>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded&icon_names=delete,front_hand,mic,open_in_new,pause,pause_circle,play_arrow,play_circle,skip_next,volume_off,volume_up&display=block" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="app">
+  <header class="topbar">
+    <div class="controls">
+      <button type="button" id="btn-playpause" class="ctrl" title="Pause / resume narration" aria-label="Pause / resume narration" data-state="playing"><span class="material-symbols-rounded" aria-hidden="true">play_arrow</span></button>
+      <button type="button" id="btn-mute"      class="ctrl" title="Mute narration" aria-label="Mute narration"><span class="material-symbols-rounded" aria-hidden="true">volume_up</span></button>
+      <button type="button" id="btn-speak"     class="ctrl" title="Push-to-talk" aria-label="Push-to-talk"><span class="material-symbols-rounded" aria-hidden="true">mic</span></button>
+      <button type="button" id="btn-interrupt" class="ctrl" title="Interrupt agent" aria-label="Interrupt agent"><span class="material-symbols-rounded" aria-hidden="true">front_hand</span></button>
+      <button type="button" id="btn-skip"      class="ctrl" title="Skip current narration" aria-label="Skip current narration"><span class="material-symbols-rounded" aria-hidden="true">skip_next</span></button>
+    </div>
+
+    <div class="speed-controls" aria-label="Narration speed">
+      <button type="button" class="speed-btn" data-playback-rate="1.2">1.2x</button>
+      <button type="button" class="speed-btn" data-playback-rate="1.5">1.5x</button>
+      <button type="button" class="speed-btn" data-playback-rate="2">2x</button>
+      <button type="button" class="speed-btn" data-playback-rate="2.5">2.5x</button>
+    </div>
+
+    <select id="session-picker" title="Narrate this session" hidden></select>
+
+    <div class="topbar-right">
+      <span class="conn"><span class="dot" id="conn-dot" data-state="disconnected"></span><span id="conn-label">offline</span></span>
+      <button type="button" id="btn-popout" class="ghost ghost--icon" title="Open compact window" aria-label="Open compact window"><span class="material-symbols-rounded" aria-hidden="true">open_in_new</span></button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button type="button" class="tab active" data-tab="trace">Trace</button>
+    <button type="button" class="tab" data-tab="settings">Settings</button>
+    <button type="button" class="tab" data-tab="speech">Speech</button>
+    <button type="button" class="tab" data-tab="llm">Commentator</button>
+    <button type="button" class="tab" data-tab="proxy">CLI Proxy</button>
+    <button type="button" class="tab" data-tab="keys">API keys</button>
+    <button type="button" class="tab" data-tab="instructions">Instructions</button>
+    <button type="button" class="tab" data-tab="about">About</button>
+  </nav>
+
+  <main>
+    <!-- Trace: full stream of user queries, thinking, answers, narration -->
+    <section class="panel active" data-panel="trace">
+      <div class="trace-toolbar">
+        <button type="button" id="btn-trace-pause" class="ghost" title="Pause capture"><span class="material-symbols-rounded" aria-hidden="true">pause_circle</span><span class="icon-label">Pause</span></button>
+        <button type="button" id="btn-trace-clear" class="ghost" title="Clear trace"><span class="material-symbols-rounded" aria-hidden="true">delete</span><span class="icon-label">Clear</span></button>
+        <label class="inline"><input type="checkbox" id="trace-autoscroll" checked /> autoscroll</label>
+        <span class="spacer"></span>
+        <span class="trace-stats" id="trace-stats">0 items</span>
+      </div>
+      <div class="trace" id="trace"></div>
+    </section>
+
+    <!-- Settings tabs -->
+    <form id="settings-form" autocomplete="off">
+      <section class="panel" data-panel="settings">
+        <h3 class="section-title section-title--first">Hotkeys</h3>
+        <label>Push-to-talk        <input name="hotkeys.push_to_talk" placeholder="alt+space" /></label>
+        <label>Interrupt           <input name="hotkeys.interrupt"    placeholder="alt+shift+space" /></label>
+        <label>Toggle mute         <input name="hotkeys.mute_toggle"  placeholder="alt+m" /></label>
+        <label>Pause / resume CLI  <input name="hotkeys.pause_toggle" placeholder="alt+p" /></label>
+        <label>Skip narration      <input name="hotkeys.skip_current" placeholder="alt+shift+n" /></label>
+
+        <h3 class="section-title">Dialog</h3>
+        <label class="row">
+          <input type="checkbox" name="dialog.auto_pause_on_speak" />
+          Auto-pause the CLI while push-to-talk is held
+        </label>
+        <label class="row">
+          <input type="checkbox" name="dialog.deliver_immediately" />
+          Deliver user message immediately (otherwise buffer until turn end)
+        </label>
+      </section>
+
+      <section class="panel" data-panel="speech">
+        <h3 class="section-title section-title--first">Languages</h3>
+        <label>Human language
+          <select name="human_language">
+            <option value="en">English</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="uk">Українська</option>
+            <option value="ru">Русский</option>
+          </select>
+        </label>
+        <label>Commentator language
+          <select name="commentator_language">
+            <option value="en">English</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="uk">Українська</option>
+            <option value="ru">Русский</option>
+          </select>
+        </label>
+
+        <h3 class="section-title">Speech Output</h3>
+        <label>Provider
+          <select name="tts.name">
+            <option value="edge-tts">edge-tts (free, cloud)</option>
+            <option value="silero">silero (local)</option>
+            <option value="piper">piper (local)</option>
+            <option value="openai">openai-tts</option>
+            <option value="elevenlabs">elevenlabs</option>
+          </select>
+        </label>
+        <div class="actions">
+          <button type="button" id="btn-test-tts">Play test phrase</button>
+          <span data-test-status="tts"></span>
+        </div>
+        <div class="speech-test-output" id="speech-test-tts-output" hidden></div>
+
+        <h3 class="section-title">Speech Input</h3>
+        <label>Provider
+          <select name="stt.name">
+            <option value="openai-whisper-api">openai-whisper-api</option>
+            <option value="faster-whisper">faster-whisper (local)</option>
+            <option value="deepgram">deepgram</option>
+          </select>
+        </label>
+        <p class="hint">Press Record test, say a short phrase into the microphone, then press the button again to stop and transcribe it.</p>
+        <div class="actions">
+          <button type="button" id="btn-test-stt">Record test</button>
+          <span data-test-status="stt"></span>
+        </div>
+        <div class="speech-test-output" id="speech-test-transcript" hidden></div>
+      </section>
+
+      <section class="panel" data-panel="llm">
+        <p class="hint" id="provider-hint"></p>
+        <label>Provider
+          <select name="commentator.provider.name" id="commentator-provider">
+            <option value="anthropic">anthropic (Haiku 4.5)</option>
+            <option value="openai">openai (gpt-4o-mini)</option>
+            <option value="copilot-cli">copilot-cli (gpt-5-mini, gpt-4.1 via CLI)</option>
+            <option value="github-copilot">github-copilot (gpt-4.1-mini direct API)</option>
+            <option value="openai-compat">openai-compat (Ollama / LM Studio)</option>
+          </select>
+        </label>
+        <label>Model
+          <input name="commentator.provider.options.model" placeholder="claude-haiku-4-5-20251001 / gpt-4o-mini / gpt-4.1-mini / llama3.1" />
+        </label>
+        <label>Base URL (openai-compat only)
+          <input name="commentator.provider.options.base_url" placeholder="http://127.0.0.1:11434/v1" />
+        </label>
+        <label>Debounce, ms
+          <input type="number" name="commentator.debounce_ms" min="200" max="5000" step="100" />
+        </label>
+        <label>Minimum importance
+          <select name="commentator.min_importance">
+            <option value="low">low — narrate everything</option>
+            <option value="normal">normal — decisions &amp; edits</option>
+            <option value="high">high — only critical</option>
+          </select>
+        </label>
+        <div class="actions">
+          <button type="button" data-test-provider="llm">Test</button>
+          <span data-test-status="llm"></span>
+        </div>
+        <div class="speech-test-output" id="llm-test-output" hidden></div>
+      </section>
+
+      <section class="panel" data-panel="proxy">
+        <div class="proxy-global-settings">
+          <h3 class="section-title section-title--first">Launch Folder</h3>
+          <label>Working folder for all detached CLI launches
+            <div class="cli-folder-row">
+              <input name="proxy_cli.working_directory" placeholder="Use the current voice-copilot folder" />
+              <button type="button" class="ghost" data-cli-pick-global-dir>Choose folder</button>
+            </div>
+          </label>
+          <p class="hint">Used for every Open CLI action. Resolved folder: <span data-cli-working-directory-status>current voice-copilot folder</span></p>
+        </div>
+        <p class="hint" id="proxy-cli-summary">Loading CLI proxy profiles…</p>
+        <div class="cli-grid" id="proxy-cli-list"></div>
+      </section>
+
+      <section class="panel" data-panel="keys">
+        <p class="hint">Values never leave your machine — only the names of keys that are set are sent to the browser.</p>
+        <div id="secrets-list"></div>
+      </section>
+
+      <section class="panel docs" data-panel="about">
+        <div class="about-hero">
+          <h2>Voice Copilot</h2>
+          <p class="about-version">Version 0.0.1 alpha</p>
+          <p class="about-copy">Voice Copilot is a listening-first companion for coding agents. A parallel commentator LLM analyzes what a coding agent is doing so you can mainly listen, optionally read the trace, and intervene at the right moment with less cognitive load. It is not prompt dictation or raw playback of model output. We are open to collaboration and to growing the project together.</p>
+        </div>
+
+        <div class="doc-card">
+          <div class="doc-card-title">Contact</div>
+          <p class="about-line">Author: Volodymyr Moskvin</p>
+          <p class="about-line">Conus Vision - <a class="about-link" href="https://conus.vision" target="_blank" rel="noreferrer noopener">https://conus.vision</a></p>
+          <p class="about-line">Email: <a class="about-link" href="mailto:info@conus.vision">info@conus.vision</a></p>
+        </div>
+
+        <div class="doc-card">
+          <div class="doc-card-title">CLI Collaboration</div>
+          <p class="about-copy">We want to work with CLI authors not only on direct integration, but also on testing and refining the companion interface together so it reflects their real event model, control flow, and user needs.</p>
+        </div>
+
+        <div class="doc-card">
+          <div class="doc-card-title">Testing Collaboration</div>
+          <p class="about-copy">We want to collaborate with advanced testers who can use Voice Copilot in real coding sessions, help us evaluate narration quality and intervention timing, and show where the experience becomes noisy, unclear, or fragile.</p>
+        </div>
+
+        <div class="doc-card">
+          <div class="doc-card-title">Real Workflow Feedback</div>
+          <p class="about-copy">We also want feedback grounded in real developer workflows across different CLIs, models, and project sizes so we can refine what should be narrated, what should stay visual, and how the companion should behave in practice.</p>
+        </div>
+      </section>
+    </form>
+
+    <div class="save-indicator" id="save-indicator" aria-hidden="true"></div>
+
+    <!-- Instructions tab -->
+    <section class="panel docs" data-panel="instructions">
+
+      <h3 class="section-title section-title--first">Quick start</h3>
+      <p class="hint">voice-copilot runs a local HTTP reverse-proxy on port <code class="pport">8766</code>. Point your CLI's base-URL env var at it — traffic is forwarded transparently and events are extracted live.</p>
+      <div class="cmd-block">
+<pre><span class="dim"># standalone proxy mode (no wrapped subprocess)</span>
+voice-copilot proxy
+
+<span class="dim"># or wrap the CLI directly — env vars are injected automatically</span>
+voice-copilot run claude -p "implement feature X"
+voice-copilot run codex  "add dark mode"</pre>
+      </div>
+
+      <h3 class="section-title">CLI agents</h3>
+
+      <div class="doc-card">
+        <div class="doc-card-title">Claude Code</div>
+        <pre><span class="ev">ANTHROPIC_BASE_URL</span>=http://127.0.0.1:<span class="pport">8766</span>/anthropic \
+  claude -p "your prompt"</pre>
+        <p class="hint">Also works with <code>claude --output-format stream-json</code> for structured events.</p>
+      </div>
+
+      <div class="doc-card">
+        <div class="doc-card-title">Codex CLI</div>
+        <pre><span class="ev">OPENAI_BASE_URL</span>=http://127.0.0.1:<span class="pport">8766</span>/openai/v1 \
+  codex "your prompt"</pre>
+      </div>
+
+      <div class="doc-card">
+        <div class="doc-card-title">Aider</div>
+        <pre><span class="dim"># Anthropic backend</span>
+<span class="ev">ANTHROPIC_BASE_URL</span>=http://127.0.0.1:<span class="pport">8766</span>/anthropic \
+  aider --model claude-sonnet-4-5
+
+<span class="dim"># OpenAI backend</span>
+<span class="ev">OPENAI_BASE_URL</span>=http://127.0.0.1:<span class="pport">8766</span>/openai/v1 \
+  aider --model gpt-4o
+
+<span class="dim"># Ollama (local)</span>
+<span class="ev">OPENAI_BASE_URL</span>=http://127.0.0.1:<span class="pport">8766</span>/ollama/v1 \
+  aider --model ollama/qwen2.5-coder:32b</pre>
+      </div>
+
+      <div class="doc-card">
+        <div class="doc-card-title">Gemini CLI</div>
+        <pre><span class="ev">GEMINI_BASE_URL</span>=http://127.0.0.1:<span class="pport">8766</span>/gemini \
+  gemini "your prompt"</pre>
+        <p class="hint">Gemini passthrough is supported but events are not yet parsed — session appears in the dropdown but Trace stays empty.</p>
+      </div>
+
+      <div class="doc-card">
+        <div class="doc-card-title">OpenCode Zen<br><span class="dim-sm">MiniMax M2.5 Free, Kimi, GLM, Qwen and other Zen models</span></div>
+        <pre><span class="dim"># In CLI Proxy → OpenCode choose route:</span>
+opencode-zen
+
+<span class="dim"># voice-copilot injects a temporary runtime override for OpenCode:</span>
+<span class="ev">OPENCODE_CONFIG_CONTENT</span>={"provider":{"opencode":{"options":{"baseURL":"http://127.0.0.1:<span class="pport">8766</span>/opencode-zen"}}}}</pre>
+        <p class="hint">Use this for OpenCode Zen models such as <code>opencode/minimax-m2.5-free</code>. This is different from <code>OPENAI_BASE_URL</code> because OpenCode reads its provider base URL from runtime config.</p>
+      </div>
+
+      <div class="doc-card">
+        <div class="doc-card-title">Any OpenAI-compatible tool<br><span class="dim-sm">(Continue, Open WebUI, LM Studio, Cursor, etc.)</span></div>
+        <pre><span class="dim"># Set the base URL in the tool's settings to:</span>
+http://127.0.0.1:<span class="pport">8766</span>/openai/v1
+
+<span class="dim"># Or via env var:</span>
+<span class="ev">OPENAI_BASE_URL</span>=http://127.0.0.1:<span class="pport">8766</span>/openai/v1</pre>
+      </div>
+
+      <div class="doc-card">
+        <div class="doc-card-title">GitHub Copilot CLI — commentator via subprocess<br><span class="dim-sm">No token setup needed — uses the CLI's existing auth</span></div>
+        <pre><span class="dim"># 1. Install Copilot CLI and log in once:</span>
+copilot login
+
+<span class="dim"># 2. In Settings → Commentator, select "copilot-cli"
+#    Set Model to one of: gpt-5-mini  gpt-4.1  gpt-4.1-mini  gpt-4o  o3-mini
+#
+# The commentator calls `copilot -p "…" -s --allow-all --model &lt;model&gt;`
+# Each narration = one subprocess call (~1–2 s latency).</span></pre>
+      </div>
+
+      <div class="doc-card">
+        <div class="doc-card-title">GitHub Copilot CLI<br><span class="dim-sm">gh copilot / any tool using Copilot API</span></div>
+        <pre><span class="ev">OPENAI_BASE_URL</span>=https://api.githubcopilot.com \
+<span class="ev">OPENAI_API_KEY</span>=&lt;your-github-oauth-token&gt; \
+  gh copilot suggest "…"
+
+<span class="dim"># For the commentator LLM — select "github-copilot" in Settings → Commentator.
+# Token auto-discovered from VS Code / gh auth login, or set manually:</span>
+<span class="dim"># API keys tab → GITHUB_COPILOT_TOKEN</span>
+
+<span class="dim"># Available models (set in Commentator → Model field):</span>
+<span class="dim">#   gpt-4.1        gpt-4.1-mini   gpt-4.1-nano
+#   gpt-5-mini     gpt-4o         gpt-4o-mini
+#   o1             o3-mini        claude-3.5-sonnet</span></pre>
+      </div>
+
+      <div class="doc-card">
+        <div class="doc-card-title">LiteLLM proxy / OpenRouter / Groq / Mistral</div>
+        <pre><span class="dim"># OpenRouter</span>
+<span class="ev">OPENROUTER_BASE_URL</span>=http://127.0.0.1:<span class="pport">8766</span>/openrouter/v1
+
+<span class="dim"># Groq</span>
+<span class="ev">GROQ_BASE_URL</span>=http://127.0.0.1:<span class="pport">8766</span>/groq/v1
+
+<span class="dim"># Mistral</span>
+<span class="ev">MISTRAL_BASE_URL</span>=http://127.0.0.1:<span class="pport">8766</span>/mistral/v1</pre>
+      </div>
+
+      <h3 class="section-title">LLM provider routes</h3>
+      <table class="route-table">
+        <thead><tr><th>Provider</th><th>Proxy path</th><th>Upstream</th><th>Parser</th></tr></thead>
+        <tbody>
+          <tr><td>Anthropic</td>   <td><code>/anthropic/…</code></td>    <td>api.anthropic.com</td>              <td>SSE (Messages API)</td></tr>
+          <tr><td>OpenAI</td>      <td><code>/openai/v1/…</code></td>    <td>api.openai.com</td>                <td>SSE (Chat Completions)</td></tr>
+          <tr><td>Ollama compat</td><td><code>/ollama/v1/…</code></td>   <td>127.0.0.1:11434</td>              <td>SSE (OpenAI format)</td></tr>
+          <tr><td>Ollama native</td><td><code>/ollama/api/…</code></td>  <td>127.0.0.1:11434</td>              <td>NDJSON (/api/chat)</td></tr>
+          <tr><td>OpenRouter</td>  <td><code>/openrouter/v1/…</code></td><td>openrouter.ai/api</td>            <td>SSE</td></tr>
+          <tr><td>Groq</td>        <td><code>/groq/v1/…</code></td>      <td>api.groq.com/openai</td>          <td>SSE</td></tr>
+          <tr><td>Mistral</td>     <td><code>/mistral/v1/…</code></td>   <td>api.mistral.ai</td>               <td>SSE</td></tr>
+          <tr><td>OpenCode Zen</td><td><code>/opencode-zen/…</code></td> <td>opencode.ai/zen/v1</td>           <td>auto (messages / responses / chat)</td></tr>
+          <tr><td>Gemini</td>      <td><code>/gemini/…</code></td>       <td>generativelanguage.googleapis.com</td><td>passthrough</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">The proxy forwards your original <code>Authorization</code> / <code>x-api-key</code> / <code>x-goog-api-key</code> headers unchanged. No keys are stored.</p>
+
+      <h3 class="section-title">Custom port</h3>
+      <div class="cmd-block">
+<pre>voice-copilot proxy --proxy-port 9000
+
+<span class="dim"># Then use port 9000 in all env vars above.</span></pre>
+      </div>
+
+      <h3 class="section-title">Ollama thinking models</h3>
+      <p class="hint">Models that stream a <code>thinking</code> field (e.g. <code>qwq</code>, <code>deepseek-r1</code>) are handled automatically — thinking content appears in Trace as purple THINKING blocks and is included in the narration prompt. Use the <strong>native</strong> Ollama path (<code>/ollama/api/chat</code>) via <code>litellm ollama_chat/…</code> prefix, or the OpenAI-compat path with <code>reasoning</code> / <code>reasoning_content</code> delta fields.</p>
+
+    </section>
+
+    <audio id="tts-player" preload="auto" hidden></audio>
+  </main>
+
+  <footer class="app-footer">
+    <div class="app-footer__content">
+      <span>Voice Copilot</span>
+      <span>Version 0.0.1 alpha</span>
+      <span>Author: Volodymyr Moskvin</span>
+      <span>Conus Vision - <a class="app-footer__link" href="https://conus.vision" target="_blank" rel="noreferrer noopener">https://conus.vision</a></span>
+      <span>Email: <a class="app-footer__link" href="mailto:info@conus.vision">info@conus.vision</a></span>
+    </div>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
