@@ -18,6 +18,10 @@ htmlcov/
 logs/
 recordings/
 
+# private launch materials
+/launch/
+/docs/launch/
+
 # editor
 .vscode/
 .idea/
