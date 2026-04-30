@@ -23,5 +23,6 @@ recordings/
 .idea/
 
 # claude code
+CLAUDE.md
 .claude/
 .aider*
