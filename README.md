@@ -1,5 +1,15 @@
 # Voice Copilot
 
+<p align="center">
+  <video src="public/voice-copilot-github-demo.mp4" controls muted playsinline width="100%"></video>
+</p>
+
+<p align="center">
+  <a href="https://voice-copilot.conus.vision/">Website</a>
+  ·
+  <a href="public/voice-copilot-github-demo.mp4">Watch the demo video</a>
+</p>
+
 Voice Copilot is a listening-first companion for LLM coding CLIs. It uses a
 separate commentator LLM to analyze what the coding agent is doing, summarize
 the important parts of its reasoning and response, and let you intervene at the
@@ -10,9 +20,10 @@ updates, glance at the trace when needed, and step in by voice when the agent
 needs correction. The main value is lower cognitive load and better situational
 awareness while the coding agent works.
 
-> **Status:** 0.0.1 alpha.
-> This is the first public alpha release.
+> **Status:** 0.0.2 alpha.
+> This is an early public alpha release.
 > Created by Volodymyr Moskvin, Conus Vision.
+> Website: https://voice-copilot.conus.vision/
 > Contact: info@conus.vision | https://conus.vision
 > We are open to collaboration and to growing the project together.
 

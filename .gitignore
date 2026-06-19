@@ -19,7 +19,7 @@ logs/
 recordings/
 
 # private launch materials
-/launch/
+/launch/*
 /docs/launch/
 
 # editor
