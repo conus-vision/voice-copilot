@@ -45,3 +45,83 @@ kimi:
   website_url: https://www.kimi.com/
   provider: openai
   base_url_env: OPENAI_BASE_URL
+
+gemini:
+  label: Gemini CLI
+  command: gemini
+  description: Points Google's Gemini CLI at the local proxy via its custom endpoint override.
+  website_url: https://github.com/google-gemini/gemini-cli
+  provider: gemini
+  base_url_env: GOOGLE_GEMINI_BASE_URL
+
+qwen:
+  label: Qwen Code
+  command: qwen
+  description: Routes Alibaba's Qwen Code (a gemini-cli fork) through the proxy over its OpenAI-compatible endpoint.
+  website_url: https://github.com/QwenLM/qwen-code
+  provider: openai
+  base_url_env: OPENAI_BASE_URL
+
+crush:
+  label: Crush
+  command: crush
+  description: Wraps Charmbracelet's Crush agent and points its OpenAI-compatible provider at the local proxy.
+  website_url: https://github.com/charmbracelet/crush
+  provider: openai
+  base_url_env: OPENAI_BASE_URL
+
+cursor:
+  label: Cursor CLI
+  command: cursor-agent
+  description: Routes the Cursor agent CLI through the local proxy over its OpenAI-compatible endpoint.
+  website_url: https://docs.cursor.com/en/cli/overview
+  provider: openai
+  base_url_env: OPENAI_BASE_URL
+
+goose:
+  label: Goose
+  command: goose
+  description: Points Block's Goose agent at the local proxy via its OpenAI-compatible base URL.
+  website_url: https://github.com/block/goose
+  provider: openai
+  base_url_env: OPENAI_BASE_URL
+
+amp:
+  label: Amp
+  command: amp
+  description: Routes Sourcegraph's Amp CLI through the local proxy over its OpenAI-compatible endpoint.
+  website_url: https://ampcode.com/
+  provider: openai
+  base_url_env: OPENAI_BASE_URL
+
+continue:
+  label: Continue CLI
+  command: cn
+  description: Points Continue's cn agent at the local proxy over its OpenAI-compatible endpoint.
+  website_url: https://docs.continue.dev/guides/cli
+  provider: openai
+  base_url_env: OPENAI_BASE_URL
+
+openhands:
+  label: OpenHands CLI
+  command: openhands
+  description: Routes the OpenHands agent CLI through the local proxy over its OpenAI-compatible endpoint.
+  website_url: https://github.com/All-Hands-AI/OpenHands
+  provider: openai
+  base_url_env: OPENAI_BASE_URL
+
+auggie:
+  label: Auggie (Augment)
+  command: auggie
+  description: Points Augment's Auggie CLI at the local proxy over its OpenAI-compatible endpoint.
+  website_url: https://docs.augmentcode.com/cli/overview
+  provider: openai
+  base_url_env: OPENAI_BASE_URL
+
+grok:
+  label: Grok CLI
+  command: grok
+  description: Routes the Grok CLI through the local proxy over its OpenAI-compatible endpoint.
+  website_url: https://github.com/superagent-ai/grok-cli
+  provider: openai
+  base_url_env: OPENAI_BASE_URL

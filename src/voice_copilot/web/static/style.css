@@ -611,6 +611,48 @@ code.pport, span.pport { color: var(--warn); font-family: ui-monospace, monospac
   padding: 14px 16px;
 }
 
+.cli-advanced {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.cli-advanced > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  list-style: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.cli-advanced > summary::-webkit-details-marker { display: none; }
+
+.cli-advanced > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s ease;
+}
+
+.cli-advanced[open] > summary::before { transform: rotate(90deg); }
+
+.cli-advanced > summary:hover { color: var(--text); }
+
+.cli-advanced > label,
+.cli-advanced > .cli-meta,
+.cli-advanced > .cli-inline-hint { margin-top: 10px; }
+
+.cli-card--missing .cli-advanced,
+.cli-card--missing .cli-activity,
+.cli-card--missing .cli-open-state {
+  display: none;
+}
+
+.cli-card--missing .cli-actions {
+  margin-top: 4px;
+}
+
 .cli-inline-hint {
   margin-top: -2px;
   margin-bottom: 8px;

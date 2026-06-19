@@ -1095,46 +1095,50 @@
             <span class="cli-status" data-cli-status="${profile.id}">checking…</span>
           </div>
 
-          <label>Current upstream route
-            <select name="proxy_cli.profiles.${profile.id}.provider">
-              ${routeOptions}
-            </select>
-          </label>
+          <details class="cli-advanced">
+            <summary>Advanced</summary>
 
-          ${routeHint}
+            <label>Current upstream route
+              <select name="proxy_cli.profiles.${profile.id}.provider">
+                ${routeOptions}
+              </select>
+            </label>
 
-          <label>CLI proxy env / override var
-            <input name="proxy_cli.profiles.${profile.id}.base_url_env" placeholder="${profile.base_url_env || "OPENAI_BASE_URL"}" />
-          </label>
+            ${routeHint}
 
-          <label>Binary override (optional)
-            <input name="proxy_cli.profiles.${profile.id}.binary_path" placeholder="C:\\Tools\\${profile.command}.cmd" />
-          </label>
+            <label>CLI proxy env / override var
+              <input name="proxy_cli.profiles.${profile.id}.base_url_env" placeholder="${profile.base_url_env || "OPENAI_BASE_URL"}" />
+            </label>
 
-          <label class="cli-session-row" data-cli-session-row="${profile.id}" hidden>Dialog / session
-            <select class="session-picker session-picker--card" data-cli-session-picker="${profile.id}">
-              <option value="">No active dialogs yet</option>
-            </select>
-          </label>
+            <label>Binary override (optional)
+              <input name="proxy_cli.profiles.${profile.id}.binary_path" placeholder="C:\\Tools\\${profile.command}.cmd" />
+            </label>
 
-          <div class="cli-meta">
-            <div class="cli-meta-row">
-              <span class="cli-meta-label">Proxy URL</span>
-              <code data-cli-proxy-url="${profile.id}"></code>
+            <label class="cli-session-row" data-cli-session-row="${profile.id}" hidden>Dialog / session
+              <select class="session-picker session-picker--card" data-cli-session-picker="${profile.id}">
+                <option value="">No active dialogs yet</option>
+              </select>
+            </label>
+
+            <div class="cli-meta">
+              <div class="cli-meta-row">
+                <span class="cli-meta-label">Proxy URL</span>
+                <code data-cli-proxy-url="${profile.id}"></code>
+              </div>
+              <div class="cli-meta-row">
+                <span class="cli-meta-label">Resolved binary</span>
+                <code data-cli-resolved="${profile.id}"></code>
+              </div>
+              <div class="cli-meta-row">
+                <span class="cli-meta-label">Shim path</span>
+                <code data-cli-shim="${profile.id}"></code>
+              </div>
+              <div class="cli-meta-row">
+                <span class="cli-meta-label">Launch folder</span>
+                <code data-cli-workdir="${profile.id}"></code>
+              </div>
             </div>
-            <div class="cli-meta-row">
-              <span class="cli-meta-label">Resolved binary</span>
-              <code data-cli-resolved="${profile.id}"></code>
-            </div>
-            <div class="cli-meta-row">
-              <span class="cli-meta-label">Shim path</span>
-              <code data-cli-shim="${profile.id}"></code>
-            </div>
-            <div class="cli-meta-row">
-              <span class="cli-meta-label">Launch folder</span>
-              <code data-cli-workdir="${profile.id}"></code>
-            </div>
-          </div>
+          </details>
 
           <div class="cli-activity">
             <span data-cli-activity="${profile.id}">No proxy traffic yet.</span>
@@ -1177,6 +1181,8 @@
 
       const sortedProfiles = sortProxyProfiles(status.profiles || []);
       for (const profile of sortedProfiles) {
+        const card = proxyCliList?.querySelector(`[data-cli-card="${profile.id}"]`);
+        if (card) card.classList.toggle("cli-card--missing", !profile.resolved_binary);
         const statusEl = document.querySelector(`[data-cli-status="${profile.id}"]`);
         const actionEl = document.querySelector(`[data-cli-action-status="${profile.id}"]`);
         const proxyUrlEl = document.querySelector(`[data-cli-proxy-url="${profile.id}"]`);
