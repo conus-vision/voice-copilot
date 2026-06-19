@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 import typer
@@ -31,11 +31,11 @@ from voice_copilot.providers import llm as _llm  # noqa: F401
 from voice_copilot.providers import registry as provider_registry
 from voice_copilot.providers import stt as _stt  # noqa: F401
 from voice_copilot.providers import tts as _tts  # noqa: F401
-from voice_copilot.proxy.server import base_urls_for, serve_proxy
+from voice_copilot.proxy.server import base_urls_for, build_proxy_server
 from voice_copilot.proxy.session import SessionRegistry
 from voice_copilot.tray import TrayService
 from voice_copilot.web.demo import run_demo
-from voice_copilot.web.server import create_app
+from voice_copilot.web.server import ManagedServer, create_app
 
 # Make our own loggers visible. Set VOICE_COPILOT_LOG=DEBUG for the noisy view.
 logging.basicConfig(
@@ -206,6 +206,48 @@ def _server_app_state(server: uvicorn.Server) -> Any:
     return cast(Any, server.config.app).state
 
 
+def _start_servers(servers: list[uvicorn.Server]) -> list[asyncio.Task[Any]]:
+    return [asyncio.create_task(s.serve(), name="uvicorn") for s in servers]
+
+
+async def _await_shutdown(
+    servers: list[uvicorn.Server],
+    server_tasks: list[asyncio.Task[Any]],
+    extra_tasks: list[asyncio.Task[Any]],
+    *,
+    hotkey_svc: HotkeyService | None = None,
+    tray_svc: TrayService | None = None,
+    cleanup: Callable[[], Awaitable[None]] | None = None,
+) -> None:
+    """Wait for tasks until Ctrl+C, then shut down cleanly.
+
+    On interrupt the uvicorn servers are asked to exit gracefully via
+    ``should_exit`` (their lifespan unwinds with no traceback) while the other
+    background tasks are cancelled.
+    """
+    all_tasks = [*server_tasks, *extra_tasks]
+    try:
+        # asyncio.wait (unlike gather) does NOT cancel its tasks when this — the
+        # main task — is cancelled by asyncio.run()'s Ctrl+C handling. That lets
+        # us unwind the uvicorn servers gracefully via should_exit below instead
+        # of hard-cancelling their lifespan mid-flight (which logs a traceback).
+        await asyncio.wait(all_tasks)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        for s in servers:
+            s.should_exit = True
+        for t in extra_tasks:
+            t.cancel()
+        await asyncio.gather(*all_tasks, return_exceptions=True)
+        if cleanup is not None:
+            await cleanup()
+        if hotkey_svc is not None:
+            hotkey_svc.stop()
+        if tray_svc is not None:
+            tray_svc.stop()
+
+
 async def _boot(
     bus: EventBus,
     host: str,
@@ -234,7 +276,7 @@ async def _boot(
         proxy_port=proxy_port,
     )
     uv_config = uvicorn.Config(fast_app, host=host, port=port, log_level="info", access_log=False)
-    server = uvicorn.Server(uv_config)
+    server = ManagedServer(uv_config)
 
     loop = asyncio.get_running_loop()
     hotkey_svc: HotkeyService | None = None
@@ -272,25 +314,19 @@ async def _serve(
         bus, host, port, open_browser, enable_hotkeys, enable_tray
     )
 
-    tasks: list[asyncio.Task[Any]] = [asyncio.create_task(server.serve(), name="web")]
+    server_tasks = _start_servers([server])
+    extra: list[asyncio.Task[Any]] = []
     tts_task = _start_tts_driver(bus, hub, cfg)
     if tts_task is not None:
-        tasks.append(tts_task)
+        extra.append(tts_task)
     if demo:
-        tasks.append(asyncio.create_task(run_demo(bus), name="demo"))
+        extra.append(asyncio.create_task(run_demo(bus), name="demo"))
         commentator = Commentator(bus, cfg.commentator, cfg.commentator_language, sessions=None)
         _server_app_state(server).commentator = commentator
-        tasks.append(asyncio.create_task(commentator.run(), name="commentator"))
-    try:
-        await asyncio.gather(*tasks)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        for t in tasks:
-            t.cancel()
-    finally:
-        if hotkey_svc is not None:
-            hotkey_svc.stop()
-        if tray_svc is not None:
-            tray_svc.stop()
+        extra.append(asyncio.create_task(commentator.run(), name="commentator"))
+    await _await_shutdown(
+        [server], server_tasks, extra, hotkey_svc=hotkey_svc, tray_svc=tray_svc
+    )
 
 
 async def _proxy_only(
@@ -316,17 +352,15 @@ async def _proxy_only(
 
     commentator = Commentator(bus, cfg.commentator, cfg.commentator_language, sessions=sessions)
     _server_app_state(server).commentator = commentator
-    tasks: list[asyncio.Task[Any]] = [
-        asyncio.create_task(server.serve(), name="web"),
+    proxy_server = build_proxy_server(bus, host=host, port=proxy_port, registry=sessions)
+    servers = [server, proxy_server]
+    server_tasks = _start_servers(servers)
+    extra: list[asyncio.Task[Any]] = [
         asyncio.create_task(commentator.run(), name="commentator"),
-        asyncio.create_task(
-            serve_proxy(bus, host=host, port=proxy_port, registry=sessions),
-            name="proxy",
-        ),
     ]
     tts_task = _start_tts_driver(bus, hub, cfg)
     if tts_task is not None:
-        tasks.append(tts_task)
+        extra.append(tts_task)
 
     urls = base_urls_for(host, proxy_port)
     console.print("\n[bold green]voice-copilot proxy ready — point your CLI at:[/bold green]")
@@ -336,16 +370,9 @@ async def _proxy_only(
         f'[dim]Example:  ANTHROPIC_BASE_URL={urls["ANTHROPIC_BASE_URL"]} claude -p "hi"[/dim]\n'
     )
 
-    try:
-        await asyncio.gather(*tasks)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        for t in tasks:
-            t.cancel()
-    finally:
-        if hotkey_svc is not None:
-            hotkey_svc.stop()
-        if tray_svc is not None:
-            tray_svc.stop()
+    await _await_shutdown(
+        servers, server_tasks, extra, hotkey_svc=hotkey_svc, tray_svc=tray_svc
+    )
 
 
 async def _run_with_adapter(
@@ -374,20 +401,17 @@ async def _run_with_adapter(
 
     commentator = Commentator(bus, cfg.commentator, cfg.commentator_language, sessions=sessions)
     _server_app_state(server).commentator = commentator
-    tasks: list[asyncio.Task[Any]] = [
-        asyncio.create_task(server.serve(), name="web"),
+    servers: list[uvicorn.Server] = [server]
+    if enable_proxy:
+        servers.append(build_proxy_server(bus, host=host, port=proxy_port, registry=sessions))
+    server_tasks = _start_servers(servers)
+    extra: list[asyncio.Task[Any]] = [
         asyncio.create_task(commentator.run(), name="commentator"),
     ]
     tts_task = _start_tts_driver(bus, hub, cfg)
     if tts_task is not None:
-        tasks.append(tts_task)
+        extra.append(tts_task)
     if enable_proxy:
-        tasks.append(
-            asyncio.create_task(
-                serve_proxy(bus, host=host, port=proxy_port, registry=sessions),
-                name="proxy",
-            )
-        )
         console.print(
             f"[green]proxy → ANTHROPIC_BASE_URL=http://{host}:{proxy_port}/anthropic  "
             f"OPENAI_BASE_URL=http://{host}:{proxy_port}/openai/v1[/green]"
@@ -397,27 +421,27 @@ async def _run_with_adapter(
 
     adapter: CLIAdapter = build_adapter(bus)
     dialog = DialogManager(bus, adapter, cfg.dialog)
-    tasks.append(asyncio.create_task(dialog.run(), name="dialog"))
+    extra.append(asyncio.create_task(dialog.run(), name="dialog"))
     try:
         await adapter.start(initial_prompt=prompt)
     except RuntimeError as e:
         console.print(f"[red]{e}[/red]")
-        for t in tasks:
+        for s in servers:
+            s.should_exit = True
+        for t in extra:
             t.cancel()
+        await asyncio.gather(*server_tasks, *extra, return_exceptions=True)
         if hotkey_svc is not None:
             hotkey_svc.stop()
         if tray_svc is not None:
             tray_svc.stop()
         return
 
-    try:
-        await asyncio.gather(*tasks)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        for t in tasks:
-            t.cancel()
-    finally:
-        await adapter.stop()
-        if hotkey_svc is not None:
-            hotkey_svc.stop()
-        if tray_svc is not None:
-            tray_svc.stop()
+    await _await_shutdown(
+        servers,
+        server_tasks,
+        extra,
+        hotkey_svc=hotkey_svc,
+        tray_svc=tray_svc,
+        cleanup=adapter.stop,
+    )

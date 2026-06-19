@@ -220,6 +220,26 @@ async def _forward(
     )
 
 
+def build_proxy_server(
+    bus: EventBus,
+    *,
+    host: str,
+    port: int,
+    registry: SessionRegistry | None = None,
+) -> uvicorn.Server:
+    """Build (but don't start) the proxy's uvicorn server.
+
+    Returned as a :class:`ManagedServer` so the caller can run it as one of
+    several tasks under a single ``asyncio.run()`` and drive a clean shutdown
+    via ``should_exit`` on Ctrl+C.
+    """
+    from voice_copilot.web.server import ManagedServer
+
+    app = create_proxy_app(bus, registry=registry)
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False)
+    return ManagedServer(config)
+
+
 async def serve_proxy(
     bus: EventBus,
     *,
@@ -227,10 +247,7 @@ async def serve_proxy(
     port: int,
     registry: SessionRegistry | None = None,
 ) -> None:
-    app = create_proxy_app(bus, registry=registry)
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False)
-    server = uvicorn.Server(config)
-    await server.serve()
+    await build_proxy_server(bus, host=host, port=port, registry=registry).serve()
 
 
 def base_urls_for(host: str, port: int) -> dict[str, str]:

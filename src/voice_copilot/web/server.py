@@ -47,6 +47,23 @@ from voice_copilot.proxy.session import SessionRegistry
 from voice_copilot.web.ws import register_ws
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+class ManagedServer(uvicorn.Server):
+    """A uvicorn server that leaves process signal handling to the caller.
+
+    We run one or more of these as asyncio tasks under a single ``asyncio.run()``.
+    uvicorn's default ``capture_signals()`` installs its own SIGINT/SIGTERM
+    handlers; with several servers (web + proxy) plus ``asyncio.run()``'s own
+    handler all fighting over the signal, Ctrl+C produces a noisy
+    ``KeyboardInterrupt`` / ``CancelledError`` traceback. We let ``asyncio.run()``
+    deliver the interrupt and shut these down cleanly via ``should_exit`` instead.
+    """
+
+    def install_signal_handlers(self) -> None:
+        return None
+
+
 _AUDIO_CONTAINERS = ("webm", "ogg", "wav", "mp3", "raw_pcm16")
 _TTS_TEST_PHRASES = {
     "en": "This is a Voice Copilot speech test.",
@@ -375,7 +392,7 @@ async def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = 
     app = create_app(bus, config)
 
     server_config = uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
-    server = uvicorn.Server(server_config)
+    server = ManagedServer(server_config)
 
     if open_browser:
         url = f"http://{host}:{port}/"
