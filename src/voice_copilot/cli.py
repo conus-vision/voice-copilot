@@ -324,9 +324,7 @@ async def _serve(
         commentator = Commentator(bus, cfg.commentator, cfg.commentator_language, sessions=None)
         _server_app_state(server).commentator = commentator
         extra.append(asyncio.create_task(commentator.run(), name="commentator"))
-    await _await_shutdown(
-        [server], server_tasks, extra, hotkey_svc=hotkey_svc, tray_svc=tray_svc
-    )
+    await _await_shutdown([server], server_tasks, extra, hotkey_svc=hotkey_svc, tray_svc=tray_svc)
 
 
 async def _proxy_only(
@@ -370,9 +368,7 @@ async def _proxy_only(
         f'[dim]Example:  ANTHROPIC_BASE_URL={urls["ANTHROPIC_BASE_URL"]} claude -p "hi"[/dim]\n'
     )
 
-    await _await_shutdown(
-        servers, server_tasks, extra, hotkey_svc=hotkey_svc, tray_svc=tray_svc
-    )
+    await _await_shutdown(servers, server_tasks, extra, hotkey_svc=hotkey_svc, tray_svc=tray_svc)
 
 
 async def _run_with_adapter(
