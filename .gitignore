@@ -30,3 +30,6 @@ recordings/
 CLAUDE.md
 .claude/
 .aider*
+
+# playwright cli artifacts
+.playwright-cli/
