@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voice-copilot"
-version = "0.0.2"
+version = "0.0.3"
 description = "Voice-first narrator and control layer for LLM coding CLIs"
 readme = "README.md"
 requires-python = ">=3.11"

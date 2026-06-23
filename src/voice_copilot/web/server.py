@@ -92,7 +92,7 @@ def create_app(
     sessions: SessionRegistry | None = None,
     proxy_port: int | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="voice-copilot", version="0.0.2", lifespan=_lifespan)
+    app = FastAPI(title="voice-copilot", version="0.0.3", lifespan=_lifespan)
     app.state.bus = bus
     app.state.config = config
     app.state.audio_hub = audio_hub or AudioHub()

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="public/logo.png" width="440" alt="Voice Copilot">
+  <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/logo.png" width="440" alt="Voice Copilot">
 </p>
 
 > **Listen to Control** — listen to your coding agent and step in by voice the moment it matters.
@@ -12,7 +12,7 @@ second something matters** — so you keep control without staring at the output
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=CFDFU5S1Grk">
-    <img src="public/poster.jpg" alt="Watch the Voice Copilot demo (60s)" width="100%">
+    <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/poster.jpg" alt="Watch the Voice Copilot demo (60s)" width="100%">
   </a>
 </p>
 
@@ -116,7 +116,7 @@ trace only when an update tells you it matters.
 **CLI authors** who want their tool to expose a clean event stream for
 companion narration (see the integration RFC below).
 
-> **Status: 0.0.2 alpha.** First public alpha, aimed at advanced users
+> **Status: 0.0.3 alpha.** First public alpha, aimed at advanced users
 > comfortable testing CLI workflows and sharing feedback. Created by Volodymyr
 > Moskvin, [Conus Vision](https://conus.vision). We are open to collaboration —
 > [info@conus.vision](mailto:info@conus.vision).
