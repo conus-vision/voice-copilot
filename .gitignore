@@ -33,3 +33,6 @@ CLAUDE.md
 
 # playwright cli artifacts
 .playwright-cli/
+
+# local design/scratch drafts
+/scripts/_demo_*.py

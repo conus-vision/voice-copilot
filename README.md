@@ -1,4 +1,6 @@
-# Voice Copilot
+<p align="center">
+  <img src="public/logo.png" width="440" alt="Voice Copilot">
+</p>
 
 > **Listen to Control** — listen to your coding agent and step in by voice the moment it matters.
 
@@ -9,13 +11,13 @@ what the agent is doing in short spoken updates and lets you cut in by voice the
 second something matters** — so you keep control without staring at the output.
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=otOdWm7gYnI">
-    <img src="https://img.youtube.com/vi/otOdWm7gYnI/maxresdefault.jpg" alt="Watch the Voice Copilot demo (60s)" width="100%">
+  <a href="https://www.youtube.com/watch?v=CFDFU5S1Grk">
+    <img src="public/poster.jpg" alt="Watch the Voice Copilot demo (60s)" width="100%">
   </a>
 </p>
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=otOdWm7gYnI"><b>▶ Watch the 60-second demo</b></a>
+  <a href="https://www.youtube.com/watch?v=CFDFU5S1Grk"><b>▶ Watch the 60-second demo</b></a>
   ·
   <a href="https://voice-copilot.conus.vision/">Website</a>
   ·
