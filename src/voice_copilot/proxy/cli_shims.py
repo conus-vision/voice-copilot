@@ -21,6 +21,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -217,6 +218,66 @@ def launch_cli_profile(
         "binary_path": resolved_binary,
         "proxy_url": _proxy_url_for(profile.provider, host=host, port=port),
     }
+
+
+@dataclass(frozen=True)
+class ResolvedCli:
+    profile_id: str
+    label: str
+    resolved_binary: str
+    env_overrides: dict[str, str]
+    working_directory: Path | None
+
+
+def resolve_cli_for_vc(
+    name: str,
+    cfg: Config,
+    *,
+    host: str = _DEFAULT_PROXY_HOST,
+    port: int,
+) -> ResolvedCli | None:
+    """Resolve a typed CLI name (`vc <name>`) to its launch profile.
+
+    Checks the catalog by profile_id, then by its actual `command` (some
+    entries differ, e.g. profile_id `continue` has command `cn`), then
+    falls back to a user-added `cfg.proxy_cli.profiles` entry whose key
+    isn't in the catalog at all. Returns `None` if nothing matches.
+    """
+    if name in CLI_CATALOG:
+        profile_id = name
+        meta = CLI_CATALOG[name]
+        command = meta.command
+        label = meta.label
+    else:
+        catalog_match = next(
+            ((pid, meta) for pid, meta in CLI_CATALOG.items() if meta.command == name),
+            None,
+        )
+        if catalog_match is not None:
+            profile_id, meta = catalog_match
+            command = meta.command
+            label = meta.label
+        elif name in cfg.proxy_cli.profiles:
+            profile_id, command, label = name, name, name
+        else:
+            return None
+
+    profile = _profile_from_config(cfg, profile_id)
+    resolved_binary = _resolve_binary_path(command, profile.binary_path, proxy_shim_dir())
+    if not resolved_binary:
+        raise RuntimeError(f"could not resolve `{command}` on PATH; set a Binary override first")
+
+    env_overrides = _proxy_env_overrides(
+        profile_id, profile, proxy_url=_proxy_url_for(profile.provider, host=host, port=port)
+    )
+    working_directory = _working_directory_from_config(cfg, profile)
+    return ResolvedCli(
+        profile_id=profile_id,
+        label=label,
+        resolved_binary=resolved_binary,
+        env_overrides=env_overrides,
+        working_directory=working_directory,
+    )
 
 
 def choose_cli_working_directory(initial_dir: str | None = None) -> str | None:
