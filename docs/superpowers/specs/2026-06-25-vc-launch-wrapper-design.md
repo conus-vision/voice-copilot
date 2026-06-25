@@ -144,7 +144,7 @@ format we've chosen to support for batch use.
    section above.
 3. **Focus router** — OS-level foreground-window detection, matching the
    foreground window to either the spawned CLI's terminal or its browser
-   panel. Tracks two pieces of state:
+   panel. Conceptually it tracks two pieces of state:
    - `current_focus`: the instance whose terminal or panel is the live
      foreground window right now, or `None` if the foreground window belongs
      to neither.
@@ -153,6 +153,19 @@ format we've chosen to support for batch use.
      voice-copilot-related window (terminal or panel), and left unchanged
      while focus is on unrelated windows. Never `None` once any
      voice-copilot window has been focused at least once.
+
+   > **Implementation note (as shipped):** because each `vc` invocation is
+   > its own process with its own router (there is no shared in-memory
+   > router), this is realized per-process rather than as one object holding
+   > both pointers. `FocusRouter.current_focus` is a plain `bool` — "is *this*
+   > instance the foreground window" (terminal OR panel) — and the
+   > cross-instance `last_vc_focus` arbitration lives in a small shared
+   > `focus-state.json` in the config dir: `record_focus()` stamps this
+   > instance's pid+timestamp when it gains focus, and `is_last_focused()`
+   > reports whether this instance wrote the most recent stamp. This delivers
+   > the same observable behavior (exactly one instance narrates; sticky when
+   > unchecked) across separate processes, which a single `None`-valued
+   > pointer could not.
 
    Drives two independent behaviors (each may be toggled separately):
    - **Hotkey routing**: push-to-talk audio is always delivered to

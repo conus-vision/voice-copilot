@@ -92,7 +92,7 @@ class FocusRouter:
         terminal_focused = await asyncio.to_thread(is_console_window_focused)
         self._current = terminal_focused or self._panel_focused
         if self._current:
-            record_focus()
+            await asyncio.to_thread(record_focus)
 
     def _should_narrate(self) -> bool:
         if self._narrate_only_when_focused:
