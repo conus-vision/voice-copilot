@@ -17,11 +17,34 @@ voice-copilot claude → claude terminal + voice-copilot panel, narrating,
 vc claude            → same, shorter to type
 ```
 
-This spec covers the new launch path only. The existing `serve` command and
-the existing headless stream-json adapters (`adapters/claude_code.py`,
-`adapters/codex.py`) are unchanged — they remain the mechanism for headless/
-batch use (`-p`/`exec` style invocations), which is a different use case
-from "narrate my interactive session".
+This spec covers the new launch path only. It is additive to, and reuses
+building blocks from, functionality that already ships today:
+
+- The headless stream-json adapters (`adapters/claude_code.py`,
+  `adapters/codex.py`, used by `voice-copilot run`) are unchanged — they
+  remain the mechanism for headless/batch use (`-p`/`exec` style
+  invocations), a different use case from "narrate my interactive session".
+- `proxy/cli_catalog.py` + `proxy/cli_catalog.yaml` already curate 16 known
+  CLIs (claude, codex, copilot, aider, opencode, kimi, gemini, qwen, crush,
+  cursor, goose, amp, continue, openhands, auggie, grok) with their
+  provider and override-env-var mapping.
+- `proxy/cli_shims.py` already resolves a catalog entry's binary and
+  computes its env overrides (`_resolve_binary_path`, `_proxy_env_overrides`,
+  `base_urls_for`), and already offers two ways to use that: **install** a
+  permanent PATH shim (so plain `claude` is proxied in every terminal,
+  forever, until restored) and **launch** (opens a brand-new, fully
+  detached terminal window with the override env set). Both are exposed
+  today only as buttons in the web Settings panel.
+
+What's still missing, and what this spec actually adds, is a third way to
+use that same env-resolution logic: typed directly in a terminal
+(`vc <name>` / `voice-copilot <name>`), scoped to *that one invocation*
+(not a permanent PATH mutation), with the target CLI's terminal **and**
+the ability to inject push-to-talk messages into it — something neither
+install (no live connection back to voice-copilot) nor launch (detached,
+unconnected window) nor headless `run` (no live terminal at all) provides
+today. The new command reuses the catalog/env-resolution code from
+`cli_shims.py` rather than re-implementing it.
 
 ## Non-goals
 
@@ -58,52 +81,51 @@ Instead: on first invocation of `voice-copilot` (or an explicit
   marker file in the voice-copilot config dir so we don't re-probe every
   invocation).
 
-## CLI profile registry
+## CLI profile resolution — reusing the existing catalog
 
-A registry, analogous to the existing pluggable-provider pattern in
-`providers/`, maps a CLI name to how voice-copilot can intercept it:
+No new registry/schema. `<name>` is resolved using exactly the lookup
+`proxy/cli_shims.py` already has, in this order:
 
-```yaml
-# ~/.voice-copilot/config.yaml
-cli_profiles:
-  claude:
-    verified: true
-    env: { ANTHROPIC_BASE_URL: "{proxy_url}" }
-  codex:
-    verified: true
-    env: { OPENAI_BASE_URL: "{proxy_url}" }
-  opencode:
-    verified: false
-    env: { OPENAI_BASE_URL: "{proxy_url}" }   # user-supplied, unconfirmed
-```
-
-`claude` and `codex` ship built in with `verified: true`. Users (or future
-contributions) can add entries for other CLIs.
+1. **`CLI_CATALOG[<name>]`** (from `cli_catalog.yaml`, keyed by `command`,
+   e.g. `claude`, `codex`, `opencode`, ...) — the 16 curated entries.
+2. **`cfg.proxy_cli.profiles[<name>]`** — today this dict only overrides
+   fields (`binary_path`, `working_directory`, `provider`) for IDs that
+   already exist in `CLI_CATALOG`; `_meta_for()` raises `KeyError` for any
+   other key. This spec extends that: a `cfg.proxy_cli.profiles` entry for a
+   name *not* in `CLI_CATALOG` is now also accepted, supplying `provider` +
+   `base_url_env` directly (the two fields `_proxy_env_overrides` actually
+   needs — `label`/`description`/`website_url` are catalog-only display
+   metadata, not required to compute an env override or launch a process).
 
 ### Resolution per `vc <name>` invocation
 
-1. **Tier 1 — known and verified** (`verified: true`): voice-copilot is
-   certain of the env-var override and can rely on it working. Allocate a
-   proxy port, spawn `<name>` in a PTY with that env var merged into the
-   *child's* environment only (never mutates the voice-copilot process's own
-   `os.environ`), open the browser panel. Fully automatic.
-2. **Tier 2 — known but not verified** (entry exists, `verified: false`, or
-   required fields are incomplete): voice-copilot isn't sure the mechanism
-   works and can't confirm it in the background. Spawn `<name>` in a PTY
-   *without* the env override, open the panel directly on a "Proxy settings
-   for `<name>`" tab pre-filled with whatever is already known. Narration
-   stays off until the user confirms/completes the settings there; applying
-   them hot-reconfigures the already-running instance (no restart needed).
-3. **Tier 3 — unknown** (no entry at all): spawn `<name>` as a plain PTY
-   pass-through (terminal visible, no interception attempted), panel shows
-   "this CLI isn't recognized" plus a short instruction for adding a
-   `cli_profiles` entry. The CLI launches immediately; the instruction is
-   informational, not a blocking prompt.
+1. **Known** — `<name>` resolves via either lookup above, and its binary
+   resolves on PATH (or via a configured `binary_path` override, same
+   resolution `_resolve_binary_path` already does). Allocate a proxy port,
+   compute env overrides with the existing `_proxy_env_overrides` logic,
+   spawn `<name>` in a PTY with that env merged into the *child's*
+   environment only (never mutates voice-copilot's own `os.environ`), open
+   the browser panel. Fully automatic — no new "verified" concept needed,
+   since a catalog entry is trusted by curation and a user-added config
+   entry is trusted by the user having written it themselves.
+2. **Unknown** — `<name>` matches neither `CLI_CATALOG` nor
+   `cfg.proxy_cli.profiles`. Spawn `<name>` as a plain PTY pass-through (no
+   env override attempted), open the panel showing "this CLI isn't
+   recognized" with a short example of adding a `proxy_cli.profiles.<name>`
+   entry to `~/.voice-copilot/config.yaml` (`provider` + `base_url_env`).
+   The CLI launches immediately; the instruction is informational, not a
+   blocking prompt.
 
-This tiering applies only to the `vc <cli>` interactive path. It has no
-bearing on the existing headless adapters, which remain separate, hand-written
-per-CLI parsers for CLIs whose own stream-json wire format we've chosen to
-support for batch use.
+Binary-not-found (catalog/config entry exists but nothing resolves on PATH)
+is not a third tier — it's a plain error, handled the same way
+`install_cli_shim` already handles it today: surfaced in the panel with a
+prompt to set a Binary override in Settings, same field that already exists
+for the Install/Launch buttons.
+
+This resolution applies only to the `vc <cli>` interactive path. It has no
+bearing on the existing headless stream-json adapters, which remain
+separate, hand-written per-CLI parsers for CLIs whose own stream-json wire
+format we've chosen to support for batch use.
 
 ## Components
 
@@ -112,11 +134,14 @@ support for batch use.
    real terminal, and exposing a queue-style stdin-injection point for
    dialog-manager messages (same `QuickAsideCapability.QUEUE` semantics
    already used by the stream-json adapters).
-2. **Proxy lifecycle manager** — starts a per-instance mitmproxy on a freshly
+2. **Proxy lifecycle manager** — starts a per-instance proxy on a freshly
    allocated free port, scoped to the lifetime of the spawned child process;
-   torn down when the child exits. Reuses the existing `proxy/server.py` /
-   `proxy/session.py` machinery, just instantiated per `vc` invocation
-   instead of globally via `serve`.
+   torn down when the child exits. Reuses `proxy/server.py`'s
+   `build_proxy_server`/`base_urls_for` and `proxy/session.py`'s
+   `SessionRegistry`, just instantiated per `vc` invocation instead of
+   globally via `serve`/`proxy`. Resolution (binary path, env overrides) is
+   the existing `proxy/cli_shims.py` logic, per the CLI profile resolution
+   section above.
 3. **Focus router** — OS-level foreground-window detection, matching the
    foreground window to either the spawned CLI's terminal or its browser
    panel. Tracks two pieces of state:
@@ -150,9 +175,11 @@ support for batch use.
 
    In both modes exactly one instance narrates at a time, preventing
    multiple simultaneously-open `vc` sessions from talking over each other.
-4. **Web panel additions** — per-instance URL (existing), a "Proxy settings"
-   tab for Tier 2, an "Add a CLI" instructions view for Tier 3, and a
-   **Settings** tab holding the narrate-only-when-focused checkbox
+4. **Web panel additions** — per-instance URL (existing), an "unrecognized
+   CLI" instructions view for the Unknown case, a binary-not-found prompt
+   reusing the existing Binary override field/copy from the Install/Launch
+   flows, and a **Settings** tab holding the narrate-only-when-focused
+   checkbox
    (reflects/edits the global config value; same value across all instances
    since it's a shared setting). Label and helper text for the checkbox:
 
@@ -164,9 +191,9 @@ support for batch use.
    > one, so briefly switching to another app (e.g. to take notes) doesn't
    > cut off the voice.
 
-## Data flow (Tier 1 example)
+## Data flow (known-CLI example)
 
-`vc claude` → dispatcher resolves `claude` profile (verified) → allocate
+`vc claude` → dispatcher resolves `claude` via `CLI_CATALOG` → allocate
 panel port + proxy port → start this instance's FastAPI app → start proxy →
 spawn `claude` in PTY with `ANTHROPIC_BASE_URL` merged into child env only →
 open browser to panel → bridge PTY ⇄ real terminal → proxy intercepts API
@@ -184,17 +211,19 @@ Consistent with the project's "fail loud, no silent fallback" rule:
   the target CLI still launches as a plain PTY (never block the user's
   actual work), but the panel shows an explicit error with remediation steps.
   Never silently narrate nothing while pretending to work.
-- Tier 2 with incomplete settings → panel banner stays visible until
-  resolved; no narration, no guessing at missing values.
+- Binary not found on PATH (known CLI, but nothing to launch) → same
+  remediation `install_cli_shim` already gives today: panel prompt to set a
+  Binary override in Settings; no narration, no guessing at a path.
 - Alias install (`vc` shim) conflicts → skip silently once, never overwrite;
   this is the one case where silence is correct, since there's nothing wrong
   to report — the user's existing `vc` is simply left in charge.
 
 ## Testing
 
-- Unit: profile resolution (name → tier) for verified / unverified / absent
-  cases; env merge logic proven not to mutate `os.environ` of the parent
-  process.
+- Unit: profile resolution (name → known via `CLI_CATALOG` / known via
+  user-added `cfg.proxy_cli.profiles` entry / unknown) and the
+  binary-not-found error path; env merge logic proven not to mutate
+  `os.environ` of the parent process.
 - Integration: a fixture CLI script spawned through the PTY manager +
   per-instance proxy, asserting structured events reach the bus.
 - Integration: focus-router state changes correctly gate both hotkey
