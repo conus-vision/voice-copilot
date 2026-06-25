@@ -55,7 +55,8 @@ class TTSDriver:
         self._hub = hub
         self._tts = tts
         self._language = language
-        self._muted = muted
+        self._manual_muted = muted
+        self._focus_allowed = True
         self._current: asyncio.Task[None] | None = None
         self._abort_task: asyncio.Task[None] | None = None
         self._latest_query_text: dict[str, str] = {}
@@ -96,12 +97,28 @@ class TTSDriver:
             with contextlib.suppress(asyncio.CancelledError):
                 await speaker
 
+    @property
+    def muted(self) -> bool:
+        return self._manual_muted or not self._focus_allowed
+
     def set_muted(self, muted: bool) -> None:
-        self._muted = muted
+        self._manual_muted = muted
         if muted:
             self._clear_pending()
             # Fire-and-forget abort — don't block the caller.
             task = asyncio.create_task(self._abort_current(), name="tts.abort")
+            self._abort_task = task
+            task.add_done_callback(self._clear_abort_task)
+
+    def set_focus_gate(self, allowed: bool) -> None:
+        """Narrate-only-when-focused gate — independent of the manual mute
+        toggle above; effectively muted whenever either says no."""
+        if allowed == self._focus_allowed:
+            return
+        self._focus_allowed = allowed
+        if not allowed:
+            self._clear_pending()
+            task = asyncio.create_task(self._abort_current(), name="tts.focus-abort")
             self._abort_task = task
             task.add_done_callback(self._clear_abort_task)
 
@@ -140,7 +157,7 @@ class TTSDriver:
         return query_version < expected
 
     def _build_utterance(self, ev: Event) -> _QueuedUtterance | None:
-        if self._muted or self._is_stale_utterance(ev):
+        if self.muted or self._is_stale_utterance(ev):
             return None
         text = str(ev.payload.get("read_text") or ev.payload.get("text") or "").strip()
         if not text:
@@ -181,7 +198,7 @@ class TTSDriver:
                     expected = self._query_versions.get(utterance.session_key)
                     if expected is not None and utterance.query_version < expected:
                         continue
-                if self._muted:
+                if self.muted:
                     continue
                 task = asyncio.create_task(self._speak(utterance), name="tts.speak")
                 self._current = task
