@@ -631,6 +631,7 @@ async def _run_vc(
             hotkey_svc.stop()
         if tray_svc is not None:
             tray_svc.stop()
+        focus_router.stop()
         return
 
     await _await_vc_shutdown(

@@ -102,10 +102,13 @@ class FocusRouter:
     async def _poll(self) -> None:
         last: bool | None = None
         while True:
-            await self._tick()
-            should = self._should_narrate()
-            if should != last:
-                last = should
-                if self._on_narrate_gate is not None:
-                    self._on_narrate_gate(should)
+            try:
+                await self._tick()
+                should = self._should_narrate()
+                if should != last:
+                    last = should
+                    if self._on_narrate_gate is not None:
+                        self._on_narrate_gate(should)
+            except Exception:
+                log.exception("focus poll iteration failed")
             await asyncio.sleep(_POLL_INTERVAL_S)
