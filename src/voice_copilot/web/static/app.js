@@ -567,6 +567,7 @@
       setConn("connected");
       retryMs = 500;
       syncPlaybackRateState();
+      send({ type: "cmd", cmd: "panel_focus", focused: document.hasFocus() });
     };
     ws.onclose = () => { setConn("disconnected"); setTimeout(connect, retryMs); retryMs = Math.min(retryMs*2, 5000); };
     ws.onerror = () => {};
@@ -577,6 +578,12 @@
         if (msg.type === "event") {
           if (!isMini && msg.kind === "user.skip.requested") {
             skipCurrentPlayback();
+            return;
+          }
+          if (!isMini && msg.kind === "user.speak.requested") {
+            const phase = (msg.payload || {}).phase;
+            if (phase === "start" && !speaking) { speaking = true; startSpeak(); }
+            else if (phase === "end" && speaking) { speaking = false; endSpeak(); }
             return;
           }
           if (!isMini && isAgentQuery(msg)) stopPlaybackForSession(messageSessionId(msg));
@@ -619,6 +626,9 @@
     };
   }
   connect();
+
+  window.addEventListener("focus", () => send({ type: "cmd", cmd: "panel_focus", focused: true }));
+  window.addEventListener("blur",  () => send({ type: "cmd", cmd: "panel_focus", focused: false }));
 
   // ------------------------------------------------------------------ trace
 
