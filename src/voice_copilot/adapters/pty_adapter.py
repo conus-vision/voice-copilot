@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import threading
 from typing import Any
 
 from voice_copilot.adapters.base import CLIAdapter, QuickAsideCapability
@@ -51,6 +52,7 @@ class PtyAdapter(CLIAdapter):
         self._child: Any = None
         self._pump_task: asyncio.Task[None] | None = None
         self._paused = False
+        self._write_lock = threading.Lock()
 
     async def start(self, initial_prompt: str | None = None) -> None:
         self._child = _PtyProcess.spawn(self._argv, cwd=self._cwd, env=self._env)
@@ -77,6 +79,9 @@ class PtyAdapter(CLIAdapter):
         await self._bus.publish(Event(kind=EventKind.SESSION_ENDED, source="pty"))
 
     async def pause(self) -> bool:
+        """Suspend the direct child process only; forked worker subprocesses
+        (if any) keep running, so this may not actually stop the agent's turn.
+        """
         if self._child is None or not self._child.isalive() or self._paused:
             return False
         try:
@@ -110,10 +115,11 @@ class PtyAdapter(CLIAdapter):
         if child is None:
             return
         # ptyprocess.write expects bytes; winpty.PtyProcess.write expects str.
-        if sys.platform == "win32":
-            child.write(data)
-        else:
-            child.write(data.encode())
+        with self._write_lock:
+            if sys.platform == "win32":
+                child.write(data)
+            else:
+                child.write(data.encode())
 
     def _pump(self) -> None:
         """Bridge the child PTY to the real terminal until the child exits.
@@ -154,13 +160,13 @@ class PtyAdapter(CLIAdapter):
         ):  # pragma: no cover - narrows msvcrt to win32 for the type checker
             return
         import msvcrt
-        import threading
 
         def feed_stdin() -> None:
             while child.isalive():
                 ch = msvcrt.getwch()
                 try:
-                    child.write(ch)
+                    with self._write_lock:
+                        child.write(ch)
                 except Exception:  # child gone
                     return
 
@@ -209,6 +215,7 @@ class PtyAdapter(CLIAdapter):
                 if stdin_fd in rlist:
                     user = os.read(stdin_fd, 1024)
                     if user:
-                        child.write(user)
+                        with self._write_lock:
+                            child.write(user)
         finally:
             termios.tcsetattr(stdin_fd, termios.TCSAFLUSH, old)
