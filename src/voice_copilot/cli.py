@@ -26,6 +26,7 @@ from voice_copilot.commentator import Commentator
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.config import Config, load_config
 from voice_copilot.dialog import DialogManager
+from voice_copilot.focus import FocusRouter
 from voice_copilot.hotkeys import HotkeyService, default_bindings
 from voice_copilot.net import free_port
 
@@ -250,14 +251,16 @@ def vc_launch(
     )
 
 
-def _start_tts_driver(bus: EventBus, hub: AudioHub, cfg: Config) -> asyncio.Task[None] | None:
+def _start_tts_driver(
+    bus: EventBus, hub: AudioHub, cfg: Config
+) -> tuple[TTSDriver, asyncio.Task[None]] | None:
     try:
         tts = provider_registry.build("tts", cfg.tts.name, dict(cfg.tts.options))
     except Exception as e:
         console.print(f"[yellow]TTS provider unavailable: {e}[/yellow]")
         return None
     driver = TTSDriver(bus, hub, tts, cfg.commentator_language)
-    return asyncio.create_task(driver.run(), name="tts.driver")
+    return driver, asyncio.create_task(driver.run(), name="tts.driver")
 
 
 def _server_app_state(server: uvicorn.Server) -> Any:
@@ -351,6 +354,7 @@ async def _boot(
     enable_tray: bool,
     sessions: SessionRegistry | None = None,
     proxy_port: int | None = None,
+    is_focused: Callable[[], bool] | None = None,
 ) -> tuple[uvicorn.Server, HotkeyService | None, TrayService | None, Config, AudioHub]:
     cfg = load_config()
 
@@ -378,7 +382,9 @@ async def _boot(
 
     if enable_hotkeys:
         try:
-            hotkey_svc = HotkeyService(bus, loop, default_bindings(cfg.hotkeys))
+            hotkey_svc = HotkeyService(
+                bus, loop, default_bindings(cfg.hotkeys), is_focused=is_focused
+            )
             hotkey_svc.start()
         except Exception as e:
             console.print(f"[yellow]hotkeys unavailable: {e}[/yellow]")
@@ -410,9 +416,9 @@ async def _serve(
 
     server_tasks = _start_servers([server])
     extra: list[asyncio.Task[Any]] = []
-    tts_task = _start_tts_driver(bus, hub, cfg)
-    if tts_task is not None:
-        extra.append(tts_task)
+    tts_result = _start_tts_driver(bus, hub, cfg)
+    if tts_result is not None:
+        extra.append(tts_result[1])
     if demo:
         extra.append(asyncio.create_task(run_demo(bus), name="demo"))
         commentator = Commentator(bus, cfg.commentator, cfg.commentator_language, sessions=None)
@@ -450,9 +456,9 @@ async def _proxy_only(
     extra: list[asyncio.Task[Any]] = [
         asyncio.create_task(commentator.run(), name="commentator"),
     ]
-    tts_task = _start_tts_driver(bus, hub, cfg)
-    if tts_task is not None:
-        extra.append(tts_task)
+    tts_result = _start_tts_driver(bus, hub, cfg)
+    if tts_result is not None:
+        extra.append(tts_result[1])
 
     urls = base_urls_for(host, proxy_port)
     console.print("\n[bold green]voice-copilot proxy ready — point your CLI at:[/bold green]")
@@ -498,9 +504,9 @@ async def _run_with_adapter(
     extra: list[asyncio.Task[Any]] = [
         asyncio.create_task(commentator.run(), name="commentator"),
     ]
-    tts_task = _start_tts_driver(bus, hub, cfg)
-    if tts_task is not None:
-        extra.append(tts_task)
+    tts_result = _start_tts_driver(bus, hub, cfg)
+    if tts_result is not None:
+        extra.append(tts_result[1])
     if enable_proxy:
         console.print(
             f"[green]proxy → ANTHROPIC_BASE_URL=http://{host}:{proxy_port}/anthropic  "
@@ -549,6 +555,9 @@ async def _run_vc(
 ) -> None:
     bus = EventBus()
     cfg_for_resolve = load_config()
+    focus_router = FocusRouter(
+        narrate_only_when_focused=cfg_for_resolve.focus.narrate_only_when_focused
+    )
     actual_proxy_port = proxy_port or free_port(host)
 
     resolved: ResolvedCli | None
@@ -569,10 +578,12 @@ async def _run_vc(
         enable_tray,
         sessions=sessions,
         proxy_port=actual_proxy_port if enable_proxy else None,
+        is_focused=lambda: focus_router.current_focus,
     )
 
     commentator = Commentator(bus, cfg.commentator, cfg.commentator_language, sessions=sessions)
     _server_app_state(server).commentator = commentator
+    _server_app_state(server).focus_router = focus_router
     servers: list[uvicorn.Server] = [server]
     if enable_proxy:
         servers.append(
@@ -580,9 +591,13 @@ async def _run_vc(
         )
     server_tasks = _start_servers(servers)
     extra: list[asyncio.Task[Any]] = [asyncio.create_task(commentator.run(), name="commentator")]
-    tts_task = _start_tts_driver(bus, hub, cfg)
-    if tts_task is not None:
+    tts_result = _start_tts_driver(bus, hub, cfg)
+    if tts_result is not None:
+        tts_driver, tts_task = tts_result
         extra.append(tts_task)
+        focus_router.on_narrate_gate(tts_driver.set_focus_gate)
+
+    focus_router.start()
 
     if resolved is not None:
         binary = resolved.resolved_binary
@@ -627,3 +642,4 @@ async def _run_vc(
         tray_svc=tray_svc,
         cleanup=adapter.stop,
     )
+    focus_router.stop()
