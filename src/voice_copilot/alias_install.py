@@ -27,18 +27,19 @@ def marker_path() -> Path:
 
 def ensure_vc_alias(*, voice_copilot_script: Path | None = None) -> None:
     """Install a `vc` → `voice-copilot` shim once, if nothing else owns `vc`."""
-    marker = marker_path()
-    if marker.exists():
-        return
     try:
+        marker = marker_path()
+        if marker.exists():
+            return
         _ensure_vc_alias_unchecked(voice_copilot_script)
     except Exception as e:
         log.debug("vc alias install skipped: %s", e)
     finally:
         try:
+            marker = marker_path()
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text("", encoding="utf-8")
-        except OSError as e:
+        except Exception as e:
             log.debug("could not write vc alias marker: %s", e)
 
 

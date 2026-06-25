@@ -7,9 +7,7 @@ from voice_copilot.alias_install import ensure_vc_alias, marker_path
 
 @pytest.fixture
 def isolated_config_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "voice_copilot.alias_install.config_path", lambda: tmp_path / "config.yaml"
-    )
+    monkeypatch.setattr("voice_copilot.alias_install.config_path", lambda: tmp_path / "config.yaml")
     return tmp_path
 
 
@@ -81,5 +79,19 @@ def test_never_raises_on_unwritable_directory(isolated_config_dir, tmp_path, mon
         raise OSError("permission denied")
 
     monkeypatch.setattr("voice_copilot.alias_install.Path.write_text", boom)
+
+    ensure_vc_alias(voice_copilot_script=fake_script)  # must not raise
+
+
+def test_never_raises_when_marker_path_raises(isolated_config_dir, tmp_path, monkeypatch) -> None:
+    script_dir = tmp_path / "Scripts"
+    script_dir.mkdir()
+    fake_script = script_dir / ("voice-copilot.exe" if sys.platform == "win32" else "voice-copilot")
+    fake_script.write_text("", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("marker path computation failed")
+
+    monkeypatch.setattr("voice_copilot.alias_install.marker_path", boom)
 
     ensure_vc_alias(voice_copilot_script=fake_script)  # must not raise
