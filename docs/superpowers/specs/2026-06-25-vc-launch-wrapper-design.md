@@ -151,9 +151,18 @@ support for batch use.
    In both modes exactly one instance narrates at a time, preventing
    multiple simultaneously-open `vc` sessions from talking over each other.
 4. **Web panel additions** — per-instance URL (existing), a "Proxy settings"
-   tab for Tier 2, an "Add a CLI" instructions view for Tier 3, and the new
-   narrate-only-when-focused checkbox (reflects/edits the global config
-   value; same value across all instances since it's a shared setting).
+   tab for Tier 2, an "Add a CLI" instructions view for Tier 3, and a
+   **Settings** tab holding the narrate-only-when-focused checkbox
+   (reflects/edits the global config value; same value across all instances
+   since it's a shared setting). Label and helper text for the checkbox:
+
+   > **Narrate only when focused**
+   > When checked, this instance only speaks while its terminal or this
+   > panel is the active window — switching away mutes it instantly, even
+   > if it's the only instance running. When unchecked, narration stays on
+   > the last voice-copilot window you focused until you focus a different
+   > one, so briefly switching to another app (e.g. to take notes) doesn't
+   > cut off the voice.
 
 ## Data flow (Tier 1 example)
 
