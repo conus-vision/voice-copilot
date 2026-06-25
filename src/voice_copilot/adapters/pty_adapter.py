@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 if sys.platform == "win32":
     from winpty import PtyProcess as _PtyProcess
 else:
-    from ptyprocess import PtyProcess as _PtyProcess  # type: ignore[import-untyped]
+    from ptyprocess import PtyProcess as _PtyProcess
 
 
 class PtyAdapter(CLIAdapter):
@@ -164,6 +164,9 @@ class PtyAdapter(CLIAdapter):
                 except Exception:  # child gone
                     return
 
+        # Daemon thread: getwch() can't be interrupted, so after the child
+        # exits this stays blocked until the next keypress (or process exit)
+        # — acceptable because vc tears its whole process down right after.
         feeder = threading.Thread(target=feed_stdin, name="pty.stdin", daemon=True)
         feeder.start()
         while True:
