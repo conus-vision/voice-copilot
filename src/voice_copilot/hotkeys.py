@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -89,9 +90,12 @@ class HotkeyService:
         bus: EventBus,
         loop: asyncio.AbstractEventLoop,
         bindings: list[Binding],
+        *,
+        is_focused: Callable[[], bool] | None = None,
     ) -> None:
         self._bus = bus
         self._loop = loop
+        self._is_focused = is_focused
         self._bindings: list[tuple[Binding, frozenset[str], Any]] = []
         for b in bindings:
             try:
@@ -124,6 +128,12 @@ class HotkeyService:
             if binding.name in self._active:
                 continue
             if not self._satisfied(mods, key):
+                continue
+            if (
+                binding.name == "push_to_talk"
+                and self._is_focused is not None
+                and not self._is_focused()
+            ):
                 continue
             self._active.add(binding.name)
             if binding.press_kind is not None:
