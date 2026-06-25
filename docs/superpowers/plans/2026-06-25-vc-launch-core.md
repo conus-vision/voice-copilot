@@ -307,7 +307,28 @@ git commit -m "feat: resolve a typed CLI name to its proxy profile, reusing the 
 
 ---
 
-### Task 3: `PtyAdapter` — live terminal via pexpect/wexpect
+### Task 3: `PtyAdapter` — live terminal via pywinpty / ptyprocess
+
+**Library note (why not pexpect/wexpect):** `wexpect` (the only Windows
+pexpect-alike with a built-in `.interact()`) ships a single stable release,
+`4.0.0`, that crashes on import (`import pkg_resources` without declaring a
+`setuptools` dependency). Rather than depend on a broken, barely-maintained
+package, this task uses the maintained ConPTY binding `pywinpty`
+(`winpty.PtyProcess`) on Windows and `ptyprocess.PtyProcess` on POSIX. Both
+expose the same `spawn / read / write / isalive / terminate / wait /
+setwinsize / fileno` surface (winpty deliberately mirrors ptyprocess's API),
+so one adapter drives either. Neither has `.interact()`, so this task writes
+the bidirectional terminal pump itself — the one piece `.interact()` used to
+provide.
+
+**Testability boundary (read before implementing):** the pump does raw
+console/termios I/O against the real terminal. No automated test — and no
+non-interactive shell — can exercise that; it is verified by a human at a
+real terminal in Task 5. Therefore the unit tests here cover only the
+*mockable surface* (spawn arguments, SESSION_STARTED, stdin injection,
+terminate, exit-task completion) by monkeypatching the `_PtyProcess` class.
+The pump method must be written so that when stdin is **not** a TTY (as under
+pytest), it skips raw-mode setup and the real I/O loop — see `_pump` below.
 
 **Files:**
 - Modify: `pyproject.toml` (add PTY dependencies)
@@ -316,8 +337,8 @@ git commit -m "feat: resolve a typed CLI name to its proxy profile, reusing the 
 - Test: `tests/unit/test_pty_adapter.py`
 
 **Interfaces:**
-- Consumes: `CLIAdapter` (`adapters/base.py`) — `start()`, `send_user_message()`, `stop()`, inherited `pause()`/`resume()`/`is_paused` (overridden here since the base implementation suspends `self._proc.pid`, an `asyncio.subprocess.Process`, and this adapter has no such object — it has a pexpect/wexpect child instead); `EventBus.publish()`; `Event`, `EventKind.SESSION_STARTED`, `EventKind.SESSION_ENDED` (`core/events.py`).
-- Produces: `PtyAdapter(bus, argv, *, env=None, cwd=None)` with `name = "pty"`, `quick_aside = QuickAsideCapability.QUEUE`, and `exit_task() -> asyncio.Task[None] | None` — the task that completes once the wrapped process exits (i.e. once `.interact()` returns). Task 4 awaits this to shut the whole `vc` process down when the wrapped CLI exits, not just on Ctrl+C.
+- Consumes: `CLIAdapter` (`adapters/base.py`) — `start()`, `send_user_message()`, `stop()`, inherited `pause()`/`resume()`/`is_paused` (overridden here since the base implementation suspends `self._proc.pid`, an `asyncio.subprocess.Process`, and this adapter has no such object — it has a `PtyProcess` child instead); `EventBus.publish()`; `Event`, `EventKind.SESSION_STARTED`, `EventKind.SESSION_ENDED` (`core/events.py`).
+- Produces: `PtyAdapter(bus, argv, *, env=None, cwd=None)` with `name = "pty"`, `quick_aside = QuickAsideCapability.QUEUE`, and `exit_task() -> asyncio.Task[None] | None` — the task that completes once the wrapped process exits (i.e. once the pump loop returns because the child is no longer alive). Task 4 awaits this to shut the whole `vc` process down when the wrapped CLI exits, not just on Ctrl+C.
 
 - [ ] **Step 1: Add PTY dependencies**
 
@@ -325,13 +346,13 @@ Edit `pyproject.toml`'s `dependencies` list (the one already containing
 `"psutil>=5.9",`) to add, right after that line:
 
 ```toml
-    "pexpect>=4.9 ; sys_platform != 'win32'",
-    "wexpect>=4.0 ; sys_platform == 'win32'",
+    "ptyprocess>=0.7 ; sys_platform != 'win32'",
+    "pywinpty>=2.0 ; sys_platform == 'win32'",
 ```
 
-Run: `uv sync`
-Expected: resolves and installs `wexpect` (this machine is `win32`) without
-installing `pexpect`.
+Run: `uv sync --extra dev`
+Expected: resolves and installs `pywinpty` (this machine is `win32`) without
+installing `ptyprocess`. Confirm it imports: `uv run python -c "from winpty import PtyProcess; print('ok')"`.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -347,20 +368,26 @@ from voice_copilot.core.events import EventKind
 
 
 class _FakeChild:
+    """Stands in for winpty/ptyprocess PtyProcess. `read` raises EOFError
+    immediately so the pump loop exits at once without touching the real
+    terminal (and `isalive()` stays True so send/stop still have a live
+    child to act on, matching how a real child behaves mid-session)."""
+
     def __init__(self) -> None:
         self.pid = 4242
-        self.sent: list[str] = []
+        self.written: list[str] = []
         self.terminated = False
         self._alive = True
 
-    def interact(self) -> None:
-        self._alive = False
+    def read(self, size: int = 1024) -> str:
+        raise EOFError
 
     def isalive(self) -> bool:
         return self._alive
 
-    def sendline(self, text: str) -> None:
-        self.sent.append(text)
+    def write(self, data: str) -> int:
+        self.written.append(data)
+        return len(data)
 
     def terminate(self, force: bool = False) -> None:
         self.terminated = True
@@ -368,21 +395,23 @@ class _FakeChild:
 
 
 @pytest.fixture
-def fake_expect(monkeypatch):
+def fake_pty(monkeypatch):
     child = _FakeChild()
     spawn_calls: list[dict[str, object]] = []
 
-    def fake_spawn(command, args=None, env=None, cwd=None):
-        spawn_calls.append({"command": command, "args": args, "env": env, "cwd": cwd})
-        return child
+    class _FakePtyProcess:
+        @staticmethod
+        def spawn(argv, cwd=None, env=None, dimensions=(24, 80)):
+            spawn_calls.append({"argv": argv, "cwd": cwd, "env": env})
+            return child
 
-    monkeypatch.setattr("voice_copilot.adapters.pty_adapter._expect.spawn", fake_spawn)
+    monkeypatch.setattr("voice_copilot.adapters.pty_adapter._PtyProcess", _FakePtyProcess)
     return child, spawn_calls
 
 
 @pytest.mark.asyncio
-async def test_start_spawns_child_and_publishes_session_started(fake_expect) -> None:
-    child, spawn_calls = fake_expect
+async def test_start_spawns_child_and_publishes_session_started(fake_pty) -> None:
+    child, spawn_calls = fake_pty
     bus = EventBus()
     adapter = PtyAdapter(bus, ["claude", "--flag"], env={"ANTHROPIC_BASE_URL": "http://x"})
 
@@ -392,30 +421,25 @@ async def test_start_spawns_child_and_publishes_session_started(fake_expect) -> 
 
     assert event.kind == EventKind.SESSION_STARTED
     assert spawn_calls == [
-        {
-            "command": "claude",
-            "args": ["--flag"],
-            "env": {"ANTHROPIC_BASE_URL": "http://x"},
-            "cwd": None,
-        }
+        {"argv": ["claude", "--flag"], "cwd": None, "env": {"ANTHROPIC_BASE_URL": "http://x"}}
     ]
     await adapter.stop()
 
 
 @pytest.mark.asyncio
-async def test_send_user_message_writes_to_child(fake_expect) -> None:
-    child, _ = fake_expect
+async def test_send_user_message_writes_line_to_child(fake_pty) -> None:
+    child, _ = fake_pty
     bus = EventBus()
     adapter = PtyAdapter(bus, ["claude"])
     await adapter.start()
     await adapter.send_user_message("hello")
-    assert child.sent == ["hello"]
+    assert child.written == ["hello\r"]
     await adapter.stop()
 
 
 @pytest.mark.asyncio
-async def test_stop_terminates_child(fake_expect) -> None:
-    child, _ = fake_expect
+async def test_stop_terminates_child(fake_pty) -> None:
+    child, _ = fake_pty
     bus = EventBus()
     adapter = PtyAdapter(bus, ["claude"])
     await adapter.start()
@@ -424,7 +448,7 @@ async def test_stop_terminates_child(fake_expect) -> None:
 
 
 @pytest.mark.asyncio
-async def test_exit_task_completes_once_child_exits(fake_expect) -> None:
+async def test_exit_task_completes_once_child_exits(fake_pty) -> None:
     bus = EventBus()
     adapter = PtyAdapter(bus, ["claude"])
     await adapter.start()
@@ -445,11 +469,17 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'voice_copilot.adapter
 # src/voice_copilot/adapters/pty_adapter.py
 """Live-terminal adapter for `vc <name>`.
 
-Hands the real terminal to the child process via pexpect/wexpect's
-`interact()`, so the wrapped CLI's TUI renders exactly as if it had been
-run directly. Narration comes entirely from the proxy (see
-`proxy/cli_shims.py`'s `resolve_cli_for_vc`) — this adapter does not parse
-the child's own rendered output.
+Spawns the child in a PTY and bridges it to the user's real terminal so the
+wrapped CLI's TUI renders exactly as if run directly, while still letting us
+inject push-to-talk text into its stdin. Narration comes entirely from the
+proxy (see `proxy/cli_shims.py`'s `resolve_cli_for_vc`) — this adapter never
+parses the child's rendered output.
+
+Windows uses pywinpty's ConPTY-backed `PtyProcess`; POSIX uses
+`ptyprocess.PtyProcess`. Both expose the same spawn/read/write/isalive/
+terminate surface, so a single bidirectional pump drives either. We write
+that pump ourselves because the maintained ConPTY binding has no
+`.interact()`.
 """
 
 from __future__ import annotations
@@ -466,9 +496,9 @@ from voice_copilot.core.events import Event, EventKind
 log = logging.getLogger(__name__)
 
 if sys.platform == "win32":
-    import wexpect as _expect
+    from winpty import PtyProcess as _PtyProcess  # type: ignore[import-untyped]
 else:
-    import pexpect as _expect
+    from ptyprocess import PtyProcess as _PtyProcess  # type: ignore[import-untyped]
 
 
 class PtyAdapter(CLIAdapter):
@@ -488,29 +518,31 @@ class PtyAdapter(CLIAdapter):
         self._env = env
         self._cwd = cwd
         self._child: Any = None
-        self._interact_task: asyncio.Task[None] | None = None
+        self._pump_task: asyncio.Task[None] | None = None
         self._paused = False
 
     async def start(self, initial_prompt: str | None = None) -> None:
-        command, *args = self._argv
-        self._child = _expect.spawn(command, args=args, env=self._env, cwd=self._cwd)
+        self._child = _PtyProcess.spawn(self._argv, cwd=self._cwd, env=self._env)
         await self._bus.publish(
             Event(kind=EventKind.SESSION_STARTED, source="pty", payload={"argv": self._argv})
         )
-        self._interact_task = asyncio.create_task(
-            asyncio.to_thread(self._child.interact), name="pty.interact"
-        )
+        self._pump_task = asyncio.create_task(asyncio.to_thread(self._pump), name="pty.pump")
 
     async def send_user_message(self, text: str, *, urgent: bool = False) -> None:
         if self._child is None or not self._child.isalive():
             return
-        await asyncio.to_thread(self._child.sendline, text)
+        # PtyProcess writes a single string; a trailing CR submits the line
+        # to the child just like an Enter keypress in the terminal would.
+        await asyncio.to_thread(self._write, text + "\r")
 
     async def stop(self) -> None:
         if self._child is not None and self._child.isalive():
-            self._child.terminate(force=True)
-        if self._interact_task is not None:
-            self._interact_task.cancel()
+            try:
+                self._child.terminate(force=True)
+            except Exception as e:  # noqa: BLE001 - terminate is best-effort on shutdown
+                log.warning("pty terminate failed: %s", e)
+        if self._pump_task is not None:
+            self._pump_task.cancel()
         await self._bus.publish(Event(kind=EventKind.SESSION_ENDED, source="pty"))
 
     async def pause(self) -> bool:
@@ -540,7 +572,104 @@ class PtyAdapter(CLIAdapter):
         return True
 
     def exit_task(self) -> asyncio.Task[None] | None:
-        return self._interact_task
+        return self._pump_task
+
+    def _write(self, data: str) -> None:
+        child = self._child
+        if child is None:
+            return
+        # ptyprocess.write expects bytes; winpty.PtyProcess.write expects str.
+        if sys.platform == "win32":
+            child.write(data)
+        else:
+            child.write(data.encode())
+
+    def _pump(self) -> None:
+        """Bridge the child PTY to the real terminal until the child exits.
+
+        Runs in a worker thread. When stdin is not a TTY (under pytest, or
+        when output is piped) there is no terminal to bridge: we skip
+        raw-mode setup and the interactive loop and just wait for the child
+        to finish, so the adapter stays importable and unit-testable without
+        touching real console state.
+        """
+        child = self._child
+        if child is None:
+            return
+
+        if not sys.stdin.isatty():
+            self._drain_until_exit(child)
+            return
+
+        if sys.platform == "win32":
+            self._pump_windows(child)
+        else:
+            self._pump_posix(child)
+
+    def _drain_until_exit(self, child: Any) -> None:
+        while True:
+            try:
+                child.read(1024)
+            except EOFError:
+                return
+            except Exception:  # noqa: BLE001 - any read failure means the child is gone
+                return
+            if not child.isalive():
+                return
+
+    def _pump_windows(self, child: Any) -> None:
+        import msvcrt
+        import threading
+
+        def feed_stdin() -> None:
+            while child.isalive():
+                ch = msvcrt.getwch()
+                try:
+                    child.write(ch)
+                except Exception:  # noqa: BLE001 - child gone
+                    return
+
+        feeder = threading.Thread(target=feed_stdin, name="pty.stdin", daemon=True)
+        feeder.start()
+        while True:
+            try:
+                data = child.read(1024)
+            except EOFError:
+                return
+            except Exception:  # noqa: BLE001 - child gone
+                return
+            if data:
+                sys.stdout.write(data)
+                sys.stdout.flush()
+            if not child.isalive():
+                return
+
+    def _pump_posix(self, child: Any) -> None:
+        import os
+        import select
+        import termios
+        import tty
+
+        stdin_fd = sys.stdin.fileno()
+        old = termios.tcgetattr(stdin_fd)
+        try:
+            tty.setraw(stdin_fd)
+            child_fd = child.fileno()
+            while child.isalive():
+                rlist, _, _ = select.select([child_fd, stdin_fd], [], [], 0.05)
+                if child_fd in rlist:
+                    try:
+                        data = child.read(1024)
+                    except EOFError:
+                        break
+                    if data:
+                        os.write(sys.stdout.fileno(), data)
+                if stdin_fd in rlist:
+                    user = os.read(stdin_fd, 1024)
+                    if user:
+                        child.write(user)
+        finally:
+            termios.tcsetattr(stdin_fd, termios.TCSAFLUSH, old)
 ```
 
 Add to `src/voice_copilot/adapters/__init__.py`:
@@ -555,20 +684,28 @@ and add `"PtyAdapter"` to its `__all__` list (alphabetically, after
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_pty_adapter.py -v`
-Expected: PASS (4 tests)
+Expected: PASS (4 tests). They pass because the monkeypatched `_PtyProcess`
+returns a `_FakeChild`, and under pytest `sys.stdin.isatty()` is False, so
+`_pump` takes the `_drain_until_exit` path — whose first `child.read()`
+raises `EOFError` and returns immediately, completing the pump task.
 
 - [ ] **Step 6: Run the full test suite, lint, and type-check**
 
 Run: `uv run pytest tests/ -v && uv run ruff check src/voice_copilot/adapters/pty_adapter.py && uv run ruff format --check src/voice_copilot/adapters/pty_adapter.py && uv run mypy src/voice_copilot/adapters/pty_adapter.py`
-Expected: all PASS. `mypy` may need `# type: ignore[import-untyped]` on the
-`import wexpect as _expect` / `import pexpect as _expect` lines if neither
-package ships type stubs — add it only if `mypy` actually reports it.
+Expected: all PASS. The `from winpty import PtyProcess` / `from ptyprocess
+import PtyProcess` lines carry `# type: ignore[import-untyped]` already;
+keep them only if `mypy` reports the import as untyped, otherwise remove.
+The platform-specific `_pump_windows`/`_pump_posix` import stdlib modules
+(`msvcrt` is Windows-only, `termios`/`tty` are POSIX-only) inside the
+method bodies so the module imports cleanly on both platforms; `mypy` on
+win32 may flag the POSIX-only modules as unreachable/missing — if so, add a
+targeted `# type: ignore` on those specific import lines, not module-wide.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add pyproject.toml src/voice_copilot/adapters/pty_adapter.py src/voice_copilot/adapters/__init__.py tests/unit/test_pty_adapter.py
-git commit -m "feat: add PtyAdapter wrapping pexpect/wexpect for live-terminal CLI wrapping"
+git add pyproject.toml uv.lock src/voice_copilot/adapters/pty_adapter.py src/voice_copilot/adapters/__init__.py tests/unit/test_pty_adapter.py
+git commit -m "feat: add PtyAdapter over pywinpty/ptyprocess with a hand-written terminal pump"
 ```
 
 ---
