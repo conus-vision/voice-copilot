@@ -119,16 +119,37 @@ support for batch use.
    instead of globally via `serve`.
 3. **Focus router** — OS-level foreground-window detection, matching the
    foreground window to either the spawned CLI's terminal or its browser
-   panel. Drives two independent behaviors (each may be toggled separately):
-   - **Hotkey routing**: push-to-talk audio is delivered to whichever
-     instance currently owns focus (terminal or its panel).
-   - **Narrate-only-when-focused** (new global setting in
-     `~/.voice-copilot/config.yaml`, default **on**): when an instance loses
-     focus, its commentator stops invoking TTS for new events — the text
-     event log keeps updating in the panel, only the voice stops. No
-     backlog catch-up on refocus; narration simply resumes from whatever is
-     current when focus returns. This prevents multiple simultaneously-open
-     `vc` sessions from talking over each other.
+   panel. Tracks two pieces of state:
+   - `current_focus`: the instance whose terminal or panel is the live
+     foreground window right now, or `None` if the foreground window belongs
+     to neither.
+   - `last_vc_focus`: the instance whose terminal or panel was most recently
+     the foreground window — updated only when focus *enters* a
+     voice-copilot-related window (terminal or panel), and left unchanged
+     while focus is on unrelated windows. Never `None` once any
+     voice-copilot window has been focused at least once.
+
+   Drives two independent behaviors (each may be toggled separately):
+   - **Hotkey routing**: push-to-talk audio is always delivered to
+     `current_focus` (if `None`, the hotkey has no target).
+   - **Narrate-only-when-focused** (new global checkbox in
+     `~/.voice-copilot/config.yaml`): selects which pointer gates TTS.
+     - **Checked**: the narrating instance is `current_focus`. The moment
+       focus leaves to *any* other window — including a single running
+       instance losing focus to an unrelated app — that instance's
+       commentator stops invoking TTS for new events; narration resumes the
+       instant it regains real foreground focus. The text event log keeps
+       updating in the panel regardless; only the voice stops.
+     - **Unchecked**: the narrating instance is `last_vc_focus` — sticky.
+       Narration keeps going for whichever instance you last looked at, even
+       while you've switched away to an unrelated window (e.g. a text
+       editor), and only changes when you focus a *different*
+       voice-copilot-related window (another instance's terminal or panel).
+       With a single running instance this is equivalent to "always
+       narrate" once that instance has been focused once.
+
+   In both modes exactly one instance narrates at a time, preventing
+   multiple simultaneously-open `vc` sessions from talking over each other.
 4. **Web panel additions** — per-instance URL (existing), a "Proxy settings"
    tab for Tier 2, an "Add a CLI" instructions view for Tier 3, and the new
    narrate-only-when-focused checkbox (reflects/edits the global config
