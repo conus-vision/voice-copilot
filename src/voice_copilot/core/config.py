@@ -79,6 +79,10 @@ class DialogConfig(BaseModel):
     """
 
 
+class FocusConfig(BaseModel):
+    narrate_only_when_focused: bool = True
+
+
 class CommentatorConfig(BaseModel):
     provider: ProviderConfig = ProviderConfig(
         name="anthropic", options={"model": "claude-haiku-4-5-20251001"}
@@ -99,6 +103,7 @@ class Config(BaseModel):
     stt: ProviderConfig = ProviderConfig(name="openai-whisper-api")
     commentator: CommentatorConfig = CommentatorConfig()
     dialog: DialogConfig = DialogConfig()
+    focus: FocusConfig = FocusConfig()
     proxy_cli: ProxyCliConfig = ProxyCliConfig()
 
 

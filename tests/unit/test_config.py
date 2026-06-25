@@ -54,3 +54,17 @@ def test_embedded_proxy_config_is_used_when_sidecar_is_missing(tmp_path: Path) -
 
     assert cfg.proxy_cli.working_directory == "/tmp/example"
     assert cfg.proxy_cli.profiles["claude"].base_url_env == "ANTHROPIC_BASE_URL"
+
+
+def test_default_config_has_narrate_only_when_focused_enabled(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path / "missing.yaml")
+    assert cfg.focus.narrate_only_when_focused is True
+
+
+def test_narrate_only_when_focused_round_trips_through_save_and_load(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    cfg = load_config(config_file)
+    cfg.focus.narrate_only_when_focused = False
+    save_config(cfg, config_file)
+    reloaded = load_config(config_file)
+    assert reloaded.focus.narrate_only_when_focused is False
