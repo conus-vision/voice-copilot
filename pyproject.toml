@@ -78,7 +78,7 @@ dev = [
 ]
 
 [project.scripts]
-voice-copilot = "voice_copilot.cli:app"
+voice-copilot = "voice_copilot.cli:main"
 
 [project.urls]
 Homepage = "https://conus.vision"
