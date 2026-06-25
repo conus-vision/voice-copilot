@@ -30,3 +30,16 @@ def test_extra_args_after_name_are_preserved() -> None:
         "-p",
         "hi",
     ]
+
+
+def test_main_calls_ensure_vc_alias(monkeypatch) -> None:
+    import voice_copilot.cli as cli_module
+
+    calls = []
+    monkeypatch.setattr(cli_module, "ensure_vc_alias", lambda: calls.append(True))
+    monkeypatch.setattr(cli_module, "app", lambda: None)
+    monkeypatch.setattr("sys.argv", ["voice-copilot", "version"])
+
+    cli_module.main()
+
+    assert calls == [True]

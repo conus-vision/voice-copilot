@@ -20,6 +20,7 @@ from rich.console import Console
 from voice_copilot import __version__
 from voice_copilot.adapters import ClaudeCodeAdapter, CodexAdapter, PtyAdapter
 from voice_copilot.adapters.base import CLIAdapter
+from voice_copilot.alias_install import ensure_vc_alias
 from voice_copilot.audio import AudioHub, TTSDriver
 from voice_copilot.commentator import Commentator
 from voice_copilot.core.bus import EventBus
@@ -72,6 +73,7 @@ def _normalize_argv(argv: list[str]) -> list[str]:
 
 
 def main() -> None:
+    ensure_vc_alias()
     sys.argv[:] = _normalize_argv(sys.argv)
     app()
 
