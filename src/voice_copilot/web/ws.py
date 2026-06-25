@@ -14,6 +14,7 @@ Protocol:
       { "type":"cmd", "cmd":"speak_start"|"speak_end" }
       { "type":"cmd", "cmd":"mic_start", "codec":"webm"|"ogg"|"wav" }
       { "type":"cmd", "cmd":"mic_end" }
+      { "type":"cmd", "cmd":"panel_focus", "focused":true|false }
             { "type":"cmd", "cmd":"playback_rate", "playback_rate":1.2, "session_id"?:... }
             { "type":"cmd", "cmd":"playback_ready", "reason":"eighty_percent"|"skipped", "playback_rate"?:1.2, "session_id"?:..., "utterance_id"?:... }
       { "type":"ping" }
@@ -37,6 +38,7 @@ from voice_copilot.audio.hub import AudioHub
 from voice_copilot.audio.mic import MicSession, transcribe_and_publish
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.events import Event, EventKind
+from voice_copilot.focus import FocusRouter
 from voice_copilot.providers.stt.base import STTProvider
 
 log = logging.getLogger(__name__)
@@ -74,6 +76,7 @@ async def _handle_cmd(
     data: dict[str, Any],
     stt: STTProvider | None,
     language: str | None,
+    focus_router: FocusRouter | None = None,
 ) -> None:
     cmd = data.get("cmd")
     if cmd == "playback_rate":
@@ -152,6 +155,11 @@ async def _handle_cmd(
             )
         )
         return
+    if cmd == "panel_focus":
+        focused = data.get("focused")
+        if isinstance(focused, bool) and focus_router is not None:
+            focus_router.set_panel_focus(focused)
+        return
 
 
 def register_ws(app: FastAPI) -> None:
@@ -161,6 +169,7 @@ def register_ws(app: FastAPI) -> None:
         hub: AudioHub = ws.app.state.audio_hub
         stt: STTProvider | None = getattr(ws.app.state, "stt_provider", None)
         language: str | None = getattr(ws.app.state, "human_language", None)
+        focus_router: FocusRouter | None = getattr(ws.app.state, "focus_router", None)
         await ws.accept()
         await hub.register(ws)
 
@@ -177,7 +186,7 @@ def register_ws(app: FastAPI) -> None:
                         continue
                     mtype = data.get("type")
                     if mtype == "cmd":
-                        await _handle_cmd(bus, mic, data, stt, language)
+                        await _handle_cmd(bus, mic, data, stt, language, focus_router)
                     elif mtype == "ping":
                         await ws.send_text(json.dumps({"type": "pong"}))
                 elif "bytes" in msg and msg["bytes"] is not None:
