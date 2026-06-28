@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, cast
 
 import typer
@@ -355,6 +356,7 @@ async def _boot(
     sessions: SessionRegistry | None = None,
     proxy_port: int | None = None,
     is_focused: Callable[[], bool] | None = None,
+    quiet_logging: bool = False,
 ) -> tuple[uvicorn.Server, HotkeyService | None, TrayService | None, Config, AudioHub]:
     cfg = load_config()
 
@@ -373,7 +375,18 @@ async def _boot(
         sessions=sessions,
         proxy_port=proxy_port,
     )
-    uv_config = uvicorn.Config(fast_app, host=host, port=port, log_level="info", access_log=False)
+    # quiet_logging (used by `vc`): pass log_config=None so uvicorn does NOT
+    # install its own stderr handlers — its loggers then propagate to the root
+    # logger, which `_run_vc` has redirected to a file. Otherwise uvicorn would
+    # keep printing to the console the child terminal now owns.
+    if quiet_logging:
+        uv_config = uvicorn.Config(
+            fast_app, host=host, port=port, log_config=None, access_log=False
+        )
+    else:
+        uv_config = uvicorn.Config(
+            fast_app, host=host, port=port, log_level="info", access_log=False
+        )
     server = ManagedServer(uv_config)
 
     loop = asyncio.get_running_loop()
@@ -543,6 +556,26 @@ async def _run_with_adapter(
     )
 
 
+def _route_logging_to_file() -> Path:
+    """Send voice-copilot's own logging to a file instead of the console.
+
+    `vc` hands the terminal to the child CLI, so the parent process must not
+    write to that console — interleaved log lines corrupt the child's display
+    (scrolling, misplaced cursor). Returns the log path.
+    """
+    from voice_copilot.core.config import config_path
+
+    log_path = config_path().parent / "vc-session.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    for existing in list(root.handlers):
+        root.removeHandler(existing)
+    root.addHandler(handler)
+    return log_path
+
+
 async def _run_vc(
     name: str,
     cli_args: list[str],
@@ -553,6 +586,7 @@ async def _run_vc(
     enable_hotkeys: bool,
     enable_tray: bool,
 ) -> None:
+    _route_logging_to_file()
     bus = EventBus()
     cfg_for_resolve = load_config()
     focus_router = FocusRouter(
@@ -579,6 +613,7 @@ async def _run_vc(
         sessions=sessions,
         proxy_port=actual_proxy_port if enable_proxy else None,
         is_focused=lambda: focus_router.current_focus,
+        quiet_logging=True,
     )
 
     commentator = Commentator(bus, cfg.commentator, cfg.commentator_language, sessions=sessions)
@@ -587,7 +622,9 @@ async def _run_vc(
     servers: list[uvicorn.Server] = [server]
     if enable_proxy:
         servers.append(
-            build_proxy_server(bus, host=host, port=actual_proxy_port, registry=sessions)
+            build_proxy_server(
+                bus, host=host, port=actual_proxy_port, registry=sessions, quiet=True
+            )
         )
     server_tasks = _start_servers(servers)
     extra: list[asyncio.Task[Any]] = [asyncio.create_task(commentator.run(), name="commentator")]
@@ -599,19 +636,22 @@ async def _run_vc(
 
     focus_router.start()
 
+    # Status goes to the browser panel (via /api/info), not the console — the
+    # child CLI owns the terminal, so anything we print there is wiped when the
+    # PTY clears the screen on handover.
     if resolved is not None:
         binary = resolved.resolved_binary
         full_env = {**os.environ, **resolved.env_overrides}
         cwd = str(resolved.working_directory) if resolved.working_directory else None
-        console.print(f"[green]{resolved.label}: narrating via {resolved.env_overrides}[/green]")
+        _server_app_state(server).launch_notice = f"Narrating {resolved.label} via the local proxy."
         await asyncio.sleep(0.3)
     else:
         binary = name
         full_env = dict(os.environ)
         cwd = None
-        console.print(
-            f"[yellow]`{name}` isn't a recognized CLI — launching without narration. "
-            f"Add a `proxy_cli.profiles.{name}` entry to your config to enable it.[/yellow]"
+        _server_app_state(server).launch_notice = (
+            f"'{name}' isn't a recognized CLI — launching without narration. "
+            f"Add a proxy_cli.profiles.{name} entry to your config to enable it."
         )
 
     adapter = PtyAdapter(bus, [binary, *cli_args], env=full_env, cwd=cwd)

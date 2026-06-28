@@ -48,9 +48,14 @@
 
   // ------------------------------------------------------------------ proxy port in Instructions tab
 
-  fetch("/api/info").then(r => r.json()).then(({ proxy_port }) => {
-    if (!proxy_port) return;
-    document.querySelectorAll(".pport").forEach(el => { el.textContent = proxy_port; });
+  fetch("/api/info").then(r => r.json()).then(({ proxy_port, launch_notice }) => {
+    if (proxy_port) {
+      document.querySelectorAll(".pport").forEach(el => { el.textContent = proxy_port; });
+    }
+    if (launch_notice) {
+      const banner = qs("#launch-notice");
+      if (banner) { banner.textContent = launch_notice; banner.hidden = false; }
+    }
   }).catch(() => {});
 
   // ------------------------------------------------------------------ tabs

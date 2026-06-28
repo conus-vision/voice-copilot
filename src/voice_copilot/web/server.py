@@ -102,6 +102,7 @@ def create_app(
     app.state.sessions = sessions
     app.state.proxy_port = proxy_port
     app.state.commentator = None  # set by cli.py after Commentator is created
+    app.state.launch_notice = None  # set by `vc` to surface launch status in the panel
 
     def _proxy_port_or_none() -> int | None:
         return cast(int | None, app.state.proxy_port)
@@ -122,6 +123,7 @@ def create_app(
         return {
             "proxy_port": app.state.proxy_port,
             "proxy_host": "127.0.0.1",
+            "launch_notice": getattr(app.state, "launch_notice", None),
         }
 
     @app.get("/api/config")

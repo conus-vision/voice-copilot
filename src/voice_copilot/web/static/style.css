@@ -823,3 +823,13 @@ body.mini .app-footer { display: none; }
     width: 34px;
   }
 }
+
+.launch-notice {
+  margin: 8px 12px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius);
+  background: var(--panel-hi);
+  color: var(--text);
+  font-size: 13px;
+}
