@@ -201,7 +201,13 @@ async def _forward(
 
     async def iter_chunks() -> AsyncIterator[bytes]:
         try:
-            async for chunk in upstream_resp.aiter_raw():
+            # aiter_bytes() yields httpx-decoded (decompressed) bytes, so the
+            # parser sees plaintext SSE even when the upstream gzips the
+            # response. We forward those same decoded bytes to the client and
+            # drop content-encoding/length below, so the client reads plaintext
+            # too. (aiter_raw would hand the parser compressed bytes it can't
+            # parse — which silently produced no narration events.)
+            async for chunk in upstream_resp.aiter_bytes():
                 if parser is not None:
                     await parser.feed(chunk)
                 yield chunk
@@ -211,7 +217,10 @@ async def _forward(
             await upstream_resp.aclose()
             await client.aclose()
 
-    resp_headers = {k: v for k, v in upstream_resp.headers.items() if k.lower() not in _HOP_BY_HOP}
+    # Body is now decoded, so the upstream's content-encoding/length no longer
+    # describe it — dropping them lets the client read the plaintext stream.
+    _resp_drop = _HOP_BY_HOP | {"content-encoding", "content-length"}
+    resp_headers = {k: v for k, v in upstream_resp.headers.items() if k.lower() not in _resp_drop}
     return StreamingResponse(
         iter_chunks(),
         status_code=upstream_resp.status_code,
@@ -226,17 +235,26 @@ def build_proxy_server(
     host: str,
     port: int,
     registry: SessionRegistry | None = None,
+    quiet: bool = False,
 ) -> uvicorn.Server:
     """Build (but don't start) the proxy's uvicorn server.
 
     Returned as a :class:`ManagedServer` so the caller can run it as one of
     several tasks under a single ``asyncio.run()`` and drive a clean shutdown
     via ``should_exit`` on Ctrl+C.
+
+    ``quiet`` (used by ``vc``) passes ``log_config=None`` so uvicorn does not
+    install its own stderr handlers; its loggers then propagate to the root
+    logger, which the caller has redirected to a file, keeping the child
+    terminal's console clean.
     """
     from voice_copilot.web.server import ManagedServer
 
     app = create_proxy_app(bus, registry=registry)
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False)
+    if quiet:
+        config = uvicorn.Config(app, host=host, port=port, log_config=None, access_log=False)
+    else:
+        config = uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False)
     return ManagedServer(config)
 
 
