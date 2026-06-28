@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import sys
 import threading
+import time
 from typing import Any
 
 from voice_copilot.adapters.base import CLIAdapter, QuickAsideCapability
@@ -31,6 +33,20 @@ if sys.platform == "win32":
     from winpty import PtyProcess as _PtyProcess
 else:
     from ptyprocess import PtyProcess as _PtyProcess
+
+
+def _terminal_size() -> tuple[int, int]:
+    """Return the real terminal's (rows, cols), the order PtyProcess expects.
+
+    Falls back to a sane default when there is no real terminal (e.g. output
+    piped, or under pytest), so the child PTY matches the visible window
+    instead of the library default 24x80 — which otherwise makes the child
+    scroll/wrap at the wrong row and column.
+    """
+    size = shutil.get_terminal_size(fallback=(80, 24))
+    cols = size.columns if size.columns > 0 else 80
+    rows = size.lines if size.lines > 0 else 24
+    return rows, cols
 
 
 class PtyAdapter(CLIAdapter):
@@ -55,7 +71,10 @@ class PtyAdapter(CLIAdapter):
         self._write_lock = threading.Lock()
 
     async def start(self, initial_prompt: str | None = None) -> None:
-        self._child = _PtyProcess.spawn(self._argv, cwd=self._cwd, env=self._env)
+        rows, cols = _terminal_size()
+        self._child = _PtyProcess.spawn(
+            self._argv, cwd=self._cwd, env=self._env, dimensions=(rows, cols)
+        )
         await self._bus.publish(
             Event(kind=EventKind.SESSION_STARTED, source="pty", payload={"argv": self._argv})
         )
@@ -157,36 +176,106 @@ class PtyAdapter(CLIAdapter):
     def _pump_windows(self, child: Any) -> None:
         if (
             sys.platform != "win32"
-        ):  # pragma: no cover - narrows msvcrt to win32 for the type checker
+        ):  # pragma: no cover - win32 console APIs; narrows ctypes.windll for mypy
             return
-        import msvcrt
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetStdHandle.restype = wintypes.HANDLE
+        kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.ReadConsoleW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+
+        std_input_handle = -10
+        std_output_handle = -11
+        enable_processed_output = 0x0001
+        enable_virtual_terminal_processing = 0x0004
+        enable_virtual_terminal_input = 0x0200
+
+        hin = kernel32.GetStdHandle(std_input_handle)
+        hout = kernel32.GetStdHandle(std_output_handle)
+        old_in = wintypes.DWORD()
+        old_out = wintypes.DWORD()
+        kernel32.GetConsoleMode(hin, ctypes.byref(old_in))
+        kernel32.GetConsoleMode(hout, ctypes.byref(old_out))
+
+        # Output: render the child's VT escape sequences natively instead of
+        # printing them as literal text.
+        kernel32.SetConsoleMode(
+            hout, old_out.value | enable_processed_output | enable_virtual_terminal_processing
+        )
+        # Input: raw + VT, so arrow/function keys reach the child as the VT
+        # sequences it expects. (msvcrt.getwch returns Windows scan codes, not
+        # VT, which is why special keys printed garbage.) Clearing line/echo/
+        # processed-input bits (mode = only VT-input) gives us raw keystrokes.
+        kernel32.SetConsoleMode(hin, enable_virtual_terminal_input)
+
+        # ConPTY paints from the top-left of the viewport, so hand it a clean
+        # screen — otherwise its cursor lands on our prior console content.
+        # (voice-copilot's own status goes to the browser panel, not here.)
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
 
         def feed_stdin() -> None:
+            buf = ctypes.create_unicode_buffer(128)
+            nread = wintypes.DWORD()
             while child.isalive():
-                ch = msvcrt.getwch()
+                ok = kernel32.ReadConsoleW(hin, buf, 128, ctypes.byref(nread), None)
+                if not ok or nread.value == 0:
+                    continue
+                text = buf[: nread.value]
                 try:
                     with self._write_lock:
-                        child.write(ch)
+                        child.write(text)
                 except Exception:  # child gone
                     return
 
-        # Daemon thread: getwch() can't be interrupted, so after the child
+        def watch_resize() -> None:
+            # Windows has no SIGWINCH; poll the console size and tell the child
+            # when it changes so its TUI reflows to the real window.
+            last = _terminal_size()
+            while child.isalive():
+                time.sleep(0.2)
+                current = _terminal_size()
+                if current != last:
+                    last = current
+                    try:
+                        child.setwinsize(current[0], current[1])
+                    except Exception:  # child gone or resize unsupported
+                        return
+
+        # Daemon thread: ReadConsoleW can't be interrupted, so after the child
         # exits this stays blocked until the next keypress (or process exit)
         # — acceptable because vc tears its whole process down right after.
         feeder = threading.Thread(target=feed_stdin, name="pty.stdin", daemon=True)
         feeder.start()
-        while True:
-            try:
-                data = child.read(1024)
-            except EOFError:
-                return
-            except Exception:  # child gone
-                return
-            if data:
-                sys.stdout.write(data)
-                sys.stdout.flush()
-            if not child.isalive():
-                return
+        threading.Thread(target=watch_resize, name="pty.resize", daemon=True).start()
+        try:
+            while True:
+                try:
+                    data = child.read(1024)
+                except EOFError:
+                    return
+                except Exception:  # child gone
+                    return
+                if data:
+                    sys.stdout.write(data)
+                    sys.stdout.flush()
+                if not child.isalive():
+                    return
+        finally:
+            # Restore the user's original console modes so their shell isn't
+            # left in raw/VT mode after vc exits.
+            kernel32.SetConsoleMode(hin, old_in.value)
+            kernel32.SetConsoleMode(hout, old_out.value)
 
     def _pump_posix(self, child: Any) -> None:
         if (
