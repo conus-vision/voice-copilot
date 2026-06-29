@@ -2,6 +2,7 @@
 
 # Side-effect imports — each module registers itself.
 from voice_copilot.providers.llm import anthropic as _anthropic  # noqa: F401
+from voice_copilot.providers.llm import auto as _auto  # noqa: F401
 from voice_copilot.providers.llm import copilot_cli as _copilot_cli  # noqa: F401
 from voice_copilot.providers.llm import github_copilot as _github_copilot  # noqa: F401
 from voice_copilot.providers.llm import openai as _openai  # noqa: F401
