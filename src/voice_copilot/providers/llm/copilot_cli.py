@@ -21,6 +21,7 @@ import logging
 import shutil
 from collections.abc import AsyncIterator, Sequence
 
+from voice_copilot.providers.llm._cli_runner import build_flat_prompt, run_cli
 from voice_copilot.providers.llm.base import LLMMessage, LLMProvider
 from voice_copilot.providers.registry import register
 
@@ -45,24 +46,6 @@ def _make_cmd(binary: str, model: str) -> list[str]:
     if sys.platform == "win32" and binary.lower().endswith((".cmd", ".bat")):
         return ["cmd.exe", "/C", binary, *args]
     return [binary, *args]
-
-
-def _build_prompt(system: str | None, messages: Sequence[LLMMessage]) -> str:
-    """Concatenate system + user messages into a single flat string.
-
-    Section labels like [NEW_EVENTS] are intentionally avoided here — they
-    trigger file-search behaviour when passed via -p. The actual section
-    content comes from the caller (format.py uses non-bracket headers for CLI).
-    """
-    parts: list[str] = []
-    if system:
-        parts.append(system)
-    for m in messages:
-        if m.role == "user":
-            parts.append(m.content)
-        elif m.role == "assistant" and m.content:
-            parts.append(f"[assistant]: {m.content}")
-    return "\n\n".join(p.strip() for p in parts if p.strip())
 
 
 @register("llm", "copilot-cli")
@@ -94,7 +77,7 @@ class CopilotCLIProvider(LLMProvider):
         max_tokens: int = 512,
         temperature: float = 0.4,
     ) -> AsyncIterator[str]:
-        prompt = _build_prompt(system, messages)
+        prompt = build_flat_prompt(system, messages)
         if not prompt:
             return
 
@@ -106,9 +89,7 @@ class CopilotCLIProvider(LLMProvider):
         try:
             stdout, stderr = await loop.run_in_executor(
                 None,
-                _run_via_stdin,
-                cmd,
-                prompt,
+                lambda: run_cli(cmd, stdin_text=prompt, timeout=60.0),
             )
         except Exception as e:
             raise RuntimeError(f"copilot-cli: subprocess failed: {e}") from e
@@ -121,25 +102,3 @@ class CopilotCLIProvider(LLMProvider):
             return
         log.info("copilot-cli: response %d chars", len(text))
         yield text
-
-
-def _run_via_stdin(cmd: list[str], prompt: str) -> tuple[str, str]:
-    """Feed prompt via stdin; close stdin to signal end-of-input."""
-    import subprocess
-
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = proc.communicate(
-            input=prompt.encode("utf-8"),
-            timeout=60,
-        )
-        return stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
-        raise RuntimeError("copilot-cli: timeout after 60 s") from None
