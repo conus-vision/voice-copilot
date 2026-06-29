@@ -29,7 +29,7 @@ from voice_copilot.commentator.provider_select import (
     resolve_commentator_provider,
 )
 from voice_copilot.core.bus import EventBus
-from voice_copilot.core.config import Config, load_config
+from voice_copilot.core.config import CommentatorConfig, Config, load_config
 from voice_copilot.dialog import DialogManager
 from voice_copilot.focus import FocusRouter
 from voice_copilot.hotkeys import HotkeyService, default_bindings
@@ -580,14 +580,22 @@ def _route_logging_to_file() -> Path:
     return log_path
 
 
-def _apply_commentator_resolution(cfg: Config, resolved: ResolvedCli | None) -> str:
-    """Set cfg.commentator.provider to the effective provider for this launch
-    and return the panel status text."""
+def _apply_commentator_resolution(
+    cfg: Config, resolved: ResolvedCli | None
+) -> tuple[CommentatorConfig, str]:
+    """Return (effective commentator config, panel status) for this launch.
+
+    The returned config is a *copy* with `provider` set to the effective
+    provider — the shared `cfg` is left untouched so the runtime `auto`
+    provider (which carries an absolute binary path) never round-trips into
+    the user's saved config via /api/config.
+    """
     cli = resolved.profile_id if resolved is not None else None
     binary = resolved.resolved_binary if resolved is not None else None
     effective = resolve_commentator_provider(cfg.commentator, cli=cli, binary=binary)
-    cfg.commentator.provider = effective
-    return commentator_status_text(effective, cli)
+    commentator_cfg = cfg.commentator.model_copy(deep=True)
+    commentator_cfg.provider = effective
+    return commentator_cfg, commentator_status_text(effective, cli)
 
 
 async def _run_vc(
@@ -630,8 +638,8 @@ async def _run_vc(
         quiet_logging=True,
     )
 
-    commentator_status = _apply_commentator_resolution(cfg, resolved)
-    commentator = Commentator(bus, cfg.commentator, cfg.commentator_language, sessions=sessions)
+    commentator_cfg, commentator_status = _apply_commentator_resolution(cfg, resolved)
+    commentator = Commentator(bus, commentator_cfg, cfg.commentator_language, sessions=sessions)
     _server_app_state(server).commentator = commentator
     _server_app_state(server).focus_router = focus_router
     servers: list[uvicorn.Server] = [server]

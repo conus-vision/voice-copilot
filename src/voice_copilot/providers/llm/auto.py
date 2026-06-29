@@ -56,6 +56,9 @@ class AutoCommentatorProvider(LLMProvider):
                 f"pick a provider in the Commentator tab."
             ) from None
 
+        # Log the command (minus the prompt arg) so the session log shows what
+        # actually ran — useful when tuning per-CLI narration profiles.
+        log.info("auto(%s): %s", self._cli, " ".join(argv if stdin_text is not None else argv[:-1]))
         loop = asyncio.get_running_loop()
         stdout, stderr = await loop.run_in_executor(
             None, lambda: run_cli(argv, stdin_text=stdin_text, timeout=60.0)
