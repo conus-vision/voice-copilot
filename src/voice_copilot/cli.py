@@ -24,6 +24,10 @@ from voice_copilot.adapters.base import CLIAdapter
 from voice_copilot.alias_install import ensure_vc_alias
 from voice_copilot.audio import AudioHub, TTSDriver
 from voice_copilot.commentator import Commentator
+from voice_copilot.commentator.provider_select import (
+    commentator_status_text,
+    resolve_commentator_provider,
+)
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.config import Config, load_config
 from voice_copilot.dialog import DialogManager
@@ -576,6 +580,16 @@ def _route_logging_to_file() -> Path:
     return log_path
 
 
+def _apply_commentator_resolution(cfg: Config, resolved: ResolvedCli | None) -> str:
+    """Set cfg.commentator.provider to the effective provider for this launch
+    and return the panel status text."""
+    cli = resolved.profile_id if resolved is not None else None
+    binary = resolved.resolved_binary if resolved is not None else None
+    effective = resolve_commentator_provider(cfg.commentator, cli=cli, binary=binary)
+    cfg.commentator.provider = effective
+    return commentator_status_text(effective, cli)
+
+
 async def _run_vc(
     name: str,
     cli_args: list[str],
@@ -616,6 +630,7 @@ async def _run_vc(
         quiet_logging=True,
     )
 
+    commentator_status = _apply_commentator_resolution(cfg, resolved)
     commentator = Commentator(bus, cfg.commentator, cfg.commentator_language, sessions=sessions)
     _server_app_state(server).commentator = commentator
     _server_app_state(server).focus_router = focus_router
@@ -643,16 +658,17 @@ async def _run_vc(
         binary = resolved.resolved_binary
         full_env = {**os.environ, **resolved.env_overrides}
         cwd = str(resolved.working_directory) if resolved.working_directory else None
-        _server_app_state(server).launch_notice = f"Narrating {resolved.label} via the local proxy."
+        _server_app_state(server).launch_notice = commentator_status
         await asyncio.sleep(0.3)
     else:
         binary = name
         full_env = dict(os.environ)
         cwd = None
-        _server_app_state(server).launch_notice = (
+        not_recognized_note = (
             f"'{name}' isn't a recognized CLI — launching without narration. "
             f"Add a proxy_cli.profiles.{name} entry to your config to enable it."
         )
+        _server_app_state(server).launch_notice = f"{not_recognized_note}  •  {commentator_status}"
 
     adapter = PtyAdapter(bus, [binary, *cli_args], env=full_env, cwd=cwd)
     dialog = DialogManager(bus, adapter, cfg.dialog)
