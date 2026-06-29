@@ -660,6 +660,12 @@ def test_status_text_mentions_cli_for_auto() -> None:
     assert "claude" in commentator_status_text(p, "claude").lower()
 
 
+def test_status_text_for_auto_without_cli_is_the_pick_a_provider_fallback() -> None:
+    p = ProviderConfig(name="auto", options={})
+    text = commentator_status_text(p, None)
+    assert "pick a provider" in text.lower()
+
+
 def test_status_text_mentions_provider_for_api() -> None:
     p = ProviderConfig(name="openai", options={"model": "gpt-5-mini"})
     text = commentator_status_text(p, "claude")
@@ -712,7 +718,13 @@ def resolve_commentator_provider(
 
 def commentator_status_text(provider: ProviderConfig, cli: str | None) -> str:
     if provider.name == "auto":
-        target = provider.options.get("cli") or cli or "the launched CLI"
+        target = provider.options.get("cli") or cli
+        if not target:
+            # auto with no launched CLI (not run via vc, or unsupported CLI)
+            return (
+                "Commentator: auto needs a vc-launched supported CLI — "
+                "pick a provider in the Commentator tab."
+            )
         model = provider.options.get("model")
         suffix = f", {model}" if model else ""
         return f"Commentator: {target} (current CLI{suffix}) — change in the Commentator tab"
@@ -948,11 +960,14 @@ In the Commentator tab, switch mode to API with a working provider; confirm
 narration uses it and the status banner updates. Set a per-CLI override and
 confirm it wins for that CLI.
 
-- [ ] **Step 4: Fallback path**
+- [ ] **Step 4: Fallback path (unknown CLI via vc)**
 
-Run `voice-copilot serve` (no launched CLI) and confirm the status banner
-shows the "auto needs a vc-launched supported CLI — pick a provider"
-message instead of silently failing.
+Run `uv run voice-copilot vc cmd` (an unrecognized CLI). Confirm the panel
+status banner shows the "auto needs a vc-launched supported CLI — pick a
+provider in the Commentator tab" message (resolved=None → `auto` with no
+cli), rather than silently failing. (Note: `serve`/`proxy` keep the existing
+configured-provider behaviour — auto-resolution is wired only into `vc` for
+v1, per the spec's non-goal.)
 
 - [ ] **Step 5: Commit any profile tuning + record results**
 
