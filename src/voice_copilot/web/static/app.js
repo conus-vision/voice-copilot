@@ -1064,6 +1064,7 @@
         setElValue(el, getByPath(cfg, el.name));
       }
       applyHotkeyTitles(cfg);
+      renderPerCli(cfg);
       return cfg;
     }
 
@@ -1078,12 +1079,53 @@
           setByPath(cfg, el.name, v);
         }
       }
+      collectPerCli(cfg);
       const res = await fetch("/api/config", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(cfg),
       });
       return res.ok;
+    }
+
+    const PER_CLI_NAMES = ["claude", "codex", "opencode", "gemini", "copilot"];
+
+    function renderPerCli(cfg) {
+      const host = qs("#commentator-per-cli");
+      if (!host) return;
+      const perCli = (cfg.commentator && cfg.commentator.per_cli) || {};
+      host.innerHTML = "";
+      for (const name of PER_CLI_NAMES) {
+        const cur = perCli[name] || {};
+        const row = document.createElement("label");
+        row.className = "row per-cli-row";
+        row.dataset.cli = name;
+        row.innerHTML =
+          `<span class="per-cli-name">${name}</span>` +
+          `<select class="per-cli-mode">` +
+          `<option value="default">default</option>` +
+          `<option value="current">current (this CLI)</option>` +
+          `<option value="api">API provider</option>` +
+          `</select>` +
+          `<input class="per-cli-model" placeholder="model (optional)" />`;
+        host.appendChild(row);
+        row.querySelector(".per-cli-mode").value = cur.mode || "default";
+        row.querySelector(".per-cli-model").value = cur.model || "";
+      }
+    }
+
+    function collectPerCli(cfg) {
+      if (!cfg.commentator) cfg.commentator = {};
+      const out = {};
+      for (const row of qsa("#commentator-per-cli .per-cli-row")) {
+        const mode = row.querySelector(".per-cli-mode").value;
+        if (mode !== "current" && mode !== "api") continue; // "default" → absent
+        const entry = { mode };
+        const model = row.querySelector(".per-cli-model").value.trim();
+        if (model) entry.model = model;
+        out[row.dataset.cli] = entry;
+      }
+      cfg.commentator.per_cli = out;
     }
 
     function renderProxyCliProfiles(status) {

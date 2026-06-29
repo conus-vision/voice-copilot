@@ -833,3 +833,16 @@ body.mini .app-footer { display: none; }
   color: var(--text);
   font-size: 13px;
 }
+
+.per-cli-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.per-cli-row .per-cli-name {
+  flex: 0 0 84px;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+}
+.per-cli-row .per-cli-mode { flex: 0 0 auto; }
+.per-cli-row .per-cli-model { flex: 1 1 auto; }

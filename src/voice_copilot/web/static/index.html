@@ -141,6 +141,12 @@
 
       <section class="panel" data-panel="llm">
         <p class="hint" id="provider-hint"></p>
+        <label>Commentator mode
+          <select name="commentator.mode">
+            <option value="auto">Auto — use the CLI I launched (no keys)</option>
+            <option value="api">API — use the provider below</option>
+          </select>
+        </label>
         <label>Provider
           <select name="commentator.provider.name" id="commentator-provider">
             <option value="anthropic">anthropic (Haiku 4.5)</option>
@@ -156,6 +162,9 @@
         <label>Base URL (openai-compat only)
           <input name="commentator.provider.options.base_url" placeholder="http://127.0.0.1:11434/v1" />
         </label>
+        <h3 class="section-title">Per-CLI overrides (optional)</h3>
+        <p class="hint">Override the global mode for a specific launched CLI. "default" uses the mode above.</p>
+        <div id="commentator-per-cli"></div>
         <label>Debounce, ms
           <input type="number" name="commentator.debounce_ms" min="200" max="5000" step="100" />
         </label>
