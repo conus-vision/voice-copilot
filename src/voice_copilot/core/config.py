@@ -83,10 +83,17 @@ class FocusConfig(BaseModel):
     narrate_only_when_focused: bool = True
 
 
+class CommentatorCliOverride(BaseModel):
+    mode: Literal["current", "api"]
+    model: str | None = None
+
+
 class CommentatorConfig(BaseModel):
     provider: ProviderConfig = ProviderConfig(
         name="anthropic", options={"model": "claude-haiku-4-5-20251001"}
     )
+    mode: Literal["auto", "api"] = "auto"
+    per_cli: dict[str, CommentatorCliOverride] = Field(default_factory=dict)
     debounce_ms: int = 1200
     min_importance: Literal["low", "normal", "high"] = "normal"
     speak_tool_calls: bool = True

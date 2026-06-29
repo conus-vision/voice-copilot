@@ -68,3 +68,25 @@ def test_narrate_only_when_focused_round_trips_through_save_and_load(tmp_path: P
     save_config(cfg, config_file)
     reloaded = load_config(config_file)
     assert reloaded.focus.narrate_only_when_focused is False
+
+
+def test_commentator_mode_defaults_to_auto(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path / "missing.yaml")
+    assert cfg.commentator.mode == "auto"
+    assert cfg.commentator.per_cli == {}
+
+
+def test_commentator_mode_and_per_cli_round_trip(tmp_path: Path) -> None:
+    from voice_copilot.core.config import CommentatorCliOverride
+
+    config_file = tmp_path / "config.yaml"
+    cfg = load_config(config_file)
+    cfg.commentator.mode = "api"
+    cfg.commentator.per_cli = {
+        "gemini": CommentatorCliOverride(mode="api", model="gemini-2.0-flash")
+    }
+    save_config(cfg, config_file)
+    reloaded = load_config(config_file)
+    assert reloaded.commentator.mode == "api"
+    assert reloaded.commentator.per_cli["gemini"].mode == "api"
+    assert reloaded.commentator.per_cli["gemini"].model == "gemini-2.0-flash"
