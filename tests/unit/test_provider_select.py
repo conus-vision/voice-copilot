@@ -14,7 +14,9 @@ def test_auto_mode_resolves_to_auto_provider_with_cli() -> None:
 
 
 def test_api_mode_resolves_to_configured_provider() -> None:
-    cmt = CommentatorConfig(mode="api", provider=ProviderConfig(name="openai", options={"model": "gpt-5-mini"}))
+    cmt = CommentatorConfig(
+        mode="api", provider=ProviderConfig(name="openai", options={"model": "gpt-5-mini"})
+    )
     p = resolve_commentator_provider(cmt, cli="claude", binary="/usr/bin/claude")
     assert p.name == "openai"
 

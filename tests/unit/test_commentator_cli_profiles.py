@@ -27,9 +27,7 @@ def test_copilot_command_is_stdin_mode() -> None:
 
 
 def test_model_override_is_applied() -> None:
-    argv, _ = build_narration_command(
-        "claude", "/usr/bin/claude", "x", model="claude-sonnet-4-6"
-    )
+    argv, _ = build_narration_command("claude", "/usr/bin/claude", "x", model="claude-sonnet-4-6")
     i = argv.index("--model")
     assert argv[i + 1] == "claude-sonnet-4-6"
 
