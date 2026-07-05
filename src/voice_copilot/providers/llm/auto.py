@@ -7,10 +7,17 @@ Generalises the copilot-cli pattern via a per-CLI narration-profile table.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
+import tempfile
 from collections.abc import AsyncIterator, Sequence
 
-from voice_copilot.commentator.cli_profiles import build_narration_command
+from voice_copilot.commentator.cli_profiles import (
+    NARRATION_PROFILES,
+    build_narration_command,
+    profile_needs_system_file,
+)
 from voice_copilot.providers.llm._cli_runner import build_flat_prompt, run_cli
 from voice_copilot.providers.llm.base import LLMMessage, LLMProvider
 from voice_copilot.providers.registry import register
@@ -43,26 +50,45 @@ class AutoCommentatorProvider(LLMProvider):
                 "auto commentator: no launched CLI to narrate with — run via "
                 "`vc <cli>`, or pick a provider in the Commentator tab."
             )
-        prompt = build_flat_prompt(system, messages)
-        if not prompt:
-            return
-        try:
-            argv, stdin_text = build_narration_command(
-                self._cli, self._binary, prompt, model=self._model
-            )
-        except KeyError:
+        if self._cli not in NARRATION_PROFILES:
             raise RuntimeError(
                 f"auto commentator: no narration profile for '{self._cli}' — "
                 f"pick a provider in the Commentator tab."
-            ) from None
+            )
+        user_content = build_flat_prompt(None, messages)
+        if not user_content:
+            return
 
-        # Log the command (minus the prompt arg) so the session log shows what
-        # actually ran — useful when tuning per-CLI narration profiles.
-        log.info("auto(%s): %s", self._cli, " ".join(argv if stdin_text is not None else argv[:-1]))
-        loop = asyncio.get_running_loop()
-        stdout, stderr = await loop.run_in_executor(
-            None, lambda: run_cli(argv, stdin_text=stdin_text, timeout=60.0)
-        )
+        # Some CLIs (claude) need the system prompt in a temp file so the big
+        # multi-line arg survives the Windows .cmd batch layer.
+        system_path: str | None = None
+        if profile_needs_system_file(self._cli):
+            fd, system_path = tempfile.mkstemp(suffix=".txt", prefix="vc-narr-sys-")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(system or "")
+        try:
+            argv, stdin_text = build_narration_command(
+                self._cli,
+                self._binary,
+                system,
+                user_content,
+                model=self._model,
+                system_file_path=system_path,
+            )
+            log.info(
+                "auto(%s): %s",
+                self._cli,
+                " ".join(argv if stdin_text is not None else argv[:-1]),
+            )
+            loop = asyncio.get_running_loop()
+            stdout, stderr = await loop.run_in_executor(
+                None, lambda: run_cli(argv, stdin_text=stdin_text, timeout=60.0)
+            )
+        finally:
+            if system_path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(system_path)
+
         if stderr:
             log.debug("auto(%s) stderr: %s", self._cli, stderr[:400])
         text = (stdout or "").strip()
