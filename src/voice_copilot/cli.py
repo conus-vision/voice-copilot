@@ -33,7 +33,7 @@ from voice_copilot.core.config import CommentatorConfig, Config, load_config
 from voice_copilot.dialog import DialogManager
 from voice_copilot.focus import FocusRouter
 from voice_copilot.hotkeys import HotkeyService, default_bindings
-from voice_copilot.net import free_port
+from voice_copilot.net import free_port, wait_for_port
 
 # Side-effect imports register the providers in the registry.
 from voice_copilot.providers import llm as _llm  # noqa: F401
@@ -41,7 +41,11 @@ from voice_copilot.providers import registry as provider_registry
 from voice_copilot.providers import stt as _stt  # noqa: F401
 from voice_copilot.providers import tts as _tts  # noqa: F401
 from voice_copilot.proxy.cli_shims import ResolvedCli, resolve_cli_for_vc
-from voice_copilot.proxy.server import base_urls_for, build_proxy_server
+from voice_copilot.proxy.server import (
+    base_urls_for,
+    build_proxy_server,
+    provider_has_narration,
+)
 from voice_copilot.proxy.session import SessionRegistry
 from voice_copilot.tray import TrayService
 from voice_copilot.web.demo import run_demo
@@ -529,8 +533,13 @@ async def _run_with_adapter(
             f"[green]proxy → ANTHROPIC_BASE_URL=http://{host}:{proxy_port}/anthropic  "
             f"OPENAI_BASE_URL=http://{host}:{proxy_port}/openai/v1[/green]"
         )
-        # Give uvicorn a moment to bind before the child CLI tries to use the URL.
-        await asyncio.sleep(0.3)
+        # Wait for uvicorn to actually bind before the child CLI uses the URL,
+        # so its first request cannot race past the proxy unnarrated.
+        if not await wait_for_port(host, proxy_port, timeout=10.0):
+            console.print(
+                f"[yellow]proxy did not come up on {host}:{proxy_port} in time — "
+                f"narration may miss the first request[/yellow]"
+            )
 
     adapter: CLIAdapter = build_adapter(bus)
     dialog = DialogManager(bus, adapter, cfg.dialog)
@@ -578,6 +587,33 @@ def _route_logging_to_file() -> Path:
         root.removeHandler(existing)
     root.addHandler(handler)
     return log_path
+
+
+# Claude Code hides its Remote Control menu while ANTHROPIC_BASE_URL points at a
+# custom host (our proxy). Surface that in the panel so the user doesn't blame vc
+# for the missing menu. Kept short — it shares the panel's single-line banner.
+_REMOTE_CONTROL_NOTE = (
+    "Note: Claude Code hides its Remote Control menu while narration routes "
+    "through the proxy — run claude without vc for a session that needs it."
+)
+
+
+def _no_narration_note(provider: str) -> str:
+    return (
+        f"Heads up: {provider} traffic is proxied but not narrated yet — "
+        f"you'll get voice questions in, but no spoken play-by-play out."
+    )
+
+
+def _launch_notice(resolved: ResolvedCli | None, commentator_status: str) -> str:
+    """Compose the panel banner shown at launch (status + any caveats)."""
+    parts = [commentator_status]
+    if resolved is not None:
+        if resolved.profile_id == "claude":
+            parts.append(_REMOTE_CONTROL_NOTE)
+        if not provider_has_narration(resolved.provider):
+            parts.append(_no_narration_note(resolved.label))
+    return "  •  ".join(parts)
 
 
 def _apply_commentator_resolution(
@@ -666,8 +702,16 @@ async def _run_vc(
         binary = resolved.resolved_binary
         full_env = {**os.environ, **resolved.env_overrides}
         cwd = str(resolved.working_directory) if resolved.working_directory else None
-        _server_app_state(server).launch_notice = commentator_status
-        await asyncio.sleep(0.3)
+        _server_app_state(server).launch_notice = _launch_notice(resolved, commentator_status)
+        # Wait for the proxy to bind before the child starts using its base URL.
+        # The child owns the terminal here, so a failure goes to the log file
+        # (routed by `_route_logging_to_file`), never the console.
+        if not await wait_for_port(host, actual_proxy_port, timeout=10.0):
+            logging.getLogger(__name__).warning(
+                "proxy did not come up on %s:%s in time — first request may be unnarrated",
+                host,
+                actual_proxy_port,
+            )
     else:
         binary = name
         full_env = dict(os.environ)

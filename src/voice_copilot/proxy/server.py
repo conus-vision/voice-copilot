@@ -51,6 +51,12 @@ class _SSEParser(Protocol):
 #: provider-slug → (upstream base, parser-factory builder)
 #:   parser builder takes a session_id and returns an _SSEParser, or None to
 #:   forward without parsing (pass-through for providers we haven't wired yet).
+#:
+#: Limitation: the anthropic route targets api.anthropic.com only. Claude Code
+#: run through Bedrock (`CLAUDE_CODE_USE_BEDROCK`), Vertex
+#: (`ANTHROPIC_VERTEX_BASE_URL`), or Azure Foundry uses different base-URL env
+#: vars and hosts we don't intercept, so those sessions aren't narrated. Adding
+#: them means new routes + upstreams keyed off those env vars.
 _PROVIDERS: dict[str, tuple[str, Any]] = {
     "anthropic": ("https://api.anthropic.com", "anthropic"),
     "openai": ("https://api.openai.com", "openai"),
@@ -61,6 +67,18 @@ _PROVIDERS: dict[str, tuple[str, Any]] = {
     "gemini": ("https://generativelanguage.googleapis.com", None),  # passthrough
     "opencode-zen": ("https://opencode.ai/zen/v1", "opencode_zen"),
 }
+
+
+def provider_has_narration(provider: str) -> bool:
+    """Whether the proxy narrates this provider's stream, or just forwards it.
+
+    Providers wired with a parser (anthropic, openai-shaped, ollama, …) get
+    live `AGENT_TEXT`/`TOOL_CALL_STARTED` events. A `None` parser factory
+    (currently gemini) is a blind passthrough: requests are proxied but nothing
+    is narrated. The launch banner uses this to tell the user the truth.
+    """
+    entry = _PROVIDERS.get(provider)
+    return entry is not None and entry[1] is not None
 
 
 def _pick_parser_kind(provider_kind: str | None, path: str) -> str | None:

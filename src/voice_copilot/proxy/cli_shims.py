@@ -49,6 +49,15 @@ _HWND_BROADCAST = 0xFFFF
 _WM_SETTINGCHANGE = 0x001A
 _SMTO_ABORTIFHUNG = 0x0002
 _DEFAULT_PROXY_HOST = "127.0.0.1"
+# Claude Code disables on-demand tool loading (deferral) when ANTHROPIC_BASE_URL
+# points at a custom host and ENABLE_TOOL_SEARCH is unset, materializing every
+# MCP/system tool schema into its context window (tens of K tokens). Setting it
+# when we launch Claude Code through the proxy keeps deferral on. Scoped to the
+# `claude` profile — the knob is Claude-Code-specific, so it must not leak into
+# other anthropic-provider CLIs (e.g. aider).
+_CLAUDE_PROFILE_ID = "claude"
+_TOOL_SEARCH_ENV = "ENABLE_TOOL_SEARCH"
+_TOOL_SEARCH_DEFAULT = "true"
 _POSIX_PATH_MARKER_BEGIN = "# >>> voice-copilot proxy shims >>>"
 _POSIX_PATH_MARKER_END = "# <<< voice-copilot proxy shims <<<"
 
@@ -227,6 +236,7 @@ class ResolvedCli:
     resolved_binary: str
     env_overrides: dict[str, str]
     working_directory: Path | None
+    provider: str
 
 
 def resolve_cli_for_vc(
@@ -277,6 +287,7 @@ def resolve_cli_for_vc(
         resolved_binary=resolved_binary,
         env_overrides=env_overrides,
         working_directory=working_directory,
+        provider=profile.provider,
     )
 
 
@@ -366,7 +377,12 @@ def _proxy_env_overrides(
                 separators=(",", ":"),
             )
         }
-    return {profile.base_url_env: proxy_url}
+    overrides = {profile.base_url_env: proxy_url}
+    # Keep Claude Code's tool deferral on behind the proxy, unless the user has
+    # already set their own ENABLE_TOOL_SEARCH value — then theirs wins.
+    if profile_id == _CLAUDE_PROFILE_ID and not os.environ.get(_TOOL_SEARCH_ENV, "").strip():
+        overrides[_TOOL_SEARCH_ENV] = _TOOL_SEARCH_DEFAULT
+    return overrides
 
 
 def _resolve_binary_path(command: str, override: str | None, shim_dir: Path) -> str | None:

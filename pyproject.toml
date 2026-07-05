@@ -101,6 +101,9 @@ include = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Verbatim excerpts of upstream headroom code, kept only as a drift baseline for
+# scripts/check_headroom_updates.py — not our code, don't lint/format it.
+extend-exclude = ["docs/headroom-porting/snapshots"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
@@ -112,6 +115,7 @@ strict = true
 warn_unused_ignores = true
 ignore_missing_imports = true
 mypy_path = "src"
+exclude = ["docs/headroom-porting/snapshots/"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

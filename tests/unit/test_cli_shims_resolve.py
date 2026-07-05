@@ -10,6 +10,7 @@ def cfg(tmp_path) -> Config:
 
 
 def test_resolves_known_catalog_entry_by_command(cfg, monkeypatch) -> None:
+    monkeypatch.delenv("ENABLE_TOOL_SEARCH", raising=False)
     monkeypatch.setattr(
         "voice_copilot.proxy.cli_shims._resolve_binary_path",
         lambda command, override, shim_dir: f"/usr/bin/{command}" if command == "claude" else None,
@@ -18,6 +19,37 @@ def test_resolves_known_catalog_entry_by_command(cfg, monkeypatch) -> None:
     assert resolved is not None
     assert resolved.profile_id == "claude"
     assert resolved.resolved_binary == "/usr/bin/claude"
+    # Claude Code stops deferring MCP/system-tool schemas behind a custom
+    # ANTHROPIC_BASE_URL unless ENABLE_TOOL_SEARCH is set, inflating the context
+    # window by tens of K tokens — so wrapping claude must turn deferral back on.
+    assert resolved.env_overrides == {
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8766/anthropic",
+        "ENABLE_TOOL_SEARCH": "true",
+    }
+
+
+def test_claude_tool_search_respects_existing_user_value(cfg, monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_TOOL_SEARCH", "auto:50")
+    monkeypatch.setattr(
+        "voice_copilot.proxy.cli_shims._resolve_binary_path",
+        lambda command, override, shim_dir: f"/usr/bin/{command}",
+    )
+    resolved = resolve_cli_for_vc("claude", cfg, port=8766)
+    assert resolved is not None
+    # The user's own Claude Code knob wins; we do not clobber it.
+    assert "ENABLE_TOOL_SEARCH" not in resolved.env_overrides
+
+
+def test_non_claude_anthropic_profile_gets_no_tool_search(cfg, monkeypatch) -> None:
+    monkeypatch.delenv("ENABLE_TOOL_SEARCH", raising=False)
+    monkeypatch.setattr(
+        "voice_copilot.proxy.cli_shims._resolve_binary_path",
+        lambda command, override, shim_dir: f"/usr/bin/{command}",
+    )
+    # aider is an anthropic-provider profile but not Claude Code — the
+    # ENABLE_TOOL_SEARCH knob is Claude-Code-specific, so it must not leak here.
+    resolved = resolve_cli_for_vc("aider", cfg, port=8766)
+    assert resolved is not None
     assert resolved.env_overrides == {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8766/anthropic"}
 
 
