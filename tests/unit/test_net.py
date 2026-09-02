@@ -22,7 +22,10 @@ async def test_wait_for_port_returns_true_once_listener_is_up() -> None:
     host = "127.0.0.1"
     port = free_port(host)
 
-    server = await asyncio.start_server(lambda r, w: None, host, port)
+    # Close the accepted connection server-side: since Python 3.12
+    # `Server.wait_closed()` waits for every client connection to finish, and a
+    # handler that leaves the writer open makes the teardown hang forever.
+    server = await asyncio.start_server(lambda r, w: w.close(), host, port)
     try:
         assert await wait_for_port(host, port, timeout=2.0) is True
     finally:

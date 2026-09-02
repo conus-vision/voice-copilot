@@ -5,7 +5,12 @@ from pynput import keyboard
 
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.events import EventKind
-from voice_copilot.hotkeys import Binding, HotkeyService
+from voice_copilot.hotkeys import HEADLESS, Binding, HotkeyService
+
+# pynput's dummy backend (headless Linux) folds every Key into one value, so
+# combos cannot be told apart there; the real backends run these on the
+# Windows and macOS legs of CI.
+pytestmark = pytest.mark.skipif(HEADLESS, reason="no display: pynput dummy backend")
 
 
 @pytest.mark.asyncio

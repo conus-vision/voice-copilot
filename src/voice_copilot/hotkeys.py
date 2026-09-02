@@ -13,14 +13,38 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from pynput import keyboard
-
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.events import Event, EventKind
+
+
+def _select_headless_backend() -> bool:
+    """Point pynput at its no-op backend when there is no display to hook.
+
+    On Linux pynput picks the Xorg backend and raises ImportError at import
+    time when neither DISPLAY nor WAYLAND_DISPLAY is set (a server, a
+    container, CI). Global hotkeys cannot work there anyway; the dummy backend
+    keeps the module importable so `serve`, `proxy` and the panel still run.
+    Must run before `from pynput import keyboard`. Returns True whenever the
+    keyboard backend ends up being the dummy one, whether chosen here or set
+    by hand through PYNPUT_BACKEND / PYNPUT_BACKEND_KEYBOARD.
+    """
+    if sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        os.environ.setdefault("PYNPUT_BACKEND", "dummy")
+    backend = os.environ.get("PYNPUT_BACKEND_KEYBOARD") or os.environ.get("PYNPUT_BACKEND")
+    return backend == "dummy"
+
+
+HEADLESS = _select_headless_backend()
+
+from pynput import keyboard  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +181,12 @@ class HotkeyService:
                 self._publish(binding.release_kind, payload)
 
     def start(self) -> None:
+        if HEADLESS:
+            log.warning(
+                "no display (DISPLAY/WAYLAND_DISPLAY unset): global hotkeys are off, "
+                "use the panel buttons"
+            )
+            return
         self._listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
         self._listener.daemon = True
         self._listener.start()

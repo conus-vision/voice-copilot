@@ -73,7 +73,9 @@ async def test_send_user_message_writes_line_to_child(fake_pty) -> None:
     adapter = PtyAdapter(bus, ["claude"])
     await adapter.start()
     await adapter.send_user_message("hello")
-    assert child.written == ["hello\r"]
+    # winpty takes str, ptyprocess takes bytes; the adapter encodes on POSIX.
+    written = [w.decode() if isinstance(w, bytes) else w for w in child.written]
+    assert written == ["hello\r"]
     await adapter.stop()
 
 

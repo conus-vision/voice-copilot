@@ -48,3 +48,7 @@ The Supervisor release.
   a ChatGPT-plan model, `--ignore-user-config --ephemeral`.
 - Blocked autoplay is now visible in the panel and recovers on the first click.
 - Panel: every proxy route is selectable (a missing one broke every save).
+- Headless Linux (no `DISPLAY`): importing the CLI no longer dies inside pynput;
+  global hotkeys are reported as unavailable and everything else runs.
+- Test suite: no longer hangs on Python 3.12 (`Server.wait_closed()` semantics)
+  and passes on macOS; `pytest-timeout` turns any future hang into a failure.
