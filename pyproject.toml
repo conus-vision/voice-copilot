@@ -28,9 +28,7 @@ classifiers = [
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "websockets>=13",
     "pydantic>=2.7",
-    "pydantic-settings>=2.3",
     "pyyaml>=6.0",
     "typer>=0.12",
     "rich>=13.7",
@@ -64,13 +62,10 @@ local-stt = [
     "numpy>=1.26",
     "soundfile>=0.12",
 ]
-proxy = [
-    "mitmproxy>=11.0",
-]
 deepgram = ["deepgram-sdk>=3.7"]
 elevenlabs = ["elevenlabs>=1.5"]
 all = [
-    "voice-copilot[local-tts,local-stt,proxy,deepgram,elevenlabs]",
+    "voice-copilot[local-tts,local-stt,deepgram,elevenlabs]",
 ]
 dev = [
     "ruff>=0.6",
@@ -92,13 +87,13 @@ Issues = "https://github.com/conus-vision/voice-copilot/issues"
 packages = ["src/voice_copilot"]
 
 [tool.hatch.build.targets.sdist]
-# Ship only what is needed to build/install; keep heavy launch/demo assets
-# (e.g. public/*.mp4) out of the published source distribution.
+# Ship only what is needed to build/install; keep docs, tests and media
+# out of the published source distribution.
 include = [
-    "src/voice_copilot",
-    "README.md",
-    "LICENSE",
-    "pyproject.toml",
+    "/src/voice_copilot",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
 ]
 
 [tool.ruff]

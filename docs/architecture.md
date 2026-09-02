@@ -102,8 +102,9 @@ sends an `audio_interrupt` and cancels the in-flight synthesis.
 2. **HTTP reverse-proxy** — we start a tiny httpx-backed proxy on a local port
    and set `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` in the child env. Raw SSE
    including `thinking` blocks flows through us.
-3. **PTY fallback** — wraps any binary, parses rendered stdout. Lower
-   fidelity, planned for v0.1.
+3. **PTY wrapper** (`vc <cli>`) — runs any binary in a real terminal and
+   proxies its API traffic when the CLI is in the catalog. Lower fidelity
+   for unknown CLIs, last resort.
 
 
 ## Supervisor
