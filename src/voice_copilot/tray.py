@@ -7,13 +7,18 @@ import threading
 import webbrowser
 from typing import Any
 
+_UNAVAILABLE: str | None = None
 try:
     import pystray
     from PIL import Image, ImageDraw
-except ImportError:  # pragma: no cover
+except Exception as _exc:  # pragma: no cover
+    # ImportError when the extra is missing; on a headless Linux box pystray
+    # picks its Xorg backend at import time and raises Xlib's
+    # DisplayNameError instead. Either way: no tray, everything else runs.
     pystray = None
     Image = None  # type: ignore[assignment]
     ImageDraw = None  # type: ignore[assignment]
+    _UNAVAILABLE = f"{type(_exc).__name__}: {_exc}"
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +44,7 @@ class TrayService:
 
     def start(self) -> None:
         if not self.available:
-            log.info("pystray not installed; skipping tray icon")
+            log.info("tray icon unavailable (%s); skipping", _UNAVAILABLE)
             return
         url = f"http://{self._host}:{self._port}/"
 
