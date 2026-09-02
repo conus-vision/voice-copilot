@@ -6,7 +6,7 @@ Two styles are supported:
            Ollama, etc.).  Files: {lang}.md / {lang}.summary.md
   "cli" — task-imperative flat text; used when system + user are concatenated
            into a single prompt string (copilot-cli subprocess, etc.).
-           Files: {lang}.cli.md / {lang}.cli.summary.md
+           Files: {lang}.cli.md / {lang}.cli.summary.md / {lang}.cli.supervisor.md
            Falls back to the "api" file if the cli variant is missing.
 
 Loader falls back to English if the requested language isn't present yet.
@@ -53,3 +53,8 @@ def load(language: str, style: str = "api") -> str:
 def load_summary(language: str, style: str = "api") -> str:
     """System prompt for the summary-update LLM call."""
     return _read(_resolve(language, "summary.md", style))
+
+
+def load_supervisor(language: str, style: str = "api") -> str:
+    """System prompt for the supervisor's checkpoint review."""
+    return _read(_resolve(language, "supervisor.md", style))

@@ -168,17 +168,25 @@ class HotkeyService:
             self._listener = None
 
 
-def default_bindings(hotkeys_cfg: Any) -> list[Binding]:
-    """Map the config section to concrete bindings."""
-    return [
-        Binding(
-            name="push_to_talk",
-            combo=hotkeys_cfg.push_to_talk,
-            press_kind=EventKind.USER_SPEAK_REQUESTED,
-            release_kind=EventKind.USER_SPEAK_REQUESTED,
-            press_payload={"phase": "start"},
-            release_payload={"phase": "end"},
-        ),
+def default_bindings(hotkeys_cfg: Any, *, voice_input: bool = True) -> list[Binding]:
+    """Map the config section to concrete bindings.
+
+    ``voice_input=False`` drops push-to-talk: with the mic path disabled the
+    combo would open a recording nothing ever transcribes.
+    """
+    bindings = []
+    if voice_input:
+        bindings.append(
+            Binding(
+                name="push_to_talk",
+                combo=hotkeys_cfg.push_to_talk,
+                press_kind=EventKind.USER_SPEAK_REQUESTED,
+                release_kind=EventKind.USER_SPEAK_REQUESTED,
+                press_payload={"phase": "start"},
+                release_payload={"phase": "end"},
+            )
+        )
+    bindings += [
         Binding(
             name="interrupt",
             combo=hotkeys_cfg.interrupt,
@@ -202,3 +210,4 @@ def default_bindings(hotkeys_cfg: Any) -> list[Binding]:
             press_kind=EventKind.USER_SKIP_REQUESTED,
         ),
     ]
+    return bindings

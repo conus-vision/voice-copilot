@@ -14,6 +14,9 @@ class NarrationProfile:
     args: list[str]
     input_mode: str  # "stdin" | "arg" — where the USER content goes
     model: str
+    # What the supervisor uses when the user hasn't picked a model: the
+    # capable tier of the same CLI, so "reuse the CLI I launched" still holds.
+    strong_model: str | None = None
     # If set, the narrator system prompt is passed inline via this flag.
     system_flag: str | None = None
     # If set, the system prompt is written to a temp file and passed via this
@@ -37,12 +40,34 @@ NARRATION_PROFILES: dict[str, NarrationProfile] = {
         args=["--exclude-dynamic-system-prompt-sections", "-p"],
         input_mode="stdin",
         model="claude-haiku-4-5-20251001",
+        strong_model="sonnet",
         system_file_flag="--system-prompt-file",
     ),
+    # `exec` alone inherits the user's whole codex setup — their heavyweight
+    # model, `reasoning_effort = ultra`, MCP servers, plugins — which makes a
+    # two-sentence narration slow and noisy. The flags strip all of that: no
+    # user config, no session file written, no ANSI, and the banner goes to
+    # stderr so stdout is just the sentence. The model must be one a ChatGPT
+    # plan accepts (an API-only slug is rejected outright); override it per-CLI
+    # in the Commentator tab if this one isn't on your plan.
     "codex": NarrationProfile(
-        args=["exec"],
-        input_mode="arg",
-        model="gpt-5-mini",
+        args=[
+            "exec",
+            "--ignore-user-config",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--color",
+            "never",
+        ],
+        # stdin, not a positional arg: `codex` on Windows is a .cmd wrapper, and
+        # the batch layer mangles a long multi-line Cyrillic prompt so badly
+        # that codex answers something unrelated — the narration came back as
+        # invented prose about a quiet evening while the summary call reported
+        # "no input data was provided". `codex exec` reads the prompt from
+        # stdin when no positional one is given.
+        input_mode="stdin",
+        model="gpt-5.4-mini",
+        strong_model="gpt-5.5",
     ),
     "opencode": NarrationProfile(
         args=["run"],
@@ -53,6 +78,7 @@ NARRATION_PROFILES: dict[str, NarrationProfile] = {
         args=["-p"],
         input_mode="arg",
         model="gemini-2.0-flash",
+        strong_model="gemini-2.5-pro",
     ),
 }
 
@@ -100,3 +126,9 @@ def build_narration_command(
         return argv, prompt
     argv.append(prompt)
     return argv, None
+
+
+def strong_model_for(cli: str | None) -> str | None:
+    """The supervisor's default model for `cli`, or None if it has no profile."""
+    profile = NARRATION_PROFILES.get(cli or "")
+    return profile.strong_model if profile is not None else None

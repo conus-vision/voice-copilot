@@ -52,7 +52,9 @@ subscribes via `EventBus.subscribe()`.
 | `AGENT_THINKING`       | proxy (SSE thinking)   | Commentator           |
 | `TOOL_CALL_STARTED/FINISHED` | CLI adapter      | Commentator           |
 | `FILE_EDITED`          | CLI adapter            | Commentator           |
-| `COMMENTATOR_UTTERANCE`| Commentator            | TTS driver, UI        |
+| `COMMENTATOR_UTTERANCE`| Commentator, Supervisor | TTS driver, UI       |
+| `SUPERVISOR_VERDICT`   | Supervisor             | UI (Trace)            |
+| `SUPERVISOR_STOP`      | Supervisor (`guard`)   | Dialog manager (pauses the CLI) |
 | `USER_MESSAGE`         | STT, web, dialog       | Dialog manager        |
 | `USER_SPEAK_REQUESTED` | Hotkey, web            | Dialog manager, TTS driver (barge-in) |
 | `USER_INTERRUPT`       | Hotkey                 | Dialog manager        |
@@ -102,3 +104,22 @@ sends an `audio_interrupt` and cancels the in-flight synthesis.
    including `thinking` blocks flows through us.
 3. **PTY fallback** — wraps any binary, parses rendered stdout. Lower
    fidelity, planned for v0.1.
+
+
+## Supervisor
+
+The commentator pipeline runs two models with opposite budgets. The **narrator**
+(cheap) turns every debounced batch of events into one or two spoken sentences.
+The **supervisor** (the strongest model the launched CLI can run) is invoked
+only at checkpoints — the end of the user's turn, a run of N tool calls, or the
+same tool failing twice — and sees the goal, the rolling summary and the last
+~80 formatted events. It answers `OK` / `WARN` / `STOP`; a warning is spoken,
+and in `guard` mode a `STOP` publishes `SUPERVISOR_STOP`, which the dialog
+manager turns into a pause of the wrapped CLI until the user resumes it.
+
+Two proxy-side tags keep the checkpoints honest: events from a CLI's own side
+requests (title generation, quota probes) carry `internal: true` and never
+reach either model, and events from forked sub-agents carry `subagent: true`,
+so a helper finishing is not mistaken for the task finishing. `TURN_ENDED`
+carries `final: false` when the response ended in tool calls. See
+[supervisor.md](supervisor.md).

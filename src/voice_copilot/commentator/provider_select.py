@@ -5,19 +5,24 @@ panel status indicator.
 
 from __future__ import annotations
 
-from voice_copilot.core.config import CommentatorConfig, ProviderConfig
+from voice_copilot.commentator.model_catalog import model_tiers
+from voice_copilot.core.config import CommentatorConfig, ProviderConfig, SupervisorConfig
 
 
 def resolve_commentator_provider(
     cmt: CommentatorConfig, *, cli: str | None, binary: str | None
 ) -> ProviderConfig:
     override = cmt.per_cli.get(cli) if cli else None
+    effective = "current" if cmt.mode == "auto" else "api"
+    model = None
     if override is not None:
-        effective = override.mode  # "current" | "api"
+        if override.mode != "default":
+            effective = override.mode
         model = override.model
-    else:
-        effective = "current" if cmt.mode == "auto" else "api"
-        model = None
+    if not model and cmt.auto_tier_models:
+        tiers = model_tiers(cli)
+        if tiers is not None:
+            model = tiers.weakest
 
     if effective == "api":
         return cmt.provider
@@ -30,6 +35,32 @@ def resolve_commentator_provider(
     if model:
         options["model"] = model
     return ProviderConfig(name="auto", options=options)
+
+
+def resolve_supervisor(cmt: CommentatorConfig, *, cli: str | None) -> SupervisorConfig:
+    """Effective supervisor settings for this launch: global, then the
+    per-CLI override, then the auto-tier pick for a missing model.
+    """
+    sup = cmt.supervisor.model_copy()
+    override = cmt.per_cli.get(cli) if cli else None
+    if override is not None:
+        if override.supervisor_mode != "default":
+            sup.mode = override.supervisor_mode
+        if override.supervisor_model:
+            sup.model = override.supervisor_model
+    if not sup.model and cmt.auto_tier_models:
+        tiers = model_tiers(cli)
+        if tiers is not None:
+            sup.model = tiers.strongest
+    return sup
+
+
+def supervisor_status_text(sup: SupervisorConfig) -> str | None:
+    if sup.mode == "off":
+        return None
+    label = "Supervisor+" if sup.mode == "guard" else "Supervisor"
+    model = f" ({sup.model})" if sup.model else ""
+    return f"{label}{model} on"
 
 
 def commentator_status_text(provider: ProviderConfig, cli: str | None) -> str:

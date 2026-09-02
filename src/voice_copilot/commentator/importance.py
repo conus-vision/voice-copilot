@@ -35,6 +35,11 @@ def classify(event: Event, cfg: CommentatorConfig) -> Importance | None:
     k = event.kind
     p = event.payload
 
+    if p.get("internal"):
+        # The CLI's own side request (title generation, a quota probe): its
+        # reply is not an answer and its turn end is not the task finishing.
+        return None
+
     if k is EventKind.ERROR:
         if event.source.startswith(_INTERNAL_SOURCES):
             return None

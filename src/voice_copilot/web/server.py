@@ -92,17 +92,23 @@ def create_app(
     sessions: SessionRegistry | None = None,
     proxy_port: int | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="voice-copilot", version="0.0.3", lifespan=_lifespan)
+    app = FastAPI(title="voice-copilot", version="0.1.0", lifespan=_lifespan)
     app.state.bus = bus
     app.state.config = config
     app.state.audio_hub = audio_hub or AudioHub()
     app.state.stt_provider = stt_provider
     app.state.human_language = config.human_language
     app.state.commentator_language = config.commentator_language
+    app.state.voice_input_enabled = config.voice_input.enabled
     app.state.sessions = sessions
     app.state.proxy_port = proxy_port
     app.state.commentator = None  # set by cli.py after Commentator is created
+    app.state.dialog = None  # set by `vc`: lets the panel hold the agent live
     app.state.launch_notice = None  # set by `vc` to surface launch status in the panel
+    # set by `vc`: (Config) -> (effective CommentatorConfig, launch notice). Re-applies
+    # the launch-time auto/api + per-CLI resolution so a panel save can't drop the
+    # running `auto` provider back to the saved API one.
+    app.state.commentator_resolver = None
 
     def _proxy_port_or_none() -> int | None:
         return cast(int | None, app.state.proxy_port)
@@ -124,6 +130,8 @@ def create_app(
             "proxy_port": app.state.proxy_port,
             "proxy_host": "127.0.0.1",
             "launch_notice": getattr(app.state, "launch_notice", None),
+            "voice_input_enabled": bool(app.state.voice_input_enabled),
+            "version": app.version,
         }
 
     @app.get("/api/config")
@@ -138,9 +146,14 @@ def create_app(
         app.state.config = new_cfg
         app.state.human_language = new_cfg.human_language
         app.state.commentator_language = new_cfg.commentator_language
+        app.state.voice_input_enabled = new_cfg.voice_input.enabled
+        commentator_cfg = new_cfg.commentator
+        resolver = app.state.commentator_resolver
+        if resolver is not None:
+            commentator_cfg, app.state.launch_notice = resolver(new_cfg)
         commentator = app.state.commentator
         if commentator is not None:
-            commentator.update_config(new_cfg.commentator, new_cfg.commentator_language)
+            commentator.update_config(commentator_cfg, new_cfg.commentator_language)
         return new_cfg.model_dump()
 
     @app.get("/api/secrets")
@@ -254,6 +267,8 @@ def create_app(
     @app.post("/api/providers/test-stt")
     async def test_stt_provider(request: Request, container: str) -> dict[str, Any]:
         cfg: Config = app.state.config
+        if not cfg.voice_input.enabled:
+            raise HTTPException(400, "voice input is disabled (config `voice_input.enabled`)")
         if container not in _AUDIO_CONTAINERS:
             raise HTTPException(400, f"unsupported audio container {container!r}")
         audio = await request.body()

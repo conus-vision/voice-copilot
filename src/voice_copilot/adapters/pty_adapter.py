@@ -16,6 +16,7 @@ that pump ourselves because the maintained ConPTY binding has no
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import shutil
 import sys
@@ -33,6 +34,34 @@ if sys.platform == "win32":
     from winpty import PtyProcess as _PtyProcess
 else:
     from ptyprocess import PtyProcess as _PtyProcess
+
+
+def kill_process_tree(pid: int | None) -> int:
+    """Kill `pid`'s descendants (deepest first), then `pid`. Returns the count.
+
+    Best-effort: a process that is already gone, or one we may not touch, is
+    skipped rather than raised on — this runs during shutdown.
+    """
+    if pid is None:
+        return 0
+    try:
+        import psutil
+    except ImportError:  # pragma: no cover - psutil is a hard dependency
+        return 0
+    try:
+        root = psutil.Process(pid)
+        victims = [*reversed(root.children(recursive=True)), root]
+    except psutil.Error:
+        return 0
+    killed = 0
+    for proc in victims:
+        try:
+            proc.kill()
+            killed += 1
+        except psutil.Error:
+            continue
+    psutil.wait_procs(victims, timeout=3)
+    return killed
 
 
 def _terminal_size() -> tuple[int, int]:
@@ -88,6 +117,12 @@ class PtyAdapter(CLIAdapter):
         await asyncio.to_thread(self._write, text + "\r")
 
     async def stop(self) -> None:
+        if self._child is not None:
+            # The session is over: take the child's whole tree with it. Codex
+            # forks sub-agents that outlive `codex exec`; left alone they keep
+            # burning the user's quota and hold connections through the proxy
+            # that stopped `vc` from ever exiting.
+            await asyncio.to_thread(kill_process_tree, self._child.pid)
         if self._child is not None and self._child.isalive():
             try:
                 self._child.terminate(force=True)
@@ -174,6 +209,8 @@ class PtyAdapter(CLIAdapter):
                 return
 
     def _pump_windows(self, child: Any) -> None:
+        conpty_filter = _Win32InputModeFilter()
+
         if (
             sys.platform != "win32"
         ):  # pragma: no cover - win32 console APIs; narrows ctypes.windll for mypy
@@ -218,10 +255,11 @@ class PtyAdapter(CLIAdapter):
         # processed-input bits (mode = only VT-input) gives us raw keystrokes.
         kernel32.SetConsoleMode(hin, enable_virtual_terminal_input)
 
-        # ConPTY paints from the top-left of the viewport, so hand it a clean
-        # screen — otherwise its cursor lands on our prior console content.
+        # Unlatch any terminal-side mode a previous run left set, then hand
+        # ConPTY a clean screen — it paints from the top-left of the viewport,
+        # so otherwise its cursor lands on our prior console content.
         # (voice-copilot's own status goes to the browser panel, not here.)
-        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.write(_Win32InputModeFilter.RESET + "\x1b[2J\x1b[H")
         sys.stdout.flush()
 
         def feed_stdin() -> None:
@@ -267,13 +305,19 @@ class PtyAdapter(CLIAdapter):
                 except Exception:  # child gone
                     return
                 if data:
-                    sys.stdout.write(data)
-                    sys.stdout.flush()
+                    visible = conpty_filter.feed(data)
+                    if visible:
+                        sys.stdout.write(visible)
+                        sys.stdout.flush()
                 if not child.isalive():
                     return
         finally:
             # Restore the user's original console modes so their shell isn't
-            # left in raw/VT mode after vc exits.
+            # left in raw/VT mode after vc exits — plus the terminal-side
+            # latches, which console modes don't cover.
+            with contextlib.suppress(Exception):
+                sys.stdout.write(_Win32InputModeFilter.RESET)
+                sys.stdout.flush()
             kernel32.SetConsoleMode(hin, old_in.value)
             kernel32.SetConsoleMode(hout, old_out.value)
 
@@ -308,3 +352,48 @@ class PtyAdapter(CLIAdapter):
                             child.write(user)
         finally:
             termios.tcsetattr(stdin_fd, termios.TCSAFLUSH, old)
+
+
+class _Win32InputModeFilter:
+    """Strip ConPTY's host-facing mode requests from the child's output.
+
+    ConPTY negotiates two modes with whatever hosts it — us — for its own
+    benefit: `CSI ? 9001 h` asks for Windows input records, `CSI ? 1004 h` for
+    focus reporting. We forward the child's output straight to the real
+    console, so those requests sailed past us to our own conhost, which
+    obliged. `ReadConsoleW` then returned `ESC[Vk;Sc;Uc;Kd;Cs;Rc_` records and
+    bare `ESC[I` / `ESC[O` focus reports; the feeder passed them on verbatim,
+    ConPTY had never asked the *child* for either, and the child drew them as
+    literal text (`d^[[68;32;1074;1;0;1_` instead of a typed letter).
+
+    Swallowing the requests keeps our console on plain VT input, which ConPTY
+    accepts and translates for the child on its own. A mode can be enabled or
+    disabled at any point in the stream and can straddle a read boundary, so
+    this holds back a partial match until the next chunk resolves it.
+    """
+
+    #: Written to our own console around a child's lifetime. These are terminal
+    #: latches rather than console-mode bits, so `SetConsoleMode` cannot clear
+    #: them and one crashed run would leave the next session typing escape
+    #: codes into its prompt.
+    RESET = "\x1b[?9001l\x1b[?1004l"
+
+    _SEQUENCES = tuple(f"\x1b[?{mode}{action}" for mode in ("9001", "1004") for action in "hl")
+    _MAX_HOLD = max(len(seq) for seq in _SEQUENCES) - 1
+
+    def __init__(self) -> None:
+        self._carry = ""
+
+    def feed(self, data: str) -> str:
+        buf = self._carry + data
+        self._carry = ""
+        for seq in self._SEQUENCES:
+            buf = buf.replace(seq, "")
+        # A tail that could still grow into one of the sequences waits for the
+        # next chunk rather than being printed and then unprintable.
+        for hold in range(self._MAX_HOLD, 0, -1):
+            tail = buf[-hold:]
+            if any(seq.startswith(tail) for seq in self._SEQUENCES):
+                self._carry = tail
+                return buf[:-hold]
+        return buf

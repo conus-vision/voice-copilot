@@ -3551,7 +3551,7 @@ wheels = [
 
 [[package]]
 name = "voice-copilot"
-version = "0.0.3"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -3575,6 +3575,7 @@ dependencies = [
     { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
+    { name = "zstandard" },
 ]
 
 [package.optional-dependencies]
@@ -3657,6 +3658,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
     { name = "voice-copilot", extras = ["local-tts", "local-stt", "proxy", "deepgram", "elevenlabs"], marker = "extra == 'all'" },
     { name = "websockets", specifier = ">=13" },
+    { name = "zstandard", specifier = ">=0.22" },
 ]
 
 [[package]]

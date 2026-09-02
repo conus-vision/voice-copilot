@@ -2,13 +2,15 @@
   <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/logo.png" width="440" alt="Voice Copilot">
 </p>
 
-> **Listen to Control** — listen to your coding agent and step in by voice the moment it matters.
+> **Listen to Control** — a cheap model narrates your coding agent, a strong one supervises it, and you step in the moment it matters.
 
 Coding agents now run for minutes at a time: reading files, editing code,
 calling tools. You either babysit the terminal the whole time, or you look away
 and miss the moment it goes in the wrong direction. **Voice Copilot narrates
-what the agent is doing in short spoken updates and lets you cut in by voice the
-second something matters** — so you keep control without staring at the output.
+what the agent is doing in short spoken updates, and a Supervisor — the
+strongest model your CLI can run — reviews the work at checkpoints, warns you
+when the agent drifts, and can pause it until you weigh in.** You keep
+control without staring at the output.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=CFDFU5S1Grk">
@@ -42,18 +44,27 @@ steer.
 
 ## How it works
 
-A separate lightweight **commentator LLM** (Haiku 4.5 by default) watches the
-coding agent's event stream and produces short summaries of what the agent
-appears to be doing, why, and what changed. This is parallel analysis and
-summarization — **not** verbatim playback of the model's hidden thinking.
+Two models watch the agent's event stream, with opposite budgets:
+
+- A cheap **narrator** (the weakest model your CLI offers, or Haiku 4.5 via
+  API) speaks every few seconds: what the agent is doing right now, in one or
+  two sentences. Parallel summarization — **not** verbatim playback of the
+  model's hidden thinking.
+- A strong **Supervisor** (the most capable model your CLI can run) looks
+  only at checkpoints — the end of a turn, a run of tool calls, a failure
+  that repeats — with the goal, a running summary and the recent transcript
+  in front of it. It says `OK`, or it tells you what is wrong. In
+  **Supervisor+** mode it also pauses the agent and waits for you.
 
 ```
- coding agent  ──►  event stream  ──►  commentator LLM  ──►  spoken update  ──►  you
- (Claude/Codex)     (json / proxy)     (short summary)        (TTS)              (listen · interrupt by voice)
+ coding agent  ──►  event stream  ──►  narrator (cheap)     ──►  spoken update        ──►  you
+ (Claude/Codex)     (json / proxy)     supervisor (strong)  ──►  warning · agent paused     (listen · resume · interrupt)
 ```
 
-You hear compressed, actionable updates instead of raw text, which lowers
-cognitive load while keeping the option to inspect the full trace and step in.
+Both reuse the CLI you launched — its login, its models, no extra keys. The
+result is a small fraction of one agent turn spent on oversight, and you hear
+about a bad turn while it can still be stopped. Details in
+[docs/supervisor.md](docs/supervisor.md).
 
 <a id="quickstart"></a>
 
@@ -75,23 +86,24 @@ pipx install voice-copilot          # or: uv tool install voice-copilot
 voice-copilot serve
 ```
 
-*Expected:* a tab opens at `http://127.0.0.1:8765` with a settings page.
+*Expected:* a tab opens at `http://127.0.0.1:8765` on the **Launch** tab, with
+every coding CLI found on your machine listed.
 
-**3. Wrap a real agent run:**
+**3. Launch an agent from the panel.** Set the working folder, then press
+**Launch** next to Claude Code (or Codex, OpenCode, Droid, Cline, Copilot CLI,
+…). It opens in a new terminal already routed through the local proxy — no
+env vars to copy. The same thing from your own shell: `vc claude`.
 
-```bash
-voice-copilot run claude -p "fix the failing tests"
-```
+*Expected:* the panel shows a live trace, and within a few seconds you **hear**
+a short spoken summary of what the agent is doing. Click once in the panel if
+the browser blocks autoplay.
 
-*Expected:* the popup shows a live trace, and within a few seconds you **hear**
-a short spoken summary of what Claude is doing. Click once in the popup if the
-browser blocks autoplay.
+That's the loop: **launch → listen → read the trace when you want detail.**
 
-**4. Talk back.** Hold `Alt+Space`, ask a question or give a correction, release.
-It goes to speech-to-text and into the agent as a side-question, a queued next
-message, or the clipboard (depending on CLI support).
-
-That's the full loop: **listen → understand → interrupt by voice.**
+> **Voice input is temporarily disabled** in this build while the push-to-talk
+> → STT → inject flow is reworked. Narration, the launcher and the trace are
+> unaffected. Re-enable it with `voice_input: {enabled: true}` in
+> `~/.voice-copilot/config.yaml`.
 
 ## Who it's for
 
@@ -116,7 +128,7 @@ trace only when an update tells you it matters.
 **CLI authors** who want their tool to expose a clean event stream for
 companion narration (see the integration RFC below).
 
-> **Status: 0.0.3 alpha.** First public alpha, aimed at advanced users
+> **Status: 0.1.0 alpha — the Supervisor release.** Aimed at advanced users
 > comfortable testing CLI workflows and sharing feedback. Created by Volodymyr
 > Moskvin, [Conus Vision](https://conus.vision). We are open to collaboration —
 > [info@conus.vision](mailto:info@conus.vision).
@@ -125,15 +137,23 @@ companion narration (see the integration RFC below).
 
 - Wraps an LLM coding CLI (Claude Code, Codex CLI — more to come) and listens
   to its event stream in real time.
-- A small **commentator LLM** (Haiku 4.5 by default) summarises decisions,
-  file edits and reasoning in short human-voice lines.
+- A **Supervisor** — the strongest model your CLI can run — reviews the agent
+  at checkpoints and warns you out loud when it drifts, loops, touches files
+  outside the task or runs something destructive. **Supervisor+** pauses the
+  agent on a hard stop and shows a *Resume* banner in the panel.
+- A small **narrator LLM** summarises decisions, file edits and reasoning in
+  short human-voice lines. One checkbox picks the weakest model for the
+  narrator and the strongest for the Supervisor from the CLI's own catalog.
 - Keeps listening as the primary experience: hear what matters, read the trace
   when useful, and interrupt only when needed.
 - A **browser popup** on localhost exposes Play/Pause/Mute/Speak/Interrupt
   buttons and settings.
-- **Push-to-talk** (default `Alt+Space`): your question goes to STT → then
-  into the running agent as a native side-question, a queued next message,
-  or to the clipboard (depending on CLI capability).
+- A **launcher** for ~25 coding CLIs (Claude Code, Codex, OpenClaw, OpenCode,
+  Hermes, Droid, Pi, Cline, Copilot CLI, Oh My Pi, DeepSeek Harness, Qwen,
+  Gemini, Aider, …) plus a plain proxied **Terminal** — one click each.
+- **Push-to-talk** (default `Alt+Space`, *temporarily disabled*): your question
+  goes to STT → then into the running agent as a native side-question, a queued
+  next message, or to the clipboard (depending on CLI capability).
 - **Pause the CLI** while you talk (`Alt+P` or auto-on-speak): the subprocess
   is suspended via `psutil`, no races with the agent.
 - Works in English, Spanish, French, Ukrainian and Russian.
@@ -178,8 +198,9 @@ Codex works the same way: `voice-copilot run codex -p "explain what this repo do
 
 ## Narrate _any_ CLI via proxy mode
 
-`voice-copilot run <target>` only knows `claude` and `codex`. For everything
-else (aider, opencode, Cline, GitHub Copilot CLI that hits OpenAI/Anthropic),
+The **Launch** tab does this for you. If you would rather wire it up by hand —
+`voice-copilot run <target>` only knows `claude` and `codex`, so for everything
+else (aider, opencode, Cline, GitHub Copilot CLI that hits OpenAI/Anthropic)
 run the proxy as a standalone service and point your CLI's `BASE_URL` at it:
 
 ```bash
@@ -206,6 +227,7 @@ Supported upstream providers:
 | OpenRouter | `OPENROUTER_BASE_URL`    | `openrouter.ai/api`                        |
 | Groq       | `GROQ_BASE_URL`          | `api.groq.com/openai`                      |
 | Mistral    | `MISTRAL_BASE_URL`       | `api.mistral.ai`                           |
+| DeepSeek   | `DEEPSEEK_BASE_URL`      | `api.deepseek.com`                         |
 | Ollama     | `OLLAMA_BASE_URL`        | `127.0.0.1:11434` (local)                  |
 | Gemini     | `GEMINI_BASE_URL`        | `generativelanguage.googleapis.com` (passthrough) |
 
@@ -218,12 +240,13 @@ intercept.
 
 | Action                       | Default combo     | Notes                                        |
 | ---                          | ---               | ---                                          |
-| Push-to-talk                 | `Alt+Space`       | Hold to record, release to send to STT.      |
 | Interrupt (pause & listen)   | `Alt+Shift+Space` | Suspends the CLI process.                    |
 | Pause / resume toggle        | `Alt+P`           | Manual pause of the child CLI.               |
 | Mute TTS                     | `Alt+M`           | Stops narration without affecting the agent. |
+| Skip current narration       | `Alt+Shift+N`     | Drops the line being spoken, keeps the queue. |
+| Push-to-talk                 | `Alt+Space`       | *Off in this build* — see voice input above. |
 
-All four are rebindable on the settings page.
+All of them are rebindable under **Settings → Hotkeys**.
 
 ## Providers
 
@@ -241,6 +264,11 @@ Switch via the **Settings** page or by editing `~/.voice-copilot/config.yaml`.
 ## Configuration
 
 - `~/.voice-copilot/config.yaml` — edited by hand or via the settings page.
+- **Supervisor**: `commentator.supervisor.mode` = `off` / `watch` / `guard`,
+  `commentator.supervisor.model`, `commentator.supervisor.every_n_tools`;
+  `commentator.auto_tier_models: true` picks weakest/strongest models per
+  CLI; `commentator.per_cli.<cli>.supervisor_mode` overrides one CLI. See
+  [docs/supervisor.md](docs/supervisor.md).
 - Secrets live in the **OS keychain** (Credential Manager / Keychain / Secret
   Service) or in a `.env` next to where you run `voice-copilot`.
 - No fallbacks between providers: if the configured one fails, the error
@@ -266,6 +294,8 @@ See [docs/architecture.md](docs/architecture.md).
 Voice Copilot is in its first alpha. The goal right now is to validate the core
 idea with advanced users. Planned work:
 
+- grow the Supervisor: richer checkpoints (diff-aware review, cost and time
+  budgets), corrections injected straight into the agent, not only spoken
 - improve narration quality, timing, and signal-to-noise ratio
 - stabilize multi-session workflows and session switching
 - expand structured integrations with more coding CLIs

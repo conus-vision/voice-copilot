@@ -20,16 +20,33 @@ from typing import Any
 
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.events import Event, EventKind
+from voice_copilot.proxy.tool_events import decode_tool_input, publish_tool_call
 
 log = logging.getLogger(__name__)
 
 
 class AnthropicSSEParser:
-    def __init__(self, bus: EventBus, session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        bus: EventBus,
+        session_id: str | None = None,
+        *,
+        internal: bool = False,
+        subagent: bool = False,
+    ) -> None:
         self._bus = bus
         self._session_id = session_id
+        # A forked sub-agent's stream: its turn end is not the user's turn end.
+        self._subagent = subagent
+        # The CLI talking to itself (a title-generation call, a quota probe):
+        # its reply and its turn end are not the agent's, and must not be
+        # narrated, reviewed, or read as the task finishing.
+        self._internal = internal
         self._buf = b""
         self._blocks: dict[int, dict[str, Any]] = {}
+        # `message_delta` carries stop_reason; "tool_use" means the turn goes on
+        # after the tool results come back, so TURN_ENDED must not read as done.
+        self._stop_reason: str | None = None
 
     async def feed(self, chunk: bytes) -> None:
         if not chunk:
@@ -54,6 +71,7 @@ class AnthropicSSEParser:
             except Exception:
                 log.exception("failed to handle final anthropic SSE event")
         self._buf = b""
+        await self._flush_pending_tools()
         self._blocks.clear()
 
     @staticmethod
@@ -81,7 +99,14 @@ class AnthropicSSEParser:
     async def _dispatch(self, p: dict[str, Any]) -> None:
         t = p.get("type")
 
+        if t == "message_delta":
+            reason = (p.get("delta") or {}).get("stop_reason")
+            if isinstance(reason, str):
+                self._stop_reason = reason
+            return
+
         if t == "message_start":
+            self._stop_reason = None
             msg = p.get("message") or {}
             await self._emit(
                 EventKind.TURN_STARTED,
@@ -98,16 +123,15 @@ class AnthropicSSEParser:
                 "name": block.get("name"),
                 "id": block.get("id"),
                 "input": block.get("input"),
+                "emitted": False,
             }
-            if block.get("type") == "tool_use":
-                await self._emit(
-                    EventKind.TOOL_CALL_STARTED,
-                    {
-                        "tool_use_id": block.get("id"),
-                        "tool": block.get("name"),
-                        "input": block.get("input"),
-                    },
-                )
+            # A tool_use block starts with an empty `input` — the arguments
+            # arrive afterwards as input_json_delta. Emitting here would name
+            # the tool but never the file or command, so we wait for the block
+            # to close. Providers that do inline the input are emitted at once.
+            if block.get("type") == "tool_use" and block.get("input"):
+                self._blocks[idx]["emitted"] = True
+                await self._emit_tool_call(self._blocks[idx], block.get("input"))
             return
 
         if t == "content_block_delta":
@@ -136,17 +160,50 @@ class AnthropicSSEParser:
                 await self._emit(EventKind.AGENT_TEXT, {"text": text})
             elif btype == "thinking" and text:
                 await self._emit(EventKind.AGENT_THINKING, {"text": text})
-            # tool_use TOOL_CALL_STARTED was already emitted at block_start; we
-            # don't emit FINISHED here — the result comes back via the next
-            # request's tool_result, not in this stream.
+            elif btype == "tool_use":
+                # Arguments are complete now. We don't emit FINISHED — the
+                # result comes back via the next request's tool_result, not
+                # in this stream.
+                await self._flush_tool_block(block)
             return
 
         if t == "message_stop":
-            await self._emit(EventKind.TURN_ENDED, {"via": "anthropic.proxy"})
+            await self._flush_pending_tools()
+            final = self._stop_reason != "tool_use"
+            self._stop_reason = None
+            await self._emit(EventKind.TURN_ENDED, {"via": "anthropic.proxy", "final": final})
             self._blocks.clear()
             return
+
+    async def _flush_tool_block(self, block: dict[str, Any]) -> None:
+        """Emit a tool call once its streamed arguments are complete."""
+        if block.get("emitted"):
+            return
+        block["emitted"] = True
+        tool_input = block.get("input") or decode_tool_input(block.get("text"))
+        await self._emit_tool_call(block, tool_input)
+
+    async def _emit_tool_call(self, block: dict[str, Any], tool_input: Any) -> None:
+        await publish_tool_call(
+            self._bus,
+            source="anthropic.proxy",
+            session_id=self._session_id,
+            tool=block.get("name"),
+            tool_input=tool_input,
+            tool_use_id=block.get("id"),
+        )
+
+    async def _flush_pending_tools(self) -> None:
+        """Emit tool blocks left open by a truncated stream."""
+        for block in list(self._blocks.values()):
+            if block.get("type") == "tool_use":
+                await self._flush_tool_block(block)
 
     async def _emit(self, kind: EventKind, payload: dict[str, Any]) -> None:
         if self._session_id is not None:
             payload = {**payload, "session_id": self._session_id}
+        if self._internal:
+            payload = {**payload, "internal": True}
+        if self._subagent:
+            payload = {**payload, "subagent": True}
         await self._bus.publish(Event(kind=kind, source="anthropic.proxy", payload=payload))

@@ -97,7 +97,11 @@ class FocusRouter:
     def _should_narrate(self) -> bool:
         if self._narrate_only_when_focused:
             return self._current
-        return is_last_focused()
+        # Sticky rule: the instance whose window was focused last narrates.
+        # With no claim on record at all — a fresh install, a headless run —
+        # there is nobody to defer to, so this instance speaks rather than
+        # staying silent until some window happens to get focus.
+        return is_last_focused() or not shared_focus_state_path().exists()
 
     async def _poll(self) -> None:
         last: bool | None = None

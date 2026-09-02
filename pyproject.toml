@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voice-copilot"
-version = "0.0.3"
+version = "0.1.0"
 description = "Voice-first narrator and control layer for LLM coding CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,9 @@ dependencies = [
     "anthropic>=0.40",
     "openai>=1.50",
     "httpx>=0.27",
+    # Codex compresses its Responses request bodies with zstd; the proxy has to
+    # decompress them to read the user's question out of the turn.
+    "zstandard>=0.22",
     "edge-tts>=6.1",
     "pynput>=1.7",
     "pystray>=0.19",

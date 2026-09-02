@@ -54,6 +54,16 @@ def test_should_narrate_uses_current_focus_when_checked() -> None:
 
 def test_should_narrate_uses_sticky_state_when_unchecked(isolated_state) -> None:
     router = FocusRouter(narrate_only_when_focused=False)
+    record_focus(pid=424_242)  # some other instance holds the claim
     assert router._should_narrate() is False
-    record_focus()
+    record_focus()  # now this one does
     assert router._should_narrate() is True
+
+
+def test_unchecked_with_no_claim_on_record_narrates(isolated_state) -> None:
+    # Nobody has claimed focus yet (fresh install, headless run): staying
+    # silent until some window gets focus would read as "TTS is broken".
+    router = FocusRouter(narrate_only_when_focused=False)
+    assert router._should_narrate() is True
+    record_focus(pid=999_999)  # another instance claims it
+    assert router._should_narrate() is False

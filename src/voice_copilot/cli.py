@@ -27,6 +27,8 @@ from voice_copilot.commentator import Commentator
 from voice_copilot.commentator.provider_select import (
     commentator_status_text,
     resolve_commentator_provider,
+    resolve_supervisor,
+    supervisor_status_text,
 )
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.config import CommentatorConfig, Config, load_config
@@ -341,13 +343,16 @@ async def _await_vc_shutdown(
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
+        # The wrapped CLI first: whatever it left running (codex's sub-agents
+        # outlive `codex exec`) holds connections through the proxy, and the
+        # servers below drain faster with those clients gone.
+        if cleanup is not None:
+            await cleanup()
         for s in servers:
             s.should_exit = True
         for t in extra_tasks:
             t.cancel()
         await asyncio.gather(*server_tasks, *extra_tasks, return_exceptions=True)
-        if cleanup is not None:
-            await cleanup()
         if hotkey_svc is not None:
             hotkey_svc.stop()
         if tray_svc is not None:
@@ -370,10 +375,13 @@ async def _boot(
 
     hub = AudioHub()
     stt_provider = None
-    try:
-        stt_provider = provider_registry.build("stt", cfg.stt.name, dict(cfg.stt.options))
-    except Exception as e:
-        console.print(f"[yellow]STT provider unavailable: {e}[/yellow]")
+    # Voice input (mic -> STT -> inject) is behind a config flag while the flow
+    # is being reworked; with it off we never build an STT provider at all.
+    if cfg.voice_input.enabled:
+        try:
+            stt_provider = provider_registry.build("stt", cfg.stt.name, dict(cfg.stt.options))
+        except Exception as e:
+            console.print(f"[yellow]STT provider unavailable: {e}[/yellow]")
 
     fast_app = create_app(
         bus,
@@ -389,11 +397,21 @@ async def _boot(
     # keep printing to the console the child terminal now owns.
     if quiet_logging:
         uv_config = uvicorn.Config(
-            fast_app, host=host, port=port, log_config=None, access_log=False
+            fast_app,
+            host=host,
+            port=port,
+            log_config=None,
+            access_log=False,
+            timeout_graceful_shutdown=3,
         )
     else:
         uv_config = uvicorn.Config(
-            fast_app, host=host, port=port, log_level="info", access_log=False
+            fast_app,
+            host=host,
+            port=port,
+            log_level="info",
+            access_log=False,
+            timeout_graceful_shutdown=3,
         )
     server = ManagedServer(uv_config)
 
@@ -404,7 +422,10 @@ async def _boot(
     if enable_hotkeys:
         try:
             hotkey_svc = HotkeyService(
-                bus, loop, default_bindings(cfg.hotkeys), is_focused=is_focused
+                bus,
+                loop,
+                default_bindings(cfg.hotkeys, voice_input=cfg.voice_input.enabled),
+                is_focused=is_focused,
             )
             hotkey_svc.start()
         except Exception as e:
@@ -543,6 +564,7 @@ async def _run_with_adapter(
 
     adapter: CLIAdapter = build_adapter(bus)
     dialog = DialogManager(bus, adapter, cfg.dialog)
+    _server_app_state(server).dialog = dialog
     extra.append(asyncio.create_task(dialog.run(), name="dialog"))
     try:
         await adapter.start(initial_prompt=prompt)
@@ -616,6 +638,13 @@ def _launch_notice(resolved: ResolvedCli | None, commentator_status: str) -> str
     return "  •  ".join(parts)
 
 
+def _not_recognized_note(name: str) -> str:
+    return (
+        f"'{name}' isn't a recognized CLI — launching without narration. "
+        f"Add a proxy_cli.profiles.{name} entry to your config to enable it."
+    )
+
+
 def _apply_commentator_resolution(
     cfg: Config, resolved: ResolvedCli | None
 ) -> tuple[CommentatorConfig, str]:
@@ -631,7 +660,34 @@ def _apply_commentator_resolution(
     effective = resolve_commentator_provider(cfg.commentator, cli=cli, binary=binary)
     commentator_cfg = cfg.commentator.model_copy(deep=True)
     commentator_cfg.provider = effective
-    return commentator_cfg, commentator_status_text(effective, cli)
+    commentator_cfg.supervisor = resolve_supervisor(cfg.commentator, cli=cli)
+    status = commentator_status_text(effective, cli)
+    sup_status = supervisor_status_text(commentator_cfg.supervisor)
+    if sup_status:
+        status = f"{status}  •  {sup_status}"
+    return commentator_cfg, status
+
+
+def _make_commentator_resolver(
+    resolved: ResolvedCli | None, name: str
+) -> Callable[[Config], tuple[CommentatorConfig, str]]:
+    """Bind this launch's resolved CLI so /api/config can redo the resolution.
+
+    A panel save hands the server the *saved* config, whose `commentator.provider`
+    block is whatever the user last picked for `api` mode. Feeding that straight
+    to the running Commentator would silently replace an `auto` (reuse-the-CLI)
+    provider with an unconfigured API one, and every narration afterwards would
+    die on a missing key — so the save path re-applies the same resolution the
+    launch did.
+    """
+
+    def resolve(cfg: Config) -> tuple[CommentatorConfig, str]:
+        commentator_cfg, status = _apply_commentator_resolution(cfg, resolved)
+        if resolved is not None:
+            return commentator_cfg, _launch_notice(resolved, status)
+        return commentator_cfg, f"{_not_recognized_note(name)}  •  {status}"
+
+    return resolve
 
 
 async def _run_vc(
@@ -674,9 +730,12 @@ async def _run_vc(
         quiet_logging=True,
     )
 
-    commentator_cfg, commentator_status = _apply_commentator_resolution(cfg, resolved)
+    resolve_commentator = _make_commentator_resolver(resolved, name)
+    commentator_cfg, launch_notice = resolve_commentator(cfg)
     commentator = Commentator(bus, commentator_cfg, cfg.commentator_language, sessions=sessions)
     _server_app_state(server).commentator = commentator
+    _server_app_state(server).commentator_resolver = resolve_commentator
+    _server_app_state(server).launch_notice = launch_notice
     _server_app_state(server).focus_router = focus_router
     servers: list[uvicorn.Server] = [server]
     if enable_proxy:
@@ -700,9 +759,9 @@ async def _run_vc(
     # PTY clears the screen on handover.
     if resolved is not None:
         binary = resolved.resolved_binary
+        launch_args = list(resolved.launch_args)
         full_env = {**os.environ, **resolved.env_overrides}
         cwd = str(resolved.working_directory) if resolved.working_directory else None
-        _server_app_state(server).launch_notice = _launch_notice(resolved, commentator_status)
         # Wait for the proxy to bind before the child starts using its base URL.
         # The child owns the terminal here, so a failure goes to the log file
         # (routed by `_route_logging_to_file`), never the console.
@@ -714,16 +773,13 @@ async def _run_vc(
             )
     else:
         binary = name
+        launch_args = []
         full_env = dict(os.environ)
         cwd = None
-        not_recognized_note = (
-            f"'{name}' isn't a recognized CLI — launching without narration. "
-            f"Add a proxy_cli.profiles.{name} entry to your config to enable it."
-        )
-        _server_app_state(server).launch_notice = f"{not_recognized_note}  •  {commentator_status}"
 
-    adapter = PtyAdapter(bus, [binary, *cli_args], env=full_env, cwd=cwd)
+    adapter = PtyAdapter(bus, [binary, *launch_args, *cli_args], env=full_env, cwd=cwd)
     dialog = DialogManager(bus, adapter, cfg.dialog)
+    _server_app_state(server).dialog = dialog
     extra.append(asyncio.create_task(dialog.run(), name="dialog"))
 
     try:

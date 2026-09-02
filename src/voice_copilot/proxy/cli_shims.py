@@ -75,7 +75,8 @@ def describe_cli_shims(
     profiles = []
     for profile_id, meta in CLI_CATALOG.items():
         profile = _profile_from_config(cfg, profile_id)
-        shim_path = _shim_path(meta.command)
+        is_shell = meta.kind == "shell"
+        shim_path = None if is_shell else _shim_path(meta.command)
         profiles.append(
             {
                 "id": profile_id,
@@ -83,15 +84,19 @@ def describe_cli_shims(
                 "command": meta.command,
                 "description": meta.description,
                 "website_url": meta.website_url,
+                "kind": meta.kind,
+                "icon": meta.icon,
+                "accent": meta.accent,
+                "order": meta.order,
                 "provider": profile.provider,
                 "base_url_env": profile.base_url_env,
                 "binary_path": profile.binary_path,
-                "proxy_url": _proxy_url_for(profile.provider, host=host, port=port),
-                "resolved_binary": _resolve_binary_path(
-                    meta.command, profile.binary_path, shim_dir
-                ),
-                "shim_path": str(shim_path),
-                "installed": shim_path.exists(),
+                "proxy_url": f"http://{host}:{port}/*"
+                if is_shell
+                else _proxy_url_for(profile.provider, host=host, port=port),
+                "resolved_binary": _resolve_launch_binary(meta, profile, shim_dir),
+                "shim_path": str(shim_path) if shim_path is not None else None,
+                "installed": bool(shim_path is not None and shim_path.exists()),
                 "working_directory": cfg.proxy_cli.working_directory,
                 "resolved_working_directory": str(resolved_working_directory)
                 if resolved_working_directory
@@ -120,6 +125,7 @@ def install_cli_shim(
 ) -> dict[str, Any]:
     _require_supported()
     meta = _meta_for(profile_id)
+    _reject_shell_shim(meta)
     profile = _profile_from_config(cfg, profile_id)
     shim_dir = proxy_shim_dir()
     resolved_binary = _resolve_binary_path(meta.command, profile.binary_path, shim_dir)
@@ -130,16 +136,14 @@ def install_cli_shim(
 
     shim_dir.mkdir(parents=True, exist_ok=True)
     shim_path = _shim_path(meta.command)
-    env_overrides = _proxy_env_overrides(
-        profile_id,
-        profile,
-        proxy_url=_proxy_url_for(profile.provider, host=host, port=port),
-    )
+    env_overrides = _proxy_env_overrides(profile_id, profile, meta=meta, host=host, port=port)
+    launch_args = _proxy_launch_args(profile, meta=meta, host=host, port=port)
     if os.name == "nt":
         shim_path.write_text(
             _render_cmd_shim(
                 binary_path=resolved_binary,
                 env_overrides=env_overrides,
+                launch_args=launch_args,
             ),
             encoding="utf-8",
         )
@@ -148,6 +152,7 @@ def install_cli_shim(
             _render_shell_shim(
                 binary_path=resolved_binary,
                 env_overrides=env_overrides,
+                launch_args=launch_args,
             ),
             encoding="utf-8",
         )
@@ -165,6 +170,7 @@ def restore_cli_shim(
 ) -> dict[str, Any]:
     _require_supported()
     meta = _meta_for(profile_id)
+    _reject_shell_shim(meta)
     shim_path = _shim_path(meta.command)
     if shim_path.exists():
         shim_path.unlink()
@@ -185,27 +191,25 @@ def launch_cli_profile(
     _require_supported()
     meta = _meta_for(profile_id)
     profile = _profile_from_config(cfg, profile_id)
-    resolved_binary = _resolve_binary_path(meta.command, profile.binary_path, proxy_shim_dir())
+    resolved_binary = _resolve_launch_binary(meta, profile, proxy_shim_dir())
     if not resolved_binary:
-        raise RuntimeError(
-            f"could not resolve `{meta.command}` on PATH; set a Binary override first"
-        )
+        raise RuntimeError(_missing_binary_message(meta))
     working_directory = _working_directory_from_config(cfg, profile)
     if working_directory is None:
         raise RuntimeError("working directory does not exist; choose another folder")
-    env_overrides = _proxy_env_overrides(
-        profile_id,
-        profile,
-        proxy_url=_proxy_url_for(profile.provider, host=host, port=port),
-    )
+    env_overrides = _proxy_env_overrides(profile_id, profile, meta=meta, host=host, port=port)
+    launch_args = _proxy_launch_args(profile, meta=meta, host=host, port=port)
     title = f"voice-copilot - {meta.label}"
     if os.name == "nt":
         shell = _powershell_path()
+        # A shell profile *is* the terminal: PowerShell stays open on -NoExit,
+        # so there is nothing left to run inside it.
         launch_command = _render_powershell_launch(
-            binary_path=resolved_binary,
+            binary_path=None if meta.kind == "shell" else resolved_binary,
             env_overrides=env_overrides,
             working_directory=working_directory,
             title=title,
+            launch_args=launch_args,
         )
         subprocess.Popen(
             [shell, "-NoExit", "-Command", launch_command],
@@ -218,6 +222,7 @@ def launch_cli_profile(
             env_overrides=env_overrides,
             working_directory=working_directory,
             title=title,
+            launch_args=launch_args,
         )
     return {
         "ok": True,
@@ -225,7 +230,9 @@ def launch_cli_profile(
         "label": meta.label,
         "working_directory": str(working_directory),
         "binary_path": resolved_binary,
-        "proxy_url": _proxy_url_for(profile.provider, host=host, port=port),
+        "proxy_url": f"http://{host}:{port}/*"
+        if meta.kind == "shell"
+        else _proxy_url_for(profile.provider, host=host, port=port),
     }
 
 
@@ -237,6 +244,8 @@ class ResolvedCli:
     env_overrides: dict[str, str]
     working_directory: Path | None
     provider: str
+    #: Inserted between the binary and the user's own args at launch.
+    launch_args: tuple[str, ...] = ()
 
 
 def resolve_cli_for_vc(
@@ -253,6 +262,7 @@ def resolve_cli_for_vc(
     falls back to a user-added `cfg.proxy_cli.profiles` entry whose key
     isn't in the catalog at all. Returns `None` if nothing matches.
     """
+    meta: CliCatalogEntry | None
     if name in CLI_CATALOG:
         profile_id = name
         meta = CLI_CATALOG[name]
@@ -260,7 +270,7 @@ def resolve_cli_for_vc(
         label = meta.label
     else:
         catalog_match = next(
-            ((pid, meta) for pid, meta in CLI_CATALOG.items() if meta.command == name),
+            ((pid, entry) for pid, entry in CLI_CATALOG.items() if entry.command == name),
             None,
         )
         if catalog_match is not None:
@@ -269,17 +279,20 @@ def resolve_cli_for_vc(
             label = meta.label
         elif name in cfg.proxy_cli.profiles:
             profile_id, command, label = name, name, name
+            meta = None
         else:
             return None
 
     profile = _profile_from_config(cfg, profile_id)
-    resolved_binary = _resolve_binary_path(command, profile.binary_path, proxy_shim_dir())
+    resolved_binary = (
+        _resolve_launch_binary(meta, profile, proxy_shim_dir())
+        if meta is not None
+        else _resolve_binary_path(command, profile.binary_path, proxy_shim_dir())
+    )
     if not resolved_binary:
         raise RuntimeError(f"could not resolve `{command}` on PATH; set a Binary override first")
 
-    env_overrides = _proxy_env_overrides(
-        profile_id, profile, proxy_url=_proxy_url_for(profile.provider, host=host, port=port)
-    )
+    env_overrides = _proxy_env_overrides(profile_id, profile, meta=meta, host=host, port=port)
     working_directory = _working_directory_from_config(cfg, profile)
     return ResolvedCli(
         profile_id=profile_id,
@@ -288,6 +301,7 @@ def resolve_cli_for_vc(
         env_overrides=env_overrides,
         working_directory=working_directory,
         provider=profile.provider,
+        launch_args=_proxy_launch_args(profile, meta=meta, host=host, port=port),
     )
 
 
@@ -345,9 +359,11 @@ def _proxy_url_for(provider: str, *, host: str, port: int) -> str:
     key = {
         "anthropic": "ANTHROPIC_BASE_URL",
         "openai": "OPENAI_BASE_URL",
+        "openai-chatgpt": "OPENAI_CHATGPT_BASE_URL",
         "openrouter": "OPENROUTER_BASE_URL",
         "groq": "GROQ_BASE_URL",
         "mistral": "MISTRAL_BASE_URL",
+        "deepseek": "DEEPSEEK_BASE_URL",
         "ollama": "OLLAMA_BASE_URL",
         "gemini": "GEMINI_BASE_URL",
         "opencode-zen": "OPENCODE_ZEN_BASE_URL",
@@ -355,12 +371,63 @@ def _proxy_url_for(provider: str, *, host: str, port: int) -> str:
     return urls[key]
 
 
+def _shell_env_overrides(*, host: str, port: int) -> dict[str, str]:
+    """Every base-URL var at once, for the plain `terminal` profile.
+
+    A shell has no single upstream: whatever the user starts inside it should
+    be proxied, so we export one variable per route. Gemini gets both spellings
+    because the CLI reads GOOGLE_GEMINI_BASE_URL while our route table calls it
+    GEMINI_BASE_URL.
+    """
+    urls = base_urls_for(host, port)
+    overrides = {
+        name: urls[name]
+        for name in (
+            "ANTHROPIC_BASE_URL",
+            "OPENAI_BASE_URL",
+            "OPENROUTER_BASE_URL",
+            "GROQ_BASE_URL",
+            "MISTRAL_BASE_URL",
+            "DEEPSEEK_BASE_URL",
+            "OLLAMA_BASE_URL",
+            "GEMINI_BASE_URL",
+        )
+    }
+    overrides["GOOGLE_GEMINI_BASE_URL"] = urls["GEMINI_BASE_URL"]
+    return overrides
+
+
+def _proxy_launch_args(
+    profile: ProxyCliProfileConfig,
+    *,
+    meta: CliCatalogEntry | None,
+    host: str,
+    port: int,
+) -> tuple[str, ...]:
+    """Catalog `launch_args` with `{proxy_url}` filled in for this run.
+
+    A shell profile has no single upstream to point at, so it gets none.
+    """
+    if meta is None or meta.kind == "shell" or not meta.launch_args:
+        return ()
+    proxy_url = _proxy_url_for(profile.provider, host=host, port=port)
+    return tuple(arg.replace("{proxy_url}", proxy_url) for arg in meta.launch_args)
+
+
 def _proxy_env_overrides(
     profile_id: str,
     profile: ProxyCliProfileConfig,
     *,
-    proxy_url: str,
+    meta: CliCatalogEntry | None = None,
+    host: str,
+    port: int,
 ) -> dict[str, str]:
+    if meta is not None and meta.kind == "shell":
+        shell_overrides = _shell_env_overrides(host=host, port=port)
+        if not os.environ.get(_TOOL_SEARCH_ENV, "").strip():
+            shell_overrides[_TOOL_SEARCH_ENV] = _TOOL_SEARCH_DEFAULT
+        return shell_overrides
+    proxy_url = _proxy_url_for(profile.provider, host=host, port=port)
     if profile_id == "opencode" and profile.provider == "opencode-zen":
         return {
             "OPENCODE_CONFIG_CONTENT": json.dumps(
@@ -385,6 +452,37 @@ def _proxy_env_overrides(
     return overrides
 
 
+def _resolve_launch_binary(
+    meta: CliCatalogEntry,
+    profile: ProxyCliProfileConfig,
+    shim_dir: Path,
+) -> str | None:
+    """The executable a profile launches — the user's shell for `kind: shell`."""
+    if meta.kind == "shell":
+        return profile.binary_path or _shell_path()
+    return _resolve_binary_path(meta.command, profile.binary_path, shim_dir)
+
+
+def _shell_path() -> str | None:
+    if os.name == "nt":
+        return shutil.which("powershell.exe") or shutil.which("pwsh.exe")
+    configured = os.environ.get("SHELL")
+    if configured and Path(configured).exists():
+        return configured
+    return shutil.which("bash") or shutil.which("sh")
+
+
+def _missing_binary_message(meta: CliCatalogEntry) -> str:
+    if meta.kind == "shell":
+        return "could not find a shell to open; set a Binary override first"
+    return f"could not resolve `{meta.command}` on PATH; set a Binary override first"
+
+
+def _reject_shell_shim(meta: CliCatalogEntry) -> None:
+    if meta.kind == "shell":
+        raise RuntimeError(f"{meta.label} has no PATH shim - use Launch instead")
+
+
 def _resolve_binary_path(command: str, override: str | None, shim_dir: Path) -> str | None:
     if override:
         candidate = Path(os.path.expandvars(os.path.expanduser(override))).expanduser()
@@ -406,35 +504,44 @@ def _shim_path(command: str) -> Path:
     return proxy_shim_dir() / f"{command}{suffix}"
 
 
-def _render_cmd_shim(*, binary_path: str, env_overrides: dict[str, str]) -> str:
+def _render_cmd_shim(
+    *, binary_path: str, env_overrides: dict[str, str], launch_args: tuple[str, ...] = ()
+) -> str:
     lines = ["@echo off", "setlocal"]
     lines.extend(f'set "{name}={value}"' for name, value in env_overrides.items())
-    lines.append(f'"{binary_path}" %*')
+    args = "".join(f" {_quote_for_cmd(arg)}" for arg in launch_args)
+    lines.append(f'"{binary_path}"{args} %*')
     return "\n".join(lines) + "\n"
 
 
-def _render_shell_shim(*, binary_path: str, env_overrides: dict[str, str]) -> str:
+def _render_shell_shim(
+    *, binary_path: str, env_overrides: dict[str, str], launch_args: tuple[str, ...] = ()
+) -> str:
     lines = ["#!/usr/bin/env sh"]
     lines.extend(f"export {name}={shlex.quote(value)}" for name, value in env_overrides.items())
-    lines.append(f'exec {shlex.quote(binary_path)} "$@"')
+    args = "".join(f" {shlex.quote(arg)}" for arg in launch_args)
+    lines.append(f'exec {shlex.quote(binary_path)}{args} "$@"')
     return "\n".join(lines) + "\n"
 
 
 def _render_powershell_launch(
     *,
-    binary_path: str,
+    binary_path: str | None,
     env_overrides: dict[str, str],
     working_directory: Path,
     title: str,
+    launch_args: tuple[str, ...] = (),
 ) -> str:
     env_commands = " ".join(
         f"$env:{name} = '{_quote_for_powershell(value)}';" for name, value in env_overrides.items()
     )
+    args = "".join(f" '{_quote_for_powershell(arg)}'" for arg in launch_args)
+    run_command = f"& '{_quote_for_powershell(binary_path)}'{args}" if binary_path else ""
     return (
         f"$Host.UI.RawUI.WindowTitle = '{_quote_for_powershell(title)}'; "
         f"{env_commands} "
         f"Set-Location -LiteralPath '{_quote_for_powershell(str(working_directory))}'; "
-        f"& '{_quote_for_powershell(binary_path)}'"
+        f"{run_command}"
     )
 
 
@@ -457,11 +564,15 @@ def _render_shell_launch_command(
     binary_path: str,
     env_overrides: dict[str, str],
     working_directory: Path,
+    launch_args: tuple[str, ...] = (),
 ) -> str:
     exports = " ".join(
         f"export {name}={shlex.quote(value)};" for name, value in env_overrides.items()
     )
-    return f"cd {shlex.quote(str(working_directory))}; {exports} exec {shlex.quote(binary_path)}"
+    args = "".join(f" {shlex.quote(arg)}" for arg in launch_args)
+    return (
+        f"cd {shlex.quote(str(working_directory))}; {exports} exec {shlex.quote(binary_path)}{args}"
+    )
 
 
 def _launch_posix_terminal(
@@ -470,11 +581,13 @@ def _launch_posix_terminal(
     env_overrides: dict[str, str],
     working_directory: Path,
     title: str,
+    launch_args: tuple[str, ...] = (),
 ) -> None:
     command = _render_shell_launch_command(
         binary_path=binary_path,
         env_overrides=env_overrides,
         working_directory=working_directory,
+        launch_args=launch_args,
     )
     if sys.platform == "darwin":
         script = (
@@ -544,6 +657,17 @@ def _powershell_path() -> str:
 
 def _quote_for_powershell(value: str) -> str:
     return value.replace("'", "''")
+
+
+def _quote_for_cmd(value: str) -> str:
+    """Quote one argv item for a .cmd shim.
+
+    Our launch args carry embedded double quotes (`-c openai_base_url="..."`),
+    which cmd would strip on the way through — doubling them keeps the inner
+    quotes intact for the child, which needs them to parse the value as TOML.
+    """
+    escaped = value.replace('"', '""')
+    return f'"{escaped}"'
 
 
 def _resolve_working_directory(override: str | None) -> Path | None:

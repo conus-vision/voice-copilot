@@ -25,6 +25,20 @@ from voice_copilot.providers.registry import register
 log = logging.getLogger(__name__)
 
 
+def _explain_silence(stderr: str) -> str:
+    """The most useful line of a failed CLI run, for the popup and the trace.
+
+    Agent CLIs report a rejected model or a bad login on stderr and still exit
+    0, so the only signal we get is empty stdout. Surfacing their own words
+    beats a bare "no narration" the user cannot act on.
+    """
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.lower().startswith(("error", "warning: model")):
+            return line[:400]
+    return lines[-1][:400] if lines else "no output on stdout or stderr"
+
+
 @register("llm", "auto")
 class AutoCommentatorProvider(LLMProvider):
     name = "auto"
@@ -93,6 +107,10 @@ class AutoCommentatorProvider(LLMProvider):
             log.debug("auto(%s) stderr: %s", self._cli, stderr[:400])
         text = (stdout or "").strip()
         if not text:
-            log.warning("auto(%s): empty narration response", self._cli)
-            return
+            # Fail loud: silence here used to look exactly like "the commentator
+            # never started", with the real cause (a model the account cannot
+            # use, an expired login) buried in the log file.
+            raise RuntimeError(
+                f"auto commentator: {self._cli} narrated nothing — {_explain_silence(stderr)}"
+            )
         yield text

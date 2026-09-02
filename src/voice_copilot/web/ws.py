@@ -11,6 +11,8 @@ Protocol:
       { "type":"pong" }
     Client → server:
       { "type":"cmd", "cmd":"play"|"pause"|"mute"|"unmute"|"interrupt" }
+      { "type":"cmd", "cmd":"hold_while_narrating", "enabled":true|false }
+      { "type":"cmd", "cmd":"agent_toggle_pause" }
       { "type":"cmd", "cmd":"speak_start"|"speak_end" }
       { "type":"cmd", "cmd":"mic_start", "codec":"webm"|"ogg"|"wav" }
       { "type":"cmd", "cmd":"mic_end" }
@@ -77,8 +79,14 @@ async def _handle_cmd(
     stt: STTProvider | None,
     language: str | None,
     focus_router: FocusRouter | None = None,
+    voice_input: bool = True,
+    dialog: Any = None,
 ) -> None:
     cmd = data.get("cmd")
+    if not voice_input and cmd in ("speak_start", "speak_end", "mic_start", "mic_end"):
+        # Voice input is off (config `voice_input.enabled`); the panel hides the
+        # mic, so anything arriving here is a stale tab — drop it silently.
+        return
     if cmd == "playback_rate":
         state_payload: dict[str, Any] = {}
         rate = data.get("playback_rate")
@@ -130,6 +138,17 @@ async def _handle_cmd(
     if cmd == "interrupt":
         await bus.publish(Event(kind=EventKind.USER_INTERRUPT, source="web", payload={}))
         return
+    if cmd == "agent_toggle_pause":
+        # The panel's way to release an agent the supervisor (or the user)
+        # paused — same event the alt+p hotkey publishes.
+        await bus.publish(Event(kind=EventKind.USER_PAUSE_TOGGLE, source="web", payload={}))
+        return
+    if cmd == "hold_while_narrating":
+        # Live toggle: the panel button flips it for this run without making
+        # the user open Settings and save.
+        if dialog is not None:
+            dialog.set_hold_while_narrating(bool(data.get("enabled")))
+        return
     if cmd == "mic_start":
         mic.start(data.get("codec"))
         return
@@ -169,7 +188,9 @@ def register_ws(app: FastAPI) -> None:
         hub: AudioHub = ws.app.state.audio_hub
         stt: STTProvider | None = getattr(ws.app.state, "stt_provider", None)
         language: str | None = getattr(ws.app.state, "human_language", None)
+        voice_input: bool = bool(getattr(ws.app.state, "voice_input_enabled", True))
         focus_router: FocusRouter | None = getattr(ws.app.state, "focus_router", None)
+        dialog = getattr(ws.app.state, "dialog", None)
         await ws.accept()
         await hub.register(ws)
 
@@ -186,11 +207,23 @@ def register_ws(app: FastAPI) -> None:
                         continue
                     mtype = data.get("type")
                     if mtype == "cmd":
-                        await _handle_cmd(bus, mic, data, stt, language, focus_router)
+                        await _handle_cmd(
+                            bus,
+                            mic,
+                            data,
+                            stt,
+                            language,
+                            focus_router,
+                            voice_input=bool(
+                                getattr(ws.app.state, "voice_input_enabled", voice_input)
+                            ),
+                            dialog=dialog,
+                        )
                     elif mtype == "ping":
                         await ws.send_text(json.dumps({"type": "pong"}))
                 elif "bytes" in msg and msg["bytes"] is not None:
-                    mic.feed(msg["bytes"])
+                    if getattr(ws.app.state, "voice_input_enabled", voice_input):
+                        mic.feed(msg["bytes"])
                 elif msg.get("type") == "websocket.disconnect":
                     break
         except WebSocketDisconnect:

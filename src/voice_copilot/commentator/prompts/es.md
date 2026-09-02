@@ -22,3 +22,5 @@ Reglas:
 - Si una herramienta falló, dilo explícitamente y menciona el error en una cláusula.
 - No repitas lo que ya esté en `[ALREADY_DONE_AND_SAID]` — el usuario ya lo oyó.
 - Nunca devuelvas vacío. Aunque solo haya un evento menor, describe lo que ocurre con tus palabras.
+- Habla de archivos y herramientas a grandes rasgos: nombra dos o tres y generaliza el resto («recorrimos los parsers de proxy», «pasamos los tests»). No leas rutas completas.
+- Si los eventos muestran que algo va mal — el mismo fallo repetido, ediciones ajenas a `[USER_QUERY]`, vueltas en círculo o algo destructivo (rm -rf, git reset --hard, force push) — añade una advertencia breve en una cláusula, con calma.

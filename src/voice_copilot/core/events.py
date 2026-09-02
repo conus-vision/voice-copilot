@@ -38,6 +38,14 @@ class EventKind(StrEnum):
     AGENT_RESUMED = "agent.resumed"
 
     COMMENTATOR_UTTERANCE = "commentator.utterance"
+    #: The exact prompt handed to the commentator LLM — panel-only,
+    #: so you can see what the narration was actually based on.
+    COMMENTATOR_PROMPT = "commentator.prompt"
+    #: The supervisor's verdict on a checkpoint — trace-visible; a WARN/STOP
+    #: is also spoken through a COMMENTATOR_UTTERANCE tagged role=supervisor.
+    SUPERVISOR_VERDICT = "supervisor.verdict"
+    #: Supervisor+ decided the agent is off track: the dialog manager pauses it.
+    SUPERVISOR_STOP = "supervisor.stop"
     TTS_STARTED = "tts.started"
     TTS_FINISHED = "tts.finished"
     PLAYBACK_STATE = "playback.state"

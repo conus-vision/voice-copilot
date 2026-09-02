@@ -41,8 +41,13 @@ def extract_user_query(body: bytes, *, provider: str, path: str) -> str | None:
             prompt = doc.get("prompt")
             return prompt if isinstance(prompt, str) and prompt.strip() else None
 
-    # OpenAI-compatible (openai, openrouter, groq, mistral, ollama/v1)
-    return _last_user_from_messages(doc.get("messages"))
+    # OpenAI-compatible (openai, openai-chatgpt, openrouter, groq, mistral,
+    # ollama/v1). Chat Completions puts the turn in `messages`; the Responses
+    # API — what Codex speaks — puts it in `input`, as items whose content
+    # blocks are `input_text`. Both flatten the same way, so try each in turn.
+    return _last_user_from_messages(doc.get("messages")) or _last_user_from_messages(
+        doc.get("input")
+    )
 
 
 def _last_user_from_messages(messages: Any) -> str | None:

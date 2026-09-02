@@ -26,6 +26,7 @@ from voice_copilot.audio.hub import AudioHub
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.config import Language
 from voice_copilot.core.events import Event, EventKind
+from voice_copilot.core.user_query import clean_user_query
 from voice_copilot.providers.tts.base import TTSProvider
 
 log = logging.getLogger(__name__)
@@ -136,9 +137,22 @@ class TTSDriver:
             self._abort_task = None
 
     def _register_query(self, ev: Event) -> bool:
+        """Note a newly observed question; True when it is genuinely new.
+
+        Used only to stop what is currently playing — never to veto narration
+        that arrives later. The commentator keeps its own query version and
+        already drops batches it considers stale; this counter sees every
+        request the proxy observes, including an agent's internal side calls
+        (codex asks the model for a session title mid-turn), so treating it as
+        the authority silently discarded good narration: the line appeared in
+        the Trace and was never spoken.
+        """
         if ev.source.startswith(("stt.", "web", "hotkey")):
             return False
-        text = (ev.payload.get("text") or "").strip()
+        # A title-generation call or a quota probe rides the same session as
+        # the conversation; cleaning it the way the narrator does keeps it
+        # from cutting off a line that was already being read.
+        text = clean_user_query(str(ev.payload.get("text") or ""))
         if not text:
             return False
         key = self._session_key_of(ev.payload)
@@ -148,16 +162,8 @@ class TTSDriver:
         self._query_versions[key] = self._query_versions.get(key, 0) + 1
         return True
 
-    def _is_stale_utterance(self, ev: Event) -> bool:
-        key = self._session_key_of(ev.payload)
-        expected = self._query_versions.get(key)
-        query_version = ev.payload.get("query_version")
-        if expected is None or not isinstance(query_version, int):
-            return False
-        return query_version < expected
-
     def _build_utterance(self, ev: Event) -> _QueuedUtterance | None:
-        if self.muted or self._is_stale_utterance(ev):
+        if self.muted:
             return None
         text = str(ev.payload.get("read_text") or ev.payload.get("text") or "").strip()
         if not text:
@@ -194,10 +200,6 @@ class TTSDriver:
                 utterance = self._pop_next_pending()
                 if utterance is None:
                     continue
-                if utterance.query_version is not None:
-                    expected = self._query_versions.get(utterance.session_key)
-                    if expected is not None and utterance.query_version < expected:
-                        continue
                 if self.muted:
                     continue
                 task = asyncio.create_task(self._speak(utterance), name="tts.speak")
@@ -235,6 +237,12 @@ class TTSDriver:
 
     async def _speak(self, utterance: _QueuedUtterance) -> None:
         utt_id = uuid4().hex
+        log.info(
+            "tts: speaking %d chars (session=%s, lang=%s)",
+            len(utterance.text),
+            utterance.session_key,
+            utterance.language,
+        )
         fmt = self._tts.output_format
         async with self._hub.utterance_lock():
             await self._bus.publish(

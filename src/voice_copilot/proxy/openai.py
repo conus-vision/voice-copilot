@@ -14,6 +14,7 @@ from typing import Any
 
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.events import Event, EventKind
+from voice_copilot.proxy.tool_events import decode_tool_input, publish_tool_call
 
 log = logging.getLogger(__name__)
 
@@ -26,15 +27,38 @@ _SENTENCE_ENDS = (".", "!", "?", "\n", "。", "！", "？", "…")  # noqa: RUF0
 
 
 class OpenAISSEParser:
-    def __init__(self, bus: EventBus, session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        bus: EventBus,
+        session_id: str | None = None,
+        *,
+        internal: bool = False,
+        subagent: bool = False,
+    ) -> None:
         self._bus = bus
         self._session_id = session_id
+        # A forked sub-agent's stream: its turn end is not the user's turn end.
+        self._subagent = subagent
+        # The CLI talking to itself (a title-generation call, a quota probe):
+        # its reply and its turn end are not the agent's, and must not be
+        # narrated, reviewed, or read as the task finishing.
+        self._internal = internal
         self._buf = b""
         # Accumulate per-turn text and reasoning so the commentator receives
         # one coherent chunk per turn instead of sub-token fragments that get
         # filtered out as "too short" by importance.classify.
         self._text_buf: list[str] = []
         self._reasoning_buf: list[str] = []
+        # Pending tool calls, keyed by the stream's own index/id. Chat
+        # Completions streams `delta.tool_calls[].function.arguments` and the
+        # Responses API streams `response.function_call_arguments.delta`; both
+        # are only useful once complete, so we accumulate and flush at the end
+        # of the turn.
+        self._tool_calls: dict[str, dict[str, Any]] = {}
+        # A response that ends by calling tools is not the end of the agent's
+        # turn — the next request carries the results and continues it. Track
+        # it so TURN_ENDED can say whether the agent is actually done.
+        self._turn_called_tools = False
 
     async def feed(self, chunk: bytes) -> None:
         if not chunk:
@@ -100,6 +124,9 @@ class OpenAISSEParser:
             thinking = delta.get("reasoning") or delta.get("reasoning_content")
             if thinking:
                 self._reasoning_buf.append(thinking)
+            self._collect_chat_tool_calls(delta.get("tool_calls"))
+            if (choices[0] or {}).get("finish_reason"):
+                await self._flush_tool_calls()
             await self._try_incremental_flush()
             return
 
@@ -117,9 +144,57 @@ class OpenAISSEParser:
                 self._reasoning_buf.append(text)
                 await self._try_incremental_flush()
             return
+        if t == "response.created":
+            self._turn_called_tools = False
+            return
+        if t == "response.output_item.added":
+            item = p.get("item") or {}
+            if item.get("type") in ("function_call", "custom_tool_call"):
+                self._turn_called_tools = True
+                key = str(item.get("id") or item.get("call_id") or p.get("output_index") or "0")
+                self._tool_calls[key] = {
+                    "id": item.get("call_id") or item.get("id"),
+                    "name": item.get("name"),
+                    "args": item.get("arguments") or "",
+                }
+            return
+        if t in ("response.function_call_arguments.delta", "response.custom_tool_call_input.delta"):
+            key = str(p.get("item_id") or p.get("output_index") or "0")
+            entry = self._tool_calls.setdefault(key, {"id": None, "name": None, "args": ""})
+            entry["args"] += str(p.get("delta") or p.get("input") or "")
+            return
+        if t in ("response.function_call_arguments.done", "response.output_item.done"):
+            item = p.get("item") or {}
+            key = str(
+                p.get("item_id")
+                or item.get("id")
+                or item.get("call_id")
+                or p.get("output_index")
+                or "0"
+            )
+            pending = self._tool_calls.get(key)
+            if pending is not None:
+                if isinstance(p.get("arguments"), str) and p["arguments"]:
+                    pending["args"] = p["arguments"]
+                if not pending.get("name"):
+                    pending["name"] = item.get("name")
+                await self._flush_tool_calls(only=key)
+            return
         if t == "response.completed":
             await self._flush_turn()
-            await self._emit(EventKind.TURN_ENDED, {"via": "openai.proxy"})
+            output = (p.get("response") or {}).get("output")
+            called_tools = self._turn_called_tools or (
+                isinstance(output, list)
+                and any(
+                    isinstance(item, dict)
+                    and item.get("type") in ("function_call", "custom_tool_call")
+                    for item in output
+                )
+            )
+            self._turn_called_tools = False
+            await self._emit(
+                EventKind.TURN_ENDED, {"via": "openai.proxy", "final": not called_tools}
+            )
             return
 
     async def _try_incremental_flush(self) -> None:
@@ -150,8 +225,41 @@ class OpenAISSEParser:
                 if full:
                     await self._emit(EventKind.AGENT_TEXT, {"text": full})
 
+    def _collect_chat_tool_calls(self, tool_calls: Any) -> None:
+        """Accumulate Chat Completions tool-call deltas, keyed by index."""
+        if not isinstance(tool_calls, list):
+            return
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            key = str(call.get("index", 0))
+            entry = self._tool_calls.setdefault(key, {"id": None, "name": None, "args": ""})
+            if call.get("id"):
+                entry["id"] = call["id"]
+            fn = call.get("function") or {}
+            if fn.get("name"):
+                entry["name"] = fn["name"]
+            if isinstance(fn.get("arguments"), str):
+                entry["args"] += fn["arguments"]
+
+    async def _flush_tool_calls(self, only: str | None = None) -> None:
+        keys = [only] if only is not None else list(self._tool_calls)
+        for key in keys:
+            entry = self._tool_calls.pop(key, None)
+            if not entry or not entry.get("name"):
+                continue
+            await publish_tool_call(
+                self._bus,
+                source="openai.proxy",
+                session_id=self._session_id,
+                tool=entry.get("name"),
+                tool_input=decode_tool_input(entry.get("args")),
+                tool_use_id=entry.get("id"),
+            )
+
     async def _flush_turn(self) -> None:
         """Emit accumulated text/reasoning as single events, then reset."""
+        await self._flush_tool_calls()
         if self._reasoning_buf:
             full = "".join(self._reasoning_buf).strip()
             self._reasoning_buf = []
@@ -166,4 +274,8 @@ class OpenAISSEParser:
     async def _emit(self, kind: EventKind, payload: dict[str, Any]) -> None:
         if self._session_id is not None:
             payload = {**payload, "session_id": self._session_id}
+        if self._internal:
+            payload = {**payload, "internal": True}
+        if self._subagent:
+            payload = {**payload, "subagent": True}
         await self._bus.publish(Event(kind=kind, source="openai.proxy", payload=payload))
