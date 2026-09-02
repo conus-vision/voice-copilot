@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import typer
 import uvicorn
+from dotenv import find_dotenv, load_dotenv
 from rich.console import Console
 
 from voice_copilot import __version__
@@ -85,6 +86,9 @@ def _normalize_argv(argv: list[str]) -> list[str]:
 
 
 def main() -> None:
+    # Keys from a `.env` next to where you run voice-copilot (see .env.example).
+    # Shell exports win: nothing already in the environment is overridden.
+    load_dotenv(find_dotenv(usecwd=True))
     ensure_vc_alias()
     sys.argv[:] = _normalize_argv(sys.argv)
     app()

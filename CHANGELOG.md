@@ -20,6 +20,17 @@ The Supervisor release.
   the ignored env var, the ChatGPT backend route, WebSocket refusal with HTTP
   fallback, zstd request bodies, Responses-API query sniffing.
 - Live topbar: green dot while narration runs, Skip after the speed buttons.
+- A `.env` next to where you run `voice-copilot` is loaded at startup; shell
+  exports still win. `.env.example` lists the keys.
+- Releases publish to PyPI from a `vX.Y.Z` tag push (trusted publishing) and
+  land as a GitHub release with the sdist and wheel attached.
+
+### Removed
+- The `proxy` extra: the reverse proxy has been httpx-based for a long time and
+  never imported mitmproxy, which dragged ~40 packages into `[all]`. Unused
+  `websockets` and `pydantic-settings` dependencies, the broken Dockerfile, the
+  three shell launchers around `uv run voice-copilot`, internal planning docs
+  and the 8 MB demo video (the README links YouTube).
 
 ### Fixed
 - Saving settings no longer swaps the running `auto` commentator for the saved

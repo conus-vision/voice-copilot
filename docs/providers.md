@@ -1,7 +1,7 @@
 # Providers
 
 All of TTS, STT and commentator LLM are loaded by name from a registry. To add
-a new backend, drop a module under `voice_copilot/providers/<kind>/`,
+a new backend, drop a module under `src/voice_copilot/providers/<kind>/`,
 decorate the class with `@register("<kind>", "<name>")`, and add a side-effect
 import to the package `__init__.py`.
 
@@ -25,22 +25,45 @@ import to the package `__init__.py`.
 
 ## Commentator LLM
 
-| Name            | Install   | Notes                                                  |
-| ---             | ---       | ---                                                    |
-| `anthropic`     | default   | `ANTHROPIC_API_KEY`. Default: `claude-haiku-4-5-20251001`. |
-| `openai`        | default   | `OPENAI_API_KEY`. Default: `gpt-4o-mini`.              |
-| `openai-compat` | default   | Points at `OPENAI_COMPAT_BASE_URL` (Ollama/LM Studio). |
+The commentator has two modes (`commentator.mode`):
+
+- `auto` (default) — narrate through the **same CLI you launched with `vc`**,
+  using its own login. No extra keys. The `auto` provider shells out to the CLI
+  with a per-CLI narration profile (`commentator/cli_profiles.py`); with
+  `auto_tier_models: true` it picks the weakest model of that CLI for the
+  narrator and the strongest for the Supervisor.
+- `api` — call one of the API providers below, configured under
+  `commentator.provider`. Also what `voice-copilot serve` / `run` use when no
+  CLI is being wrapped.
+
+| Name             | Install   | Notes                                                              |
+| ---              | ---       | ---                                                                |
+| `auto`           | default   | Reuses the launched CLI (Claude Code, Codex, Copilot CLI, …). No key. |
+| `anthropic`      | default   | `ANTHROPIC_API_KEY`. Default: `claude-haiku-4-5-20251001`.         |
+| `openai`         | default   | `OPENAI_API_KEY`. Default: `gpt-4o-mini`.                          |
+| `openai-compat`  | default   | Any OpenAI-shaped server at `OPENAI_COMPAT_BASE_URL` (Ollama, LM Studio; default `http://127.0.0.1:11434/v1`). Optional `OPENAI_COMPAT_API_KEY`. Default model: `llama3.1`. Pick a non-reasoning model — reasoning models put the text in `reasoning` and leave `content` empty. |
+| `github-copilot` | default   | Copilot's OpenAI-compatible endpoint. Token from `GITHUB_COPILOT_TOKEN` (keychain or env), `gh auth token`, or the local Copilot `hosts.json`. Default: `gpt-4.1-mini`. |
+| `copilot-cli`    | default   | Shells out to the `copilot` binary (GitHub Copilot CLI), which manages its own auth. Default: `gpt-5-mini`. Superseded by `auto` for `vc copilot`. |
+
+Per-CLI overrides live under `commentator.per_cli.<cli>` (mode, provider,
+supervisor mode). See [supervisor.md](supervisor.md) for the Supervisor's own
+model and modes.
 
 ## Secrets
 
 Keys are read in this order:
 
-1. Process environment (`.env` or shell exports).
+1. Process environment — shell exports, or a `.env` next to where you run
+   `voice-copilot` (loaded at startup, never overriding real exports; see
+   `.env.example`).
 2. OS keychain via `keyring` under service `voice-copilot`.
 3. Unset → provider constructs without a key; will fail on first call.
 
-Write keys through the settings page (`/settings`) — values never leave the
-server back to the browser, only `{name: is_set}` flags.
+Known names: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPGRAM_API_KEY`,
+`ELEVENLABS_API_KEY`, `OPENAI_COMPAT_API_KEY`, `GITHUB_COPILOT_TOKEN`.
+
+Write keys through the settings page — values never leave the server back to
+the browser, only `{name: is_set}` flags.
 
 ## Testing a provider
 
@@ -54,19 +77,26 @@ The settings page has a **Test** button per provider that uses this endpoint.
 
 ## Proxy routes (external CLIs)
 
-When you run `voice-copilot proxy` (or any command with `--proxy`), the
-reverse-proxy exposes these paths for external CLIs to point at via
+When you run `voice-copilot proxy` (or any command with `--proxy`, or `vc`),
+the reverse-proxy exposes these paths for external CLIs to point at via
 `*_BASE_URL` env vars:
 
-| Proxy path     | Upstream                                        | Parser      |
-| ---            | ---                                             | ---         |
-| `/anthropic/*` | `api.anthropic.com`                             | Anthropic SSE |
-| `/openai/*`    | `api.openai.com`                                | OpenAI SSE  |
-| `/openrouter/*`| `openrouter.ai/api`                             | OpenAI SSE  |
-| `/groq/*`      | `api.groq.com/openai`                           | OpenAI SSE  |
-| `/mistral/*`   | `api.mistral.ai`                                | OpenAI SSE  |
-| `/ollama/*`    | `127.0.0.1:11434`                               | OpenAI SSE (on `/v1/*`) |
-| `/gemini/*`    | `generativelanguage.googleapis.com`             | _pass-through_ |
+| Proxy path         | Env var                    | Upstream                            | Parser        |
+| ---                | ---                        | ---                                 | ---           |
+| `/anthropic/*`     | `ANTHROPIC_BASE_URL`       | `api.anthropic.com`                 | Anthropic SSE |
+| `/openai/*`        | `OPENAI_BASE_URL`          | `api.openai.com`                    | OpenAI SSE    |
+| `/openai-chatgpt/*`| `OPENAI_CHATGPT_BASE_URL`  | `chatgpt.com/backend-api/codex`     | OpenAI SSE (Codex on a ChatGPT plan) |
+| `/openrouter/*`    | `OPENROUTER_BASE_URL`      | `openrouter.ai/api`                 | OpenAI SSE    |
+| `/groq/*`          | `GROQ_BASE_URL`            | `api.groq.com/openai`               | OpenAI SSE    |
+| `/mistral/*`       | `MISTRAL_BASE_URL`         | `api.mistral.ai`                    | OpenAI SSE    |
+| `/deepseek/*`      | `DEEPSEEK_BASE_URL`        | `api.deepseek.com`                  | OpenAI SSE    |
+| `/ollama/*`        | `OLLAMA_BASE_URL`          | `127.0.0.1:11434`                   | OpenAI SSE on `/v1/*`, native NDJSON on `/api/chat` |
+| `/opencode-zen/*`  | `OPENCODE_ZEN_BASE_URL`    | `opencode.ai/zen/v1`                | OpenCode Zen  |
+| `/gemini/*`        | `GEMINI_BASE_URL`          | `generativelanguage.googleapis.com` | _pass-through_ |
+
+Only `api.anthropic.com` is intercepted on the Anthropic side: Claude Code via
+Bedrock, Vertex or Azure Foundry uses other base-URL env vars and is not
+narrated.
 
 Gemini's stream format is not OpenAI/Anthropic-shaped, so today we forward
 the bytes without narration — it still works for your CLI, you just won't

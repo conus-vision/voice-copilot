@@ -64,7 +64,7 @@ Two models watch the agent's event stream, with opposite budgets:
 Both reuse the CLI you launched — its login, its models, no extra keys. The
 result is a small fraction of one agent turn spent on oversight, and you hear
 about a bad turn while it can still be stopped. Details in
-[docs/supervisor.md](docs/supervisor.md).
+[docs/supervisor.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/supervisor.md).
 
 <a id="quickstart"></a>
 
@@ -257,9 +257,10 @@ works out of the box.
 | ---      | ---                   | ---                        | ---                  | ---                      |
 | **TTS**  | `edge-tts`            | `silero`, `piper`          | `elevenlabs`, `openai` | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` |
 | **STT**  | `openai-whisper-api`  | `faster-whisper`           | `deepgram`           | `OPENAI_API_KEY`, `DEEPGRAM_API_KEY` |
-| **LLM**  | `anthropic` (Haiku)   | `openai-compat` (Ollama)   | `openai`             | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_API_KEY` |
+| **LLM**  | `auto` (the launched CLI, no key); API: `anthropic` (Haiku) | `openai-compat` (Ollama)   | `openai`, `github-copilot` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_API_KEY`, `GITHUB_COPILOT_TOKEN` |
 
 Switch via the **Settings** page or by editing `~/.voice-copilot/config.yaml`.
+Every backend, its install extra and default model: [docs/providers.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/providers.md).
 
 ## Configuration
 
@@ -268,9 +269,10 @@ Switch via the **Settings** page or by editing `~/.voice-copilot/config.yaml`.
   `commentator.supervisor.model`, `commentator.supervisor.every_n_tools`;
   `commentator.auto_tier_models: true` picks weakest/strongest models per
   CLI; `commentator.per_cli.<cli>.supervisor_mode` overrides one CLI. See
-  [docs/supervisor.md](docs/supervisor.md).
+  [docs/supervisor.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/supervisor.md).
 - Secrets live in the **OS keychain** (Credential Manager / Keychain / Secret
-  Service) or in a `.env` next to where you run `voice-copilot`.
+  Service) or in a `.env` next to where you run `voice-copilot` (copy
+  [`.env.example`](https://github.com/conus-vision/voice-copilot/blob/main/.env.example)); shell exports take precedence.
 - No fallbacks between providers: if the configured one fails, the error
   surfaces in the popup and narration stops. Fail loud, not silently.
 
@@ -287,7 +289,7 @@ Switch via the **Settings** page or by editing `~/.voice-copilot/config.yaml`.
    the proxy is the single source of truth.
 3. **PTY fallback** — wraps any binary. Lower fidelity, last resort.
 
-See [docs/architecture.md](docs/architecture.md).
+See [docs/architecture.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/architecture.md).
 
 ## Roadmap
 
@@ -306,9 +308,9 @@ idea with advanced users. Planned work:
 
 The core is open-source under MIT to maximize adoption, experimentation, and
 community contributions. The CLI companion integration RFC lives in
-[docs/cli-companion-interface.md](docs/cli-companion-interface.md), with the
+[docs/cli-companion-interface.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/cli-companion-interface.md), with the
 normative schema in
-[docs/schemas/cli-companion-interface.schema.json](docs/schemas/cli-companion-interface.schema.json).
+[docs/schemas/cli-companion-interface.schema.json](https://github.com/conus-vision/voice-copilot/blob/main/docs/schemas/cli-companion-interface.schema.json).
 
 ## Development
 
@@ -343,7 +345,7 @@ If Voice Copilot is useful to you, here's how to help it grow:
 - 🗣️ **Tell us how you use it** — open an issue or email
   [info@conus.vision](mailto:info@conus.vision). Real workflows shape the roadmap.
 - 🔌 **Building a coding CLI?** Let's design the companion interface together
-  (see the [integration RFC](docs/cli-companion-interface.md)).
+  (see the [integration RFC](https://github.com/conus-vision/voice-copilot/blob/main/docs/cli-companion-interface.md)).
 
 Contact: [info@conus.vision](mailto:info@conus.vision) · [conus.vision](https://conus.vision)
 
@@ -354,4 +356,4 @@ This repository is open-source under the MIT license.
 That means individuals, teams, companies, and other open-source projects can
 use, modify, fork, and redistribute the core with minimal friction.
 
-See [LICENSE](LICENSE) and [LICENSING.md](LICENSING.md).
+See [LICENSE](https://github.com/conus-vision/voice-copilot/blob/main/LICENSE) and [LICENSING.md](https://github.com/conus-vision/voice-copilot/blob/main/LICENSING.md).

@@ -42,6 +42,28 @@ Unit tests live under `tests/unit/`. Tests should avoid real network calls and e
 - Use typed interfaces for providers and adapters.
 - Keep secrets in the OS keyring or environment variables, never in config files.
 
+## Releasing
+
+Releases go to PyPI through the `Publish` workflow
+(`.github/workflows/publish.yml`) using PyPI trusted publishing, so no API
+token lives in the repository or in CI secrets.
+
+1. Bump `version` in `pyproject.toml` and `__version__` in
+   `src/voice_copilot/__init__.py`; add the section to `CHANGELOG.md`.
+2. Commit, then tag and push:
+
+   ```bash
+   git tag vX.Y.Z
+   git push origin main vX.Y.Z
+   ```
+
+3. The workflow checks that the tag matches both version strings, runs the
+   tests, builds the sdist and wheel, uploads them to PyPI and creates a
+   GitHub release with the artifacts attached.
+
+The PyPI page shows the README as it was at build time, so README changes
+only reach PyPI with the next release.
+
 ## Reporting Issues
 
 Please include:
