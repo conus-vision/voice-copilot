@@ -71,7 +71,8 @@ about a bad turn while it can still be stopped. Details in
 ## Quickstart (~3 minutes to first narration)
 
 > Goal: hear Voice Copilot narrate a real Claude Code session. You need Python
-> 3.11+ and an Anthropic API key.
+> 3.11+ and a coding CLI you already log in to (Claude Code, Codex, …). No
+> extra API key: the narrator and the Supervisor reuse that CLI by default.
 
 **1. Install** (cloud-light defaults, no local models required):
 
@@ -79,8 +80,8 @@ about a bad turn while it can still be stopped. Details in
 pipx install voice-copilot          # or: uv tool install voice-copilot
 ```
 
-**2. Add your key.** This opens settings in the browser — paste your
-`ANTHROPIC_API_KEY` (stored in your OS keychain, not in a file):
+**2. Open the panel.** This starts the local server and opens it in the
+browser:
 
 ```bash
 voice-copilot serve
@@ -211,7 +212,7 @@ voice-copilot proxy
 
 # in another terminal:
 ANTHROPIC_BASE_URL=http://127.0.0.1:8766/anthropic \
-  aider --model anthropic/claude-3-5-sonnet-20241022
+  aider --model anthropic/claude-sonnet-5
 ```
 
 The popup shows one entry per connected client (seen via distinct

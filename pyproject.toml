@@ -80,7 +80,7 @@ dev = [
 voice-copilot = "voice_copilot.cli:main"
 
 [project.urls]
-Homepage = "https://conus.vision"
+Homepage = "https://voice-copilot.conus.vision"
 Repository = "https://github.com/conus-vision/voice-copilot"
 Issues = "https://github.com/conus-vision/voice-copilot/issues"
 
