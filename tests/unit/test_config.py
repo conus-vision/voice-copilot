@@ -90,3 +90,20 @@ def test_commentator_mode_and_per_cli_round_trip(tmp_path: Path) -> None:
     assert reloaded.commentator.mode == "api"
     assert reloaded.commentator.per_cli["gemini"].mode == "api"
     assert reloaded.commentator.per_cli["gemini"].model == "gemini-2.0-flash"
+
+
+def test_codex_route_migration_runs_once(tmp_path: Path) -> None:
+    # A config written before the ChatGPT route existed pins codex to `openai`
+    # and is moved to `openai-chatgpt` on load...
+    config_file = tmp_path / "config.yaml"
+    proxy_cli_config_path(config_file).write_text(
+        "profiles:\n  codex:\n    provider: openai\n    base_url_env: OPENAI_BASE_URL\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(config_file)
+    assert cfg.proxy_cli.profiles["codex"].provider == "openai-chatgpt"
+
+    # ...but a user on an API key who then picks `openai` again keeps it.
+    cfg.proxy_cli.profiles["codex"].provider = "openai"
+    save_config(cfg, config_file)
+    assert load_config(config_file).proxy_cli.profiles["codex"].provider == "openai"

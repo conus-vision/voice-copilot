@@ -104,9 +104,11 @@ class SessionRegistry:
         key_src = f"{provider}|{ua}|{auth[:16]}"
         sid = hashlib.sha1(key_src.encode("utf-8")).hexdigest()[:12]
 
+        created = False
         with self._lock:
             sess = self._sessions.get(sid)
             if sess is None:
+                created = True
                 sess = Session(
                     id=sid,
                     label=_label_from_ua(ua, provider),
@@ -120,8 +122,11 @@ class SessionRegistry:
                 if self._active_id is None:
                     self._active_id = sid
                 log.info("proxy: new session %s (%s, provider=%s)", sid, sess.label, provider)
-                self._notify()
             sess.touch()
+        # Outside the lock: a listener that reads the registry back (all(),
+        # get_active_id()) would otherwise deadlock on the non-reentrant lock.
+        if created:
+            self._notify()
         return sess
 
     # ------------------------------------------------------------------ active

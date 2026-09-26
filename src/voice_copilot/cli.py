@@ -13,10 +13,10 @@ import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 import typer
 import uvicorn
-from dotenv import find_dotenv, load_dotenv
 from rich.console import Console
 
 from voice_copilot import __version__
@@ -32,6 +32,7 @@ from voice_copilot.commentator.provider_select import (
     supervisor_status_text,
 )
 from voice_copilot.core.bus import EventBus
+from voice_copilot.core.child_env import child_env, load_dotenv_for_self
 from voice_copilot.core.config import CommentatorConfig, Config, load_config
 from voice_copilot.dialog import DialogManager
 from voice_copilot.focus import FocusRouter
@@ -43,7 +44,7 @@ from voice_copilot.providers import llm as _llm  # noqa: F401
 from voice_copilot.providers import registry as provider_registry
 from voice_copilot.providers import stt as _stt  # noqa: F401
 from voice_copilot.providers import tts as _tts  # noqa: F401
-from voice_copilot.proxy.cli_shims import ResolvedCli, resolve_cli_for_vc
+from voice_copilot.proxy.cli_shims import ResolvedCli, proxy_launch_settings, resolve_cli_for_vc
 from voice_copilot.proxy.server import (
     base_urls_for,
     build_proxy_server,
@@ -55,8 +56,11 @@ from voice_copilot.web.demo import run_demo
 from voice_copilot.web.server import ManagedServer, create_app
 
 # Make our own loggers visible. Set VOICE_COPILOT_LOG=DEBUG for the noisy view.
+_LOG_LEVEL = os.environ.get("VOICE_COPILOT_LOG", "INFO").strip().upper()
 logging.basicConfig(
-    level=os.environ.get("VOICE_COPILOT_LOG", "INFO"),
+    # `debug` works as well as `DEBUG`; an unknown name falls back to INFO
+    # rather than crashing the import.
+    level=_LOG_LEVEL if _LOG_LEVEL in logging.getLevelNamesMapping() else "INFO",
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
@@ -88,7 +92,8 @@ def _normalize_argv(argv: list[str]) -> list[str]:
 def main() -> None:
     # Keys from a `.env` next to where you run voice-copilot (see .env.example).
     # Shell exports win: nothing already in the environment is overridden.
-    load_dotenv(find_dotenv(usecwd=True))
+    # They are for voice-copilot itself; wrapped CLIs never see them.
+    load_dotenv_for_self()
     ensure_vc_alias()
     sys.argv[:] = _normalize_argv(sys.argv)
     app()
@@ -125,6 +130,7 @@ def serve(
                 open_browser=open_browser,
                 enable_hotkeys=hotkeys,
                 enable_tray=tray,
+                demo=demo,
             )
         )
         return
@@ -159,7 +165,16 @@ def run(
     proxy_port: int = typer.Option(8766, "--proxy-port"),
 ) -> None:
     """Wrap TARGET CLI, narrate its events, and expose the voice popup."""
-    env = base_urls_for(host, proxy_port) if proxy else None
+    env: dict[str, str] | None = None
+    proxy_args: list[str] = []
+    if proxy and target in ("claude", "codex"):
+        # The same routing `vc` uses: codex ignores OPENAI_BASE_URL for model
+        # traffic and needs its endpoint as a `-c openai_base_url=…` flag, or
+        # nothing reaches the proxy while the adapter's own events are muted.
+        overrides, launch_args = proxy_launch_settings(
+            target, load_config(), host=host, port=proxy_port
+        )
+        env, proxy_args = overrides, list(launch_args)
     builder: Callable[[EventBus], CLIAdapter]
 
     if target == "claude":
@@ -173,6 +188,7 @@ def run(
         builder = lambda bus: CodexAdapter(  # noqa: E731
             bus,
             binary=binary or "codex",
+            extra_args=proxy_args,
             env=env,
             suppress_llm_events=proxy,
         )
@@ -234,13 +250,20 @@ def config() -> None:
     console.print(f"proxy cli config: {proxy_cli_config_path(main_path)}")
 
 
-@app.command(name="vc")
+@app.command(
+    name="vc",
+    # `vc claude --resume` hands --resume to claude; vc's own options still
+    # parse as vc's, and `--` still ends them explicitly.
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
 def vc_launch(
     name: str = typer.Argument(
         ..., help="CLI to launch and narrate, e.g. claude, codex, opencode."
     ),
     cli_args: list[str] = typer.Argument(  # noqa: B008
-        None, help="Arguments forwarded to the target CLI, after `--`."
+        None,
+        help="Arguments forwarded to the target CLI. Put `--` before any that "
+        "share a name with vc's own options (--port, --open, ...).",
     ),
     host: str = typer.Option("127.0.0.1", envvar="VOICE_COPILOT_HOST"),
     port: int = typer.Option(0, "--port", help="Panel port. 0 picks a free port automatically."),
@@ -339,9 +362,14 @@ async def _await_vc_shutdown(
     standalone server — once that session ends there's nothing left to
     wrap, so the whole process should exit instead of waiting for Ctrl+C.
     """
-    wait_tasks = [*server_tasks, *extra_tasks]
+    # Only the wrapped CLI or a server ending ends the session. A background
+    # task (narrator, TTS) that dies is logged; it must not take the user's
+    # agent down with it.
+    wait_tasks = list(server_tasks)
     if child_exit_task is not None:
         wait_tasks.append(child_exit_task)
+    for task in extra_tasks:
+        task.add_done_callback(_log_task_failure)
     try:
         await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -351,7 +379,10 @@ async def _await_vc_shutdown(
         # outlive `codex exec`) holds connections through the proxy, and the
         # servers below drain faster with those clients gone.
         if cleanup is not None:
-            await cleanup()
+            try:
+                await cleanup()
+            except Exception:
+                logging.getLogger(__name__).exception("stopping the wrapped CLI failed")
         for s in servers:
             s.should_exit = True
         for t in extra_tasks:
@@ -361,6 +392,13 @@ async def _await_vc_shutdown(
             hotkey_svc.stop()
         if tray_svc is not None:
             tray_svc.stop()
+
+
+def _log_task_failure(task: asyncio.Task[Any]) -> None:
+    if not task.cancelled() and task.exception() is not None:
+        logging.getLogger(__name__).error(
+            "background task %s failed", task.get_name(), exc_info=task.exception()
+        )
 
 
 async def _boot(
@@ -394,6 +432,7 @@ async def _boot(
         stt_provider=stt_provider,
         sessions=sessions,
         proxy_port=proxy_port,
+        bind_host=host,
     )
     # quiet_logging (used by `vc`): pass log_config=None so uvicorn does NOT
     # install its own stderr handlers — its loggers then propagate to the root
@@ -436,7 +475,15 @@ async def _boot(
             console.print(f"[yellow]hotkeys unavailable: {e}[/yellow]")
 
     if enable_tray:
-        tray_svc = TrayService(host, port)
+        # The tray's Quit cancels the main task, which every entrypoint's
+        # shutdown path already treats like Ctrl+C.
+        main_task = asyncio.current_task()
+
+        def quit_from_tray() -> None:
+            if main_task is not None:
+                loop.call_soon_threadsafe(main_task.cancel)
+
+        tray_svc = TrayService(host, port, on_quit=quit_from_tray)
         tray_svc.start()
 
     if open_browser:
@@ -480,6 +527,7 @@ async def _proxy_only(
     open_browser: bool,
     enable_hotkeys: bool,
     enable_tray: bool,
+    demo: bool = False,
 ) -> None:
     bus = EventBus()
     sessions = SessionRegistry()
@@ -505,6 +553,8 @@ async def _proxy_only(
     tts_result = _start_tts_driver(bus, hub, cfg)
     if tts_result is not None:
         extra.append(tts_result[1])
+    if demo:
+        extra.append(asyncio.create_task(run_demo(bus), name="demo"))
 
     urls = base_urls_for(host, proxy_port)
     console.print("\n[bold green]voice-copilot proxy ready — point your CLI at:[/bold green]")
@@ -572,7 +622,7 @@ async def _run_with_adapter(
     extra.append(asyncio.create_task(dialog.run(), name="dialog"))
     try:
         await adapter.start(initial_prompt=prompt)
-    except RuntimeError as e:
+    except (RuntimeError, OSError) as e:
         console.print(f"[red]{e}[/red]")
         for s in servers:
             s.should_exit = True
@@ -635,6 +685,11 @@ def _launch_notice(resolved: ResolvedCli | None, commentator_status: str) -> str
     """Compose the panel banner shown at launch (status + any caveats)."""
     parts = [commentator_status]
     if resolved is not None:
+        if resolved.upstream:
+            parts.append(
+                f"Forwarding to {urlsplit(resolved.upstream).netloc} "
+                f"(your {resolved.upstream_env})."
+            )
         if resolved.profile_id == "claude":
             parts.append(_REMOTE_CONTROL_NOTE)
         if not provider_has_narration(resolved.provider):
@@ -743,9 +798,19 @@ async def _run_vc(
     _server_app_state(server).focus_router = focus_router
     servers: list[uvicorn.Server] = [server]
     if enable_proxy:
+        upstreams = (
+            {resolved.provider: resolved.upstream}
+            if resolved is not None and resolved.upstream
+            else None
+        )
         servers.append(
             build_proxy_server(
-                bus, host=host, port=actual_proxy_port, registry=sessions, quiet=True
+                bus,
+                host=host,
+                port=actual_proxy_port,
+                registry=sessions,
+                quiet=True,
+                upstreams=upstreams,
             )
         )
     server_tasks = _start_servers(servers)
@@ -764,7 +829,7 @@ async def _run_vc(
     if resolved is not None:
         binary = resolved.resolved_binary
         launch_args = list(resolved.launch_args)
-        full_env = {**os.environ, **resolved.env_overrides}
+        full_env = child_env(resolved.env_overrides)
         cwd = str(resolved.working_directory) if resolved.working_directory else None
         # Wait for the proxy to bind before the child starts using its base URL.
         # The child owns the terminal here, so a failure goes to the log file
@@ -778,7 +843,7 @@ async def _run_vc(
     else:
         binary = name
         launch_args = []
-        full_env = dict(os.environ)
+        full_env = child_env()
         cwd = None
 
     adapter = PtyAdapter(bus, [binary, *launch_args, *cli_args], env=full_env, cwd=cwd)
@@ -788,7 +853,7 @@ async def _run_vc(
 
     try:
         await adapter.start()
-    except RuntimeError as e:
+    except (RuntimeError, OSError) as e:  # OSError: `vc typo` — no such program
         console.print(f"[red]{e}[/red]")
         for s in servers:
             s.should_exit = True

@@ -41,6 +41,7 @@ ProxyRoute = Literal[
     "groq",
     "mistral",
     "deepseek",
+    "deepseek-anthropic",
     "ollama",
     "gemini",
     "opencode-zen",
@@ -65,7 +66,14 @@ def default_proxy_cli_profiles() -> dict[str, ProxyCliProfileConfig]:
     }
 
 
+#: Version of the stored proxy-cli document. Files written before it existed
+#: load as 1; `_normalize_config` runs each one-time migration once and
+#: stamps the current version, so a later explicit choice is left alone.
+PROXY_CLI_SCHEMA_VERSION = 2
+
+
 class ProxyCliConfig(BaseModel):
+    schema_version: int = 1
     working_directory: str | None = None
     profiles: dict[str, ProxyCliProfileConfig] = Field(default_factory=default_proxy_cli_profiles)
 
@@ -196,10 +204,13 @@ def _normalize_config(cfg: Config) -> Config:
     # which points at api.openai.com — a host that rejects the ChatGPT OAuth
     # bearer a plan login sends, so those sessions were never narrated. Move
     # them onto the route that matches how codex actually authenticates; a user
-    # running codex on an API key can pick `openai` again in the panel.
-    codex_profile = cfg.proxy_cli.profiles.get("codex")
-    if codex_profile is not None and codex_profile.provider == "openai":
-        codex_profile.provider = "openai-chatgpt"
+    # running codex on an API key can pick `openai` again in the panel — which
+    # is why this runs once per file, not on every load.
+    if cfg.proxy_cli.schema_version < 2:
+        codex_profile = cfg.proxy_cli.profiles.get("codex")
+        if codex_profile is not None and codex_profile.provider == "openai":
+            codex_profile.provider = "openai-chatgpt"
+    cfg.proxy_cli.schema_version = PROXY_CLI_SCHEMA_VERSION
 
     return cfg
 
@@ -247,15 +258,16 @@ def load_config(path: Path | None = None) -> Config:
     return _normalize_config(cfg)
 
 
+def _write_atomically(path: Path, text: str) -> None:
+    """Replace `path` in one step: a crash mid-write never leaves half a file."""
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
 def save_config(cfg: Config, path: Path | None = None) -> None:
     p = path or config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     proxy_path = proxy_cli_config_path(p)
-    p.write_text(
-        yaml.safe_dump(cfg.model_dump(exclude={"proxy_cli"}), sort_keys=False),
-        encoding="utf-8",
-    )
-    proxy_path.write_text(
-        yaml.safe_dump(cfg.proxy_cli.model_dump(), sort_keys=False),
-        encoding="utf-8",
-    )
+    _write_atomically(p, yaml.safe_dump(cfg.model_dump(exclude={"proxy_cli"}), sort_keys=False))
+    _write_atomically(proxy_path, yaml.safe_dump(cfg.proxy_cli.model_dump(), sort_keys=False))
