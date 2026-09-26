@@ -9,4 +9,4 @@ from voice_copilot.providers.stt.base import NotInstalled
 @register("stt", "deepgram")
 class DeepgramStub(NotInstalled):
     def __init__(self, **_: object) -> None:
-        super().__init__(name="deepgram", extra="deepgram")
+        super().__init__(name="deepgram", extra="deepgram", planned=True)
