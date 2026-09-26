@@ -9,4 +9,4 @@ from voice_copilot.providers.tts.base import NotInstalled
 @register("tts", "piper")
 class PiperStub(NotInstalled):
     def __init__(self, **_: object) -> None:
-        super().__init__(name="piper", extra="local-tts")
+        super().__init__(name="piper", extra="local-tts", planned=True)

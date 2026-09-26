@@ -37,15 +37,25 @@ class TTSProvider(ABC):
 
 
 class NotInstalled(TTSProvider):
-    """Raises a friendly error when someone selects an un-installed backend."""
+    """Raises a friendly error when someone selects an un-installed backend.
 
-    def __init__(self, *, name: str, extra: str) -> None:
+    `planned=True` marks a name that is registered but has no engine yet:
+    installing its extra would not help, so the error must not suggest it.
+    """
+
+    def __init__(self, *, name: str, extra: str, planned: bool = False) -> None:
         self.name = name
         self._extra = extra
+        self._planned = planned
 
     async def synthesize(
         self, text: str, *, language: str, voice: str | None = None
     ) -> AsyncIterator[TTSChunk]:
+        if self._planned:
+            raise RuntimeError(
+                f"TTS provider {self.name!r} is not implemented yet. "
+                "Use edge-tts, openai or elevenlabs."
+            )
         raise RuntimeError(
             f"TTS provider {self.name!r} needs extra dependencies. "
             f"Install with: pipx install 'voice-copilot[{self._extra}]'"
