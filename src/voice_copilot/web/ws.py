@@ -230,6 +230,9 @@ def register_ws(app: FastAPI) -> None:
             pass
         finally:
             pump.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            # A pump that already died on a closed socket re-raises its error
+            # here; swallowing only CancelledError skipped the unregister and
+            # left a dead socket in the audio hub for good.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await pump
             await hub.unregister(ws)
