@@ -25,12 +25,7 @@ from voice_copilot.adapters.base import CLIAdapter
 from voice_copilot.alias_install import ensure_vc_alias
 from voice_copilot.audio import AudioHub, TTSDriver
 from voice_copilot.commentator import Commentator
-from voice_copilot.commentator.provider_select import (
-    commentator_status_text,
-    resolve_commentator_provider,
-    resolve_supervisor,
-    supervisor_status_text,
-)
+from voice_copilot.commentator.provider_select import resolve_for_launch
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.child_env import child_env, load_dotenv_for_self
 from voice_copilot.core.config import CommentatorConfig, Config, load_config
@@ -716,15 +711,7 @@ def _apply_commentator_resolution(
     """
     cli = resolved.profile_id if resolved is not None else None
     binary = resolved.resolved_binary if resolved is not None else None
-    effective = resolve_commentator_provider(cfg.commentator, cli=cli, binary=binary)
-    commentator_cfg = cfg.commentator.model_copy(deep=True)
-    commentator_cfg.provider = effective
-    commentator_cfg.supervisor = resolve_supervisor(cfg.commentator, cli=cli)
-    status = commentator_status_text(effective, cli)
-    sup_status = supervisor_status_text(commentator_cfg.supervisor)
-    if sup_status:
-        status = f"{status}  •  {sup_status}"
-    return commentator_cfg, status
+    return resolve_for_launch(cfg.commentator, cli=cli, binary=binary)
 
 
 def _make_commentator_resolver(
