@@ -16,7 +16,6 @@ end-of-input so copilot processes one message and exits.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import shutil
 from collections.abc import AsyncIterator, Sequence
@@ -85,12 +84,8 @@ class CopilotCLIProvider(LLMProvider):
         cmd = _make_cmd(self._bin, self._model)
         log.debug("copilot-cli: cmd=%s", cmd[:4])
 
-        loop = asyncio.get_running_loop()
         try:
-            stdout, stderr = await loop.run_in_executor(
-                None,
-                lambda: run_cli(cmd, stdin_text=prompt, timeout=60.0),
-            )
+            stdout, stderr = await run_cli(cmd, stdin_text=prompt, timeout=60.0)
         except Exception as e:
             raise RuntimeError(f"copilot-cli: subprocess failed: {e}") from e
 

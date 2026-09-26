@@ -1,6 +1,6 @@
 """Claude Code adapter.
 
-Spawns `claude --output-format stream-json --input-format stream-json --verbose`
+Spawns `claude -p --output-format stream-json --input-format stream-json --verbose`
 and bridges its NDJSON event stream onto the bus. User messages are written to
 stdin as `{"type":"user","message":{"role":"user","content":"..."}}` — the CLI
 picks them up at the next turn boundary (queue semantics).
@@ -11,14 +11,20 @@ Reference: https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
-import os
 import shutil
 from typing import Any
 
-from voice_copilot.adapters.base import CLIAdapter, QuickAsideCapability
+from voice_copilot.adapters.base import (
+    STREAM_LINE_LIMIT,
+    CLIAdapter,
+    QuickAsideCapability,
+    read_stream_line,
+)
 from voice_copilot.core.bus import EventBus
+from voice_copilot.core.child_env import child_env
 from voice_copilot.core.events import Event, EventKind
 
 log = logging.getLogger(__name__)
@@ -53,13 +59,19 @@ class ClaudeCodeAdapter(CLIAdapter):
     # ------------------------------------------------------------------ lifecycle
 
     async def start(self, initial_prompt: str | None = None) -> None:
-        if shutil.which(self._binary) is None:
+        # Launch the path which() found: on Windows an npm install is a
+        # `claude.cmd`, which create_subprocess_exec won't find by bare name.
+        binary = shutil.which(self._binary)
+        if binary is None:
             raise RuntimeError(
                 f"`{self._binary}` not found in PATH. "
                 f"Install Claude Code: https://claude.com/product/claude-code"
             )
+        # `--input-format`/`--output-format` are print-mode flags; with no
+        # prompt argument, -p reads the conversation from stdin as stream-json.
         argv = [
-            self._binary,
+            binary,
+            "-p",
             "--output-format",
             "stream-json",
             "--input-format",
@@ -68,13 +80,14 @@ class ClaudeCodeAdapter(CLIAdapter):
             *self._extra_args,
         ]
         log.info("spawning %s", " ".join(argv))
-        merged_env = {**os.environ, **self._env} if self._env else None
+        merged_env = child_env(self._env)
         self._proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=merged_env,
+            limit=STREAM_LINE_LIMIT,
         )
         self._reader_task = asyncio.create_task(self._read_stdout(), name="claude.stdout")
         self._stderr_task = asyncio.create_task(self._read_stderr(), name="claude.stderr")
@@ -83,9 +96,8 @@ class ClaudeCodeAdapter(CLIAdapter):
             await self.send_user_message(initial_prompt)
 
     async def stop(self) -> None:
-        for t in (self._reader_task, self._stderr_task):
-            if t is not None:
-                t.cancel()
+        # Readers keep draining until the process is gone: a child blocked on
+        # a full stdout pipe never exits, and wait() never returns.
         if self._proc is not None:
             try:
                 if self._proc.stdin is not None and not self._proc.stdin.is_closing():
@@ -96,7 +108,11 @@ class ClaudeCodeAdapter(CLIAdapter):
                 await asyncio.wait_for(self._proc.wait(), timeout=5.0)
             except TimeoutError:
                 self._proc.kill()
-                await self._proc.wait()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._proc.wait(), timeout=5.0)
+        for t in (self._reader_task, self._stderr_task):
+            if t is not None:
+                t.cancel()
         await self._emit(EventKind.SESSION_ENDED, {"session_id": self._session_id})
 
     # ------------------------------------------------------------------ input
@@ -119,12 +135,14 @@ class ClaudeCodeAdapter(CLIAdapter):
     async def _read_stdout(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
         while True:
-            line = await self._proc.stdout.readline()
+            line = await read_stream_line(self._proc.stdout, "claude")
+            if line is None:
+                continue
             if not line:
                 break
             try:
                 msg = json.loads(line.decode("utf-8"))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 log.warning("non-json stdout line: %r", line[:200])
                 continue
             try:
@@ -135,7 +153,9 @@ class ClaudeCodeAdapter(CLIAdapter):
     async def _read_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
         while True:
-            line = await self._proc.stderr.readline()
+            line = await read_stream_line(self._proc.stderr, "claude stderr")
+            if line is None:
+                continue
             if not line:
                 break
             log.info("claude stderr: %s", line.decode("utf-8", errors="replace").rstrip())
