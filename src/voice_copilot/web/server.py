@@ -25,8 +25,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from voice_copilot.audio.hub import AudioHub
+from voice_copilot.commentator.cli_profiles import NARRATION_PROFILES
+from voice_copilot.commentator.provider_select import resolve_for_launch
 from voice_copilot.core.bus import EventBus
-from voice_copilot.core.config import Config, load_config, save_config
+from voice_copilot.core.config import CommentatorConfig, Config, load_config, save_config
 from voice_copilot.core.secrets import (
     KNOWN_SECRETS,
     delete_secret,
@@ -406,11 +408,32 @@ def create_app(
         except RuntimeError as e:
             raise HTTPException(400, str(e)) from e
 
+    def narrate_with_launched_cli(profile_id: str, binary: str) -> None:
+        """A panel launch narrates the way `vc` does: through the launched CLI.
+
+        Without this the panel kept the saved API provider, so the
+        Quickstart's "no extra API key" launch failed on a missing key.
+        Only for CLIs that can narrate (have a profile); the rest keep the
+        configured provider. The resolver makes later settings saves
+        re-apply the same choice.
+        """
+        commentator = app.state.commentator
+        if commentator is None or profile_id not in NARRATION_PROFILES:
+            return
+
+        def resolve(cfg: Config) -> tuple[CommentatorConfig, str]:
+            return resolve_for_launch(cfg.commentator, cli=profile_id, binary=binary)
+
+        commentator_cfg, notice = resolve(app.state.config)
+        commentator.update_config(commentator_cfg, app.state.config.commentator_language)
+        app.state.commentator_resolver = resolve
+        app.state.launch_notice = notice
+
     @app.post("/api/proxy/cli-shims/{profile_id}/launch")
     async def post_cli_launch(profile_id: str) -> dict[str, Any]:
         try:
             proxy_port = _require_proxy_port()
-            return launch_cli_profile(
+            result = launch_cli_profile(
                 profile_id,
                 app.state.config,
                 host="127.0.0.1",
@@ -420,6 +443,10 @@ def create_app(
             raise HTTPException(404, str(e)) from e
         except RuntimeError as e:
             raise HTTPException(400, str(e)) from e
+        binary = result.get("binary_path")
+        if isinstance(binary, str) and binary:
+            narrate_with_launched_cli(profile_id, binary)
+        return result
 
     @app.get("/")
     async def root() -> FileResponse:
