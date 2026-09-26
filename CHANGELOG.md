@@ -1,5 +1,51 @@
 # Changelog
 
+## Unreleased
+
+### Security
+- The local panel refuses forged cross-site requests: it checks the `Host`
+  header (DNS rebinding) and the `Origin` of state-changing requests and
+  WebSocket handshakes. Before, any web page could launch a CLI, install PATH
+  shims, read the live trace over `/ws`, or (via rebinding) send a stored API
+  key to a base URL of its choice. The proxy refuses browser requests from
+  other sites too.
+- The project's `.env` no longer leaks into the wrapped agent's environment
+  (an `ANTHROPIC_API_KEY` there switched Claude Code to API billing).
+- The Claude Code narrator runs tool-free (`--disallowedTools "*"`).
+
+### Fixed
+- `vc` runs the agent in the current folder, not the one picked in the panel.
+- Launching from the panel narrates through the launched CLI (the Quickstart's
+  "no extra API key" now holds); before, it used the saved API provider.
+- Every normal `vc` exit raised `PtyProcessError`; workers the CLI left
+  behind are stopped with it. The PTY follows terminal resizes on
+  macOS/Linux.
+- A stream-JSON line over 64 KiB killed the Claude Code / Codex reader and
+  froze the CLI.
+- The proxy asked upstream for brotli it can't decode; a parser error could
+  cut the user's API stream; tool rounds on Chat Completions and Ollama read
+  as "turn ended".
+- A user's own base URL (an Anthropic-compatible vendor, a gateway) stays the
+  upstream under `vc` instead of sending that vendor's token to the default
+  host.
+- Supervisor: reviews even when the narrator fails; a STOP during a held line
+  keeps the agent paused; its warnings are no longer replaced by the next
+  narration line; es/fr/uk get it in their own language.
+- Urgent events (edits, failures) are spoken at once instead of waiting for
+  the idle timer; a line that fails in TTS releases the hold on the agent.
+- On macOS/Linux, `narrate_only_when_focused` no longer mutes `vc` narration
+  while the terminal has focus.
+- `Alt+M` mutes, `serve --demo` works, `run codex --proxy` narrates,
+  `vc claude --resume` passes the flag through, the tray's Quit quits,
+  `VOICE_COPILOT_LOG=debug` no longer crashes.
+- Settings refuse a provider that can't be built instead of saving it and
+  failing every later start; the codex route migration runs once, so
+  `openai` can be kept; config files are written atomically.
+- Silero, Piper and Deepgram say they are not implemented yet instead of
+  asking for an extra that does not help.
+- Catalog: DeepSeek Harness launches `dsh web` on an Anthropic-format route;
+  Pi and Grok link their current projects.
+
 ## 0.1.0 — 2026-09-02
 
 The Supervisor release.
