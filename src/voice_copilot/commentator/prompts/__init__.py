@@ -19,10 +19,31 @@ from pathlib import Path
 
 _DIR = Path(__file__).parent
 _FALLBACK = "en"
+#: The English prompts pin their output language with this line. When one of
+#: them stands in for a language that has no prompt of its own yet, the line
+#: is rewritten, or the listener would hear, say, a Ukrainian narration
+#: interrupted by an English supervisor warning.
+_FALLBACK_DIRECTIVE = "Answer in English."
+_LANGUAGE_NAMES = {
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "uk": "Ukrainian",
+    "ru": "Russian",
+}
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
+
+
+def _load(language: str, suffix: str, style: str) -> str:
+    path = _resolve(language, suffix, style)
+    text = _read(path)
+    name = _LANGUAGE_NAMES.get(language)
+    if language != _FALLBACK and name and path.name.startswith(f"{_FALLBACK}."):
+        text = text.replace(_FALLBACK_DIRECTIVE, f"Answer in {name}.")
+    return text
 
 
 def _resolve(language: str, suffix: str, style: str) -> Path:
@@ -47,14 +68,14 @@ def _resolve(language: str, suffix: str, style: str) -> Path:
 
 
 def load(language: str, style: str = "api") -> str:
-    return _read(_resolve(language, "md", style))
+    return _load(language, "md", style)
 
 
 def load_summary(language: str, style: str = "api") -> str:
     """System prompt for the summary-update LLM call."""
-    return _read(_resolve(language, "summary.md", style))
+    return _load(language, "summary.md", style)
 
 
 def load_supervisor(language: str, style: str = "api") -> str:
     """System prompt for the supervisor's checkpoint review."""
-    return _read(_resolve(language, "supervisor.md", style))
+    return _load(language, "supervisor.md", style)

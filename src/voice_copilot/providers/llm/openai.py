@@ -12,6 +12,9 @@ from voice_copilot.providers.registry import register
 
 log = logging.getLogger(__name__)
 
+#: Per request, and per gap between streamed chunks.
+_TIMEOUT_S = 60.0
+
 
 @register("llm", "openai")
 class OpenAIProvider(LLMProvider):
@@ -32,7 +35,11 @@ class OpenAIProvider(LLMProvider):
         if self._client is None:
             from openai import AsyncOpenAI
 
-            self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._base_url)
+            # The SDK default is 10 minutes; one stalled narration would hold
+            # every line after it for that long.
+            self._client = AsyncOpenAI(
+                api_key=self._api_key, base_url=self._base_url, timeout=_TIMEOUT_S
+            )
         return self._client
 
     async def stream_chat(
