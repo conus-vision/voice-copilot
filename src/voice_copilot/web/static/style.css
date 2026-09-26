@@ -19,6 +19,17 @@
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+/* Icon font: a Material Symbols subset shipped with the package, so the panel
+   loads offline and never calls a third-party CDN. After adding an icon, run
+   `python scripts/fetch_icon_font.py` to rebuild the subset. */
+@font-face {
+  font-family: 'Material Symbols Rounded';
+  font-style: normal;
+  font-weight: 500 600;
+  font-display: block;
+  src: url('fonts/material-symbols-rounded.woff2') format('woff2');
+}
+
 .material-symbols-rounded {
   font-family: 'Material Symbols Rounded';
   font-weight: normal;
