@@ -10,8 +10,8 @@ import to the package `__init__.py`.
 | Name          | Install              | Format | Notes                                    |
 | ---           | ---                  | ---    | ---                                      |
 | `edge-tts`    | default              | mp3    | Free Microsoft Azure voice. Needs Internet. |
-| `silero`      | `[local-tts]`        | wav    | Local, PyTorch. ~100 MB model on first run. |
-| `piper`       | `[local-tts]`        | wav    | Local ONNX, very fast on CPU.            |
+| `silero`      | `[local-tts]`        | wav    | Not implemented yet (the name is reserved; selecting it reports so). |
+| `piper`       | `[local-tts]`        | wav    | Not implemented yet (the name is reserved; selecting it reports so). |
 | `openai`      | default              | mp3    | `OPENAI_API_KEY`. `gpt-4o-mini-tts`.     |
 | `elevenlabs`  | `[elevenlabs]`       | mp3    | `ELEVENLABS_API_KEY`.                    |
 
@@ -21,7 +21,7 @@ import to the package `__init__.py`.
 | ---                  | ---            | ---                                               |
 | `openai-whisper-api` | default        | `OPENAI_API_KEY`. Default — free-tier OK.         |
 | `faster-whisper`     | `[local-stt]`  | Local CTranslate2 build. Works fully offline.     |
-| `deepgram`           | `[deepgram]`   | `DEEPGRAM_API_KEY`. Cheapest cloud option.        |
+| `deepgram`           | `[deepgram]`   | Not implemented yet (the name is reserved; selecting it reports so). |
 
 ## Commentator LLM
 
