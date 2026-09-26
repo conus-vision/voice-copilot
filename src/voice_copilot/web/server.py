@@ -22,6 +22,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
 from voice_copilot.audio.hub import AudioHub
 from voice_copilot.core.bus import EventBus
@@ -44,6 +45,7 @@ from voice_copilot.proxy.cli_shims import (
     restore_cli_shim,
 )
 from voice_copilot.proxy.session import SessionRegistry
+from voice_copilot.web.guard import LocalOriginGuard
 from voice_copilot.web.ws import register_ws
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -91,8 +93,12 @@ def create_app(
     stt_provider: STTProvider | None = None,
     sessions: SessionRegistry | None = None,
     proxy_port: int | None = None,
+    bind_host: str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="voice-copilot", version="0.1.0", lifespan=_lifespan)
+    # Every page open in the browser can reach loopback: refuse forged
+    # cross-site requests, WebSocket hijacking and DNS rebinding (see guard.py).
+    app.add_middleware(LocalOriginGuard, bind_host=bind_host)
     app.state.bus = bus
     app.state.config = config
     app.state.audio_hub = audio_hub or AudioHub()
@@ -141,25 +147,53 @@ def create_app(
 
     @app.post("/api/config")
     async def post_config(payload: dict[str, Any]) -> dict[str, Any]:
-        new_cfg = Config.model_validate(payload)
+        try:
+            new_cfg = Config.model_validate(payload)
+        except ValidationError as e:
+            raise HTTPException(422, str(e)) from e
+        commentator_cfg = new_cfg.commentator
+        launch_notice = app.state.launch_notice
+        resolver = app.state.commentator_resolver
+        if resolver is not None:
+            commentator_cfg, launch_notice = resolver(new_cfg)
+        # Apply before writing anything: a provider that cannot be built (a
+        # CLI that isn't installed, an option it doesn't take) is reported now
+        # instead of landing on disk, where it would stop the next start.
+        # Off the loop, because building one can wait on the OS keychain or
+        # `gh auth token`, and the proxy shares this loop.
+        commentator = app.state.commentator
+        try:
+            if commentator is not None:
+                await asyncio.to_thread(
+                    commentator.update_config, commentator_cfg, new_cfg.commentator_language
+                )
+            else:
+                await asyncio.to_thread(
+                    provider_registry.build,
+                    "llm",
+                    commentator_cfg.provider.name,
+                    dict(commentator_cfg.provider.options),
+                )
+        except Exception as e:
+            raise HTTPException(
+                400, f"commentator provider {commentator_cfg.provider.name!r}: {e}"
+            ) from e
         save_config(new_cfg)
         app.state.config = new_cfg
         app.state.human_language = new_cfg.human_language
         app.state.commentator_language = new_cfg.commentator_language
         app.state.voice_input_enabled = new_cfg.voice_input.enabled
-        commentator_cfg = new_cfg.commentator
-        resolver = app.state.commentator_resolver
-        if resolver is not None:
-            commentator_cfg, app.state.launch_notice = resolver(new_cfg)
-        commentator = app.state.commentator
-        if commentator is not None:
-            commentator.update_config(commentator_cfg, new_cfg.commentator_language)
+        app.state.launch_notice = launch_notice
         return new_cfg.model_dump()
+
+    # Keychain calls run in a worker thread: macOS may hold one until the user
+    # answers an access prompt, and the proxy's streams share this event loop.
 
     @app.get("/api/secrets")
     async def get_secrets() -> dict[str, Any]:
         """Return which known secrets are set. Values never leave the server."""
-        return {"known": list(KNOWN_SECRETS), "present": list_known_present()}
+        present = await asyncio.to_thread(list_known_present)
+        return {"known": list(KNOWN_SECRETS), "present": present}
 
     @app.post("/api/secrets")
     async def post_secret(payload: dict[str, Any]) -> dict[str, Any]:
@@ -167,17 +201,19 @@ def create_app(
         value = payload.get("value")
         if not name:
             raise HTTPException(400, "missing secret name")
+        if name not in KNOWN_SECRETS:
+            raise HTTPException(400, f"unknown secret {name!r}; known: {', '.join(KNOWN_SECRETS)}")
         if not isinstance(value, str) or not value:
             raise HTTPException(400, "missing secret value")
         try:
-            set_secret(name, value)
+            await asyncio.to_thread(set_secret, name, value)
         except Exception as e:
             raise HTTPException(500, f"keyring write failed: {e}") from e
         return {"ok": True, "name": name}
 
     @app.delete("/api/secrets/{name}")
     async def delete_secret_ep(name: str) -> dict[str, Any]:
-        delete_secret(name)
+        await asyncio.to_thread(delete_secret, name)
         return {"ok": True, "name": name}
 
     @app.post("/api/providers/test")
@@ -191,7 +227,9 @@ def create_app(
             raise HTTPException(400, "missing provider name")
         provider_kind = cast(Literal["llm", "tts", "stt"], kind)
         try:
-            provider = provider_registry.build(provider_kind, name, dict(options))
+            provider = await asyncio.to_thread(
+                provider_registry.build, provider_kind, name, dict(options)
+            )
         except Exception as e:
             return {"ok": False, "where": "build", "error": str(e)}
 
@@ -406,7 +444,7 @@ async def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = 
     """Entry used by `voice-copilot run` — creates a fresh bus + loads config."""
     bus = EventBus()
     config = load_config()
-    app = create_app(bus, config)
+    app = create_app(bus, config, bind_host=host)
 
     server_config = uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
     server = ManagedServer(server_config)
