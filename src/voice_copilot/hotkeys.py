@@ -225,9 +225,7 @@ def default_bindings(hotkeys_cfg: Any, *, voice_input: bool = True) -> list[Bind
         Binding(
             name="mute_toggle",
             combo=hotkeys_cfg.mute_toggle,
-            # No dedicated kind yet — ride on USER_MESSAGE-less channel via payload.
-            press_kind=EventKind.USER_MESSAGE,
-            press_payload={"control": "mute_toggle"},
+            press_kind=EventKind.USER_MUTE_TOGGLE,
         ),
         Binding(
             name="pause_toggle",

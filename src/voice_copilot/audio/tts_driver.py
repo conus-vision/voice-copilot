@@ -41,6 +41,9 @@ class _QueuedUtterance:
     session_key: str
     session_id: str | None
     query_version: int | None
+    #: A supervisor warning or stop: never superseded by routine narration,
+    #: and spoken before it.
+    priority: bool = False
 
 
 class TTSDriver:
@@ -79,11 +82,11 @@ class TTSDriver:
                     if ev.kind is EventKind.USER_SPEAK_REQUESTED:
                         if ev.payload.get("phase") == "start":
                             self._clear_pending()
-                            await self._abort_current()
+                            await self._abort_current(silence_clients=True)
                         continue
                     if ev.kind is EventKind.USER_INTERRUPT:
                         self._clear_pending()
-                        await self._abort_current()
+                        await self._abort_current(silence_clients=True)
                         continue
                     if ev.kind is not EventKind.COMMENTATOR_UTTERANCE:
                         continue
@@ -107,7 +110,7 @@ class TTSDriver:
         if muted:
             self._clear_pending()
             # Fire-and-forget abort — don't block the caller.
-            task = asyncio.create_task(self._abort_current(), name="tts.abort")
+            task = asyncio.create_task(self._abort_current(silence_clients=True), name="tts.abort")
             self._abort_task = task
             task.add_done_callback(self._clear_abort_task)
 
@@ -119,13 +122,24 @@ class TTSDriver:
         self._focus_allowed = allowed
         if not allowed:
             self._clear_pending()
-            task = asyncio.create_task(self._abort_current(), name="tts.focus-abort")
+            task = asyncio.create_task(
+                self._abort_current(silence_clients=True), name="tts.focus-abort"
+            )
             self._abort_task = task
             task.add_done_callback(self._clear_abort_task)
 
-    async def _abort_current(self) -> None:
+    async def _abort_current(self, *, silence_clients: bool = False) -> None:
+        """Stop the line being synthesised.
+
+        `silence_clients` also stops a line that is already fully synthesised
+        and still playing in the browser — what an interrupt, push-to-talk or
+        mute means. A new question leaves that to the panel, which stops only
+        the session the question belongs to.
+        """
         task = self._current
         if task is None or task.done():
+            if silence_clients:
+                await self._hub.broadcast_text({"type": "audio_interrupt"})
             return
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -176,11 +190,16 @@ class TTSDriver:
             session_key=self._session_key_of(ev.payload),
             session_id=session_id if isinstance(session_id, str) and session_id else None,
             query_version=query_version if isinstance(query_version, int) else None,
+            priority=ev.payload.get("role") == "supervisor",
         )
 
     def _replace_pending(self, utterance: _QueuedUtterance) -> None:
+        # A newer narration line makes an older unplayed one moot; a
+        # supervisor warning is not moot just because narration moved on.
         self._pending = [
-            item for item in self._pending if item.session_key != utterance.session_key
+            item
+            for item in self._pending
+            if item.priority or item.session_key != utterance.session_key
         ]
         self._pending.append(utterance)
         self._pending_event.set()
@@ -223,7 +242,8 @@ class TTSDriver:
         if not self._pending:
             self._pending_event.clear()
             return None
-        utterance = self._pending.pop(0)
+        index = next((i for i, item in enumerate(self._pending) if item.priority), 0)
+        utterance = self._pending.pop(index)
         if not self._pending:
             self._pending_event.clear()
         return utterance
@@ -255,6 +275,9 @@ class TTSDriver:
                         "language": utterance.language,
                         "session_id": utterance.session_id,
                         "query_version": utterance.query_version,
+                        # No panel open means no playback report will ever
+                        # come back; the dialog manager must not wait for one.
+                        "listeners": self._hub.has_clients(),
                     },
                 )
             )
@@ -283,6 +306,9 @@ class TTSDriver:
                         "aborted": True,
                     }
                 )
+                # Nothing will be played, so nothing will report playback:
+                # say so, or an agent held for this line stays held.
+                await self._publish_finished(utt_id, utterance, aborted=True)
                 raise
             except Exception as e:
                 log.exception("tts synth failed")
@@ -300,6 +326,7 @@ class TTSDriver:
                         "error": True,
                     }
                 )
+                await self._publish_finished(utt_id, utterance, error=True)
                 return
             await self._hub.broadcast_text(
                 {
@@ -307,14 +334,25 @@ class TTSDriver:
                     "utterance_id": utt_id,
                 }
             )
-            await self._bus.publish(
-                Event(
-                    kind=EventKind.TTS_FINISHED,
-                    source="tts.driver",
-                    payload={
-                        "utterance_id": utt_id,
-                        "session_id": utterance.session_id,
-                        "query_version": utterance.query_version,
-                    },
-                )
-            )
+            await self._publish_finished(utt_id, utterance)
+
+    async def _publish_finished(
+        self,
+        utt_id: str,
+        utterance: _QueuedUtterance,
+        *,
+        aborted: bool = False,
+        error: bool = False,
+    ) -> None:
+        payload: dict[str, object] = {
+            "utterance_id": utt_id,
+            "session_id": utterance.session_id,
+            "query_version": utterance.query_version,
+        }
+        if aborted:
+            payload["aborted"] = True
+        if error:
+            payload["error"] = True
+        await self._bus.publish(
+            Event(kind=EventKind.TTS_FINISHED, source="tts.driver", payload=payload)
+        )

@@ -131,3 +131,101 @@ async def test_a_cli_side_request_does_not_cut_a_line_that_is_playing() -> None:
     await asyncio.sleep(0.05)
     run.cancel()
     assert driver._query_versions == versions_before
+
+
+def _supervisor_warning() -> Event:
+    return Event(
+        kind=EventKind.COMMENTATOR_UTTERANCE,
+        source="commentator",
+        payload={
+            "text": "Heads up: the agent is editing files outside the task.",
+            "streaming": False,
+            "language": "en",
+            "role": "supervisor",
+            "session_id": SESSION,
+            "query_version": 1,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_supervisor_warning_is_not_dropped_by_the_next_narration_line() -> None:
+    # Narration arrives every few seconds; a warning still waiting behind the
+    # line being read must not be replaced by the next routine line.
+    bus, tts = EventBus(), _FakeTTS()
+    driver = TTSDriver(bus, AudioHub(), tts, "en")
+    driver._replace_pending(driver._build_utterance(_supervisor_warning()))  # type: ignore[arg-type]
+    driver._replace_pending(driver._build_utterance(_narration(1)))  # type: ignore[arg-type]
+    first = driver._pop_next_pending()
+    second = driver._pop_next_pending()
+    assert first is not None and first.priority
+    assert second is not None and not second.priority
+
+
+@pytest.mark.asyncio
+async def test_a_newer_narration_line_still_replaces_an_older_one() -> None:
+    bus, tts = EventBus(), _FakeTTS()
+    driver = TTSDriver(bus, AudioHub(), tts, "en")
+    driver._replace_pending(driver._build_utterance(_narration(1)))  # type: ignore[arg-type]
+    driver._replace_pending(driver._build_utterance(_narration(1)))  # type: ignore[arg-type]
+    assert len(driver._pending) == 1
+
+
+class _FailingTTS(_FakeTTS):
+    async def synthesize(self, text: str, *, language: str | None = None):  # type: ignore[no-untyped-def]
+        raise RuntimeError("edge-tts: 403")
+        yield  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_a_failed_line_reports_it_finished_with_an_error() -> None:
+    bus = EventBus()
+    driver = TTSDriver(bus, AudioHub(), _FailingTTS(), "en")
+    async with bus.subscribe() as q:
+        run = asyncio.create_task(driver.run())
+        await asyncio.sleep(0.05)
+        await bus.publish(_narration(1))
+        await asyncio.sleep(0.2)
+        run.cancel()
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait())
+    started = [e for e in events if e.kind is EventKind.TTS_STARTED]
+    finished = [e for e in events if e.kind is EventKind.TTS_FINISHED]
+    assert started and started[0].payload["listeners"] is False  # no panel connected
+    assert finished and finished[0].payload.get("error") is True
+
+
+class _RecordingHub(AudioHub):
+    def __init__(self) -> None:
+        super().__init__()
+        self.texts: list[dict] = []  # type: ignore[type-arg]
+
+    async def broadcast_text(self, msg: dict) -> None:  # type: ignore[type-arg, override]
+        self.texts.append(msg)
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_silences_a_line_that_is_already_playing() -> None:
+    # Synthesis is long done, the browser is still playing the audio: the
+    # interrupt must reach it, not only an in-flight synthesis.
+    bus, hub = EventBus(), _RecordingHub()
+    driver = TTSDriver(bus, hub, _FakeTTS(), "en")
+    run = asyncio.create_task(driver.run())
+    await asyncio.sleep(0.05)
+    await bus.publish(Event(kind=EventKind.USER_INTERRUPT, source="web", payload={}))
+    await asyncio.sleep(0.05)
+    run.cancel()
+    assert {"type": "audio_interrupt"} in hub.texts
+
+
+@pytest.mark.asyncio
+async def test_a_new_question_leaves_idle_playback_to_the_panel() -> None:
+    bus, hub = EventBus(), _RecordingHub()
+    driver = TTSDriver(bus, hub, _FakeTTS(), "en")
+    run = asyncio.create_task(driver.run())
+    await asyncio.sleep(0.05)
+    await bus.publish(_user("новый вопрос"))
+    await asyncio.sleep(0.05)
+    run.cancel()
+    assert {"type": "audio_interrupt"} not in hub.texts

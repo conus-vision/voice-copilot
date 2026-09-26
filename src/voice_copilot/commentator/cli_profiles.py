@@ -33,11 +33,21 @@ NARRATION_PROFILES: dict[str, NarrationProfile] = {
         model="gpt-5-mini",
     ),
     # claude -p is the full agent. Pass the narrator instructions via a temp
-    # file (--system-prompt-file, so the multi-line prompt survives the .cmd
-    # layer), drop the injected env/git/CLAUDE.md context, and feed the events
-    # via stdin, so it narrates instead of answering the embedded question.
+    # file (--system-prompt-file replaces the default system prompt, so the
+    # multi-line prompt survives the .cmd layer) and feed the events via stdin,
+    # so it narrates instead of answering the embedded question. The narrator
+    # never needs a tool: `--disallowedTools "*"` takes every tool out of the
+    # context (smaller, cheaper calls; nothing for injected text to invoke),
+    # and `--no-session-persistence` keeps hundreds of narration runs out of
+    # `claude --resume`.
     "claude": NarrationProfile(
-        args=["--exclude-dynamic-system-prompt-sections", "-p"],
+        args=[
+            "--disallowedTools",
+            "*",
+            "--no-session-persistence",
+            "--exclude-dynamic-system-prompt-sections",
+            "-p",
+        ],
         input_mode="stdin",
         model="claude-haiku-4-5-20251001",
         strong_model="sonnet",

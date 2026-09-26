@@ -22,13 +22,18 @@ log = logging.getLogger(__name__)
 _POLL_INTERVAL_S = 0.5
 
 
+def terminal_focus_detectable() -> bool:
+    """Whether `is_console_window_focused` can see this platform's terminal."""
+    return sys.platform == "win32"
+
+
 def is_console_window_focused() -> bool:
     """True if THIS process's own console window is the OS foreground window.
 
     Always False on non-Windows — there's no single, desktop-environment-
     independent POSIX equivalent of GetForegroundWindow/GetConsoleWindow.
     """
-    if sys.platform != "win32":
+    if sys.platform != "win32":  # spelled out: mypy narrows ctypes.windll on it
         return False
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
@@ -63,6 +68,27 @@ def is_last_focused(pid: int | None = None) -> bool:
     return bool(data.get("pid") == (pid if pid is not None else os.getpid()))
 
 
+def live_focus_claim() -> int | None:
+    """Pid of the instance holding the focus claim, None if nobody live does.
+
+    The claim outlives the process that wrote it; a claim left by an instance
+    that has since exited must not keep a new one silent.
+    """
+    try:
+        data = json.loads(shared_focus_state_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    pid = data.get("pid") if isinstance(data, dict) else None
+    if not isinstance(pid, int):
+        return None
+    try:
+        import psutil
+
+        return pid if psutil.pid_exists(pid) else None
+    except Exception:
+        return pid
+
+
 class FocusRouter:
     def __init__(self, *, narrate_only_when_focused: bool) -> None:
         self._narrate_only_when_focused = narrate_only_when_focused
@@ -91,17 +117,23 @@ class FocusRouter:
     async def _tick(self) -> None:
         terminal_focused = await asyncio.to_thread(is_console_window_focused)
         self._current = terminal_focused or self._panel_focused
-        if self._current:
+        # Claim only when the claim isn't ours already: this runs twice a
+        # second, and rewriting the same file each time is pure disk churn.
+        if self._current and not await asyncio.to_thread(is_last_focused):
             await asyncio.to_thread(record_focus)
 
     def _should_narrate(self) -> bool:
-        if self._narrate_only_when_focused:
+        if self._narrate_only_when_focused and terminal_focus_detectable():
             return self._current
         # Sticky rule: the instance whose window was focused last narrates.
-        # With no claim on record at all — a fresh install, a headless run —
-        # there is nobody to defer to, so this instance speaks rather than
-        # staying silent until some window happens to get focus.
-        return is_last_focused() or not shared_focus_state_path().exists()
+        # It also stands in for "only when focused" where the terminal's focus
+        # can't be seen (macOS, Linux): gating on the panel alone went silent
+        # the moment the user clicked back into the terminal running the agent.
+        # With no live claim on record — a fresh install, a headless run, an
+        # instance that has since exited — there is nobody to defer to, so
+        # this instance speaks rather than waiting for some window's focus.
+        claim = live_focus_claim()
+        return claim is None or claim == os.getpid()
 
     async def _poll(self) -> None:
         last: bool | None = None

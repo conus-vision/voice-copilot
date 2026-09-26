@@ -121,6 +121,9 @@ class Commentator:
         # speaks up during long stretches of quiet tool work.
         self._buffer_since: float | None = None
         self._speak_task: asyncio.Task[None] | None = None
+        # A high-importance event came in while a line was being generated;
+        # the follow-up flush must not hold it to the word-count gate.
+        self._high_pending = False
         # Hold refs to in-flight summary tasks so the GC doesn't cancel them
         # mid-flight; they self-discard from this set on completion.
         self._summary_tasks: set[asyncio.Task[None]] = set()
@@ -191,6 +194,7 @@ class Commentator:
                 # prevents indefinitely deferring narration during long thinking
                 # streams where events arrive faster than the debounce window.
                 deadline = loop.time() + max_batch_s
+                trigger = "normal"
                 try:
                     while True:
                         remaining = deadline - loop.time()
@@ -207,11 +211,14 @@ class Commentator:
                         if control == "consume":
                             continue
                         if self._admit(event) == "high":
+                            # Same as a high event arriving first: an edit or a
+                            # failure is spoken now, not held to the word gate.
+                            trigger = "high"
                             break
                 except TimeoutError:
                     pass
 
-                await self._flush(trigger="normal")
+                await self._flush(trigger=trigger)
 
     async def _next_event(self, q: asyncio.Queue[Event]) -> Event:
         """Next bus event, or raise TimeoutError when the idle window expires."""
@@ -334,6 +341,8 @@ class Commentator:
         if not self._buffer:
             return False
         if self._speak_task is not None and not self._speak_task.done():
+            if trigger == "high":
+                self._high_pending = True
             return False
 
         events = list(self._buffer)
@@ -353,6 +362,7 @@ class Commentator:
         word_count = self._batch_word_count(batch.events)
         if not self._should_flush(batch, ctx, trigger=trigger, word_count=word_count):
             return False
+        self._high_pending = False
         self._buffer = []
         self._buffer_since = None
         log.info(
@@ -379,7 +389,7 @@ class Commentator:
             if self._speak_task is asyncio.current_task():
                 self._speak_task = None
             if self._buffer:
-                await self._flush(trigger="normal")
+                await self._flush(trigger="high" if self._high_pending else "normal")
 
     # ------------------------------------------------------------ narration
 
@@ -479,11 +489,14 @@ class Commentator:
                     },
                 )
             )
+            # The narrator failing must not take the supervisor down with it.
+            self._review_if_due(batch)
             return
 
         full = "".join(pieces).strip()
         if not full:
             log.warning("narrate: stream ended empty — model returned no tokens")
+            self._review_if_due(batch)
             return
         if self._is_stale_batch(batch):
             log.info(
@@ -522,17 +535,27 @@ class Commentator:
         self._summary_tasks.add(task)
         task.add_done_callback(self._summary_tasks.discard)
 
-        self._record_for_supervisor(batch)
-        reason = self._checkpoint_reason(batch, ctx)
-        if reason is not None:
-            review = asyncio.create_task(
-                self._supervise(batch, reason),
-                name=f"commentator.supervisor:{batch.session_key}",
-            )
-            self._supervisor_tasks.add(review)
-            review.add_done_callback(self._supervisor_tasks.discard)
+        self._review_if_due(batch)
 
     # ---------------------------------------------------------- supervisor
+
+    def _review_if_due(self, batch: _Batch) -> None:
+        """Add the batch to the supervisor's transcript; review at a checkpoint.
+
+        Runs whether or not the narration worked: a narrator that errors out or
+        comes back empty must not quietly switch the supervisor off too.
+        """
+        ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
+        self._record_for_supervisor(batch)
+        reason = self._checkpoint_reason(batch, ctx)
+        if reason is None:
+            return
+        review = asyncio.create_task(
+            self._supervise(batch, reason),
+            name=f"commentator.supervisor:{batch.session_key}",
+        )
+        self._supervisor_tasks.add(review)
+        review.add_done_callback(self._supervisor_tasks.discard)
 
     def _record_for_supervisor(self, batch: _Batch) -> None:
         ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
@@ -615,7 +638,9 @@ class Commentator:
         log.info("supervisor: review (%s) for session=%s", reason, batch.session_key)
         pieces: list[str] = []
         try:
-            llm = self._supervisor()
+            # Off the event loop: building a provider can read the keychain or
+            # run `gh auth token`, and the proxy shares this loop.
+            llm = await asyncio.to_thread(self._supervisor)
             stream = llm.stream_chat(
                 [LLMMessage(role="user", content=user_content)],
                 system=self._supervisor_prompt,
@@ -846,6 +871,9 @@ _SUPERVISOR_HISTORY_LINES = 80
 _SPOKEN_PREFIX: dict[str, dict[str, str]] = {
     "ru": {"warn": "Внимание:", "stop": "Остановил агента."},
     "en": {"warn": "Heads up:", "stop": "I paused the agent."},
+    "uk": {"warn": "Увага:", "stop": "Я зупинив агента."},
+    "es": {"warn": "Atención:", "stop": "He pausado al agente."},
+    "fr": {"warn": "Attention :", "stop": "J'ai mis l'agent en pause."},
 }
 
 _STATUS_WORDS = {"OK": "ok", "WARN": "warn", "STOP": "stop"}

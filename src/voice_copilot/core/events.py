@@ -33,6 +33,8 @@ class EventKind(StrEnum):
     USER_INTERRUPT = "user.interrupt"
     USER_PAUSE_TOGGLE = "user.pause.toggle"
     USER_SKIP_REQUESTED = "user.skip.requested"
+    #: The mute hotkey. Muting is the panel's job, so the panel acts on it.
+    USER_MUTE_TOGGLE = "user.mute.toggle"
 
     AGENT_PAUSED = "agent.paused"
     AGENT_RESUMED = "agent.resumed"

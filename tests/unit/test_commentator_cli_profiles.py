@@ -27,6 +27,10 @@ def test_claude_passes_system_via_file_and_user_via_stdin() -> None:
     assert argv[i + 1] == "/tmp/sys.txt"
     assert "--exclude-dynamic-system-prompt-sections" in argv
     assert "-p" in argv
+    # tool-free and leaves no session behind
+    i = argv.index("--disallowedTools")
+    assert argv[i + 1] == "*"
+    assert "--no-session-persistence" in argv
     # user events go to stdin (stdin mode); neither system text nor user text is in argv
     assert stdin_text == "USER EVENTS"
     assert "USER EVENTS" not in argv

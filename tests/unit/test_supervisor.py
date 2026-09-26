@@ -336,3 +336,43 @@ async def test_a_repeated_stop_in_guard_mode_still_pauses() -> None:
     await _drain(c, batch)
     again = await _drain(c, batch)
     assert EventKind.SUPERVISOR_STOP in again  # safety beats de-duplication
+
+
+# --- the supervisor does not depend on the narrator ------------------------
+
+
+class _BrokenNarrator:
+    prompt_style = "api"
+
+    def __init__(self, *, raise_error: bool) -> None:
+        self.raise_error = raise_error
+
+    def stream_chat(self, messages, *, system=None, max_tokens=None, temperature=None):  # type: ignore[no-untyped-def]
+        async def gen() -> AsyncIterator[str]:
+            if self.raise_error:
+                raise RuntimeError("auto commentator: codex narrated nothing")
+            if False:  # pragma: no cover - makes this an async generator
+                yield ""
+
+        return gen()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raise_error", [True, False], ids=["narrator-error", "narrator-empty"])
+async def test_a_failed_narration_still_reaches_the_supervisor(raise_error: bool) -> None:
+    # The review used to be started only after a successful narration, so a
+    # narrator on a model the plan rejects silently disabled Supervisor+ too.
+    supervisor = _ScriptedLLM("STOP\nThe agent deleted the migrations folder.")
+    cfg = CommentatorConfig(supervisor=SupervisorConfig(mode="guard"))
+    c = Commentator(EventBus(), cfg, "en", llm=_BrokenNarrator(raise_error=raise_error))  # type: ignore[arg-type]
+    c._supervisor = lambda: supervisor  # type: ignore[method-assign, assignment, return-value]
+
+    async with c._bus.subscribe() as q:
+        await c._narrate(_Batch(events=[_turn_end(True)], session_key="s"))
+        await asyncio.gather(*c._supervisor_tasks)
+        kinds = []
+        while not q.empty():
+            kinds.append(q.get_nowait().kind)
+
+    assert EventKind.SUPERVISOR_VERDICT in kinds
+    assert EventKind.SUPERVISOR_STOP in kinds

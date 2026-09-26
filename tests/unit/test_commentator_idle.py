@@ -125,3 +125,112 @@ async def test_idle_timer_fires_and_opens_with_the_task() -> None:
     assert llm.prompts and "первая реплика" in llm.prompts[0]
     assert "почини парсер" in llm.prompts[0]
     assert "- searched: extract_user_query" in llm.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_high_importance_event_inside_the_debounce_window_is_spoken_at_once() -> None:
+    # A short thought opens the debounce window; a file edit lands inside it.
+    # The edit must be narrated right away, not held until the idle timer.
+    bus = EventBus()
+    llm = _FakeLLM()
+    cfg = CommentatorConfig(idle_narration_ms=10_000, debounce_ms=300)
+    commentator = Commentator(bus, cfg, "en", llm=llm)  # type: ignore[arg-type]
+
+    async with bus.subscribe() as q:
+        runner = asyncio.create_task(commentator.run())
+        await asyncio.sleep(0.05)
+        await bus.publish(
+            Event(
+                kind=EventKind.USER_MESSAGE,
+                source="anthropic.proxy",
+                payload={"text": "fix the parser", "delivery": "observed"},
+            )
+        )
+        await bus.publish(
+            Event(
+                kind=EventKind.AGENT_THINKING,
+                source="anthropic.proxy",
+                payload={"text": "Checking the parser module first now."},
+            )
+        )
+        await asyncio.sleep(0.05)
+        await bus.publish(
+            Event(kind=EventKind.FILE_EDITED, source="anthropic.proxy", payload={"path": "a.py"})
+        )
+        try:
+            spoken = None
+            async with asyncio.timeout(2):
+                while spoken is None:
+                    event = await q.get()
+                    if event.kind is EventKind.COMMENTATOR_UTTERANCE and not event.payload.get(
+                        "streaming"
+                    ):
+                        spoken = event.payload["text"]
+        finally:
+            runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
+
+    assert spoken
+    assert "edited: a.py" in llm.prompts[0]
+
+
+class _GatedLLM(_FakeLLM):
+    """First narration waits for a gate; later ones answer at once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+
+    def stream_chat(self, messages, *, system=None, max_tokens=None, temperature=None):  # type: ignore[no-untyped-def]
+        self.prompts.append(messages[0].content)
+        first = len(self.prompts) == 1
+        gate = self.gate
+
+        async def gen() -> AsyncIterator[str]:
+            if first:
+                await gate.wait()
+            yield "Line."
+
+        return gen()
+
+
+@pytest.mark.asyncio
+async def test_a_failure_during_a_narration_is_spoken_right_after_it() -> None:
+    # A tool fails while the previous line is still being generated. The
+    # follow-up flush must treat it as urgent, not wait for the idle timer.
+    bus = EventBus()
+    llm = _GatedLLM()
+    cfg = CommentatorConfig(idle_narration_ms=10_000, debounce_ms=50)
+    commentator = Commentator(bus, cfg, "en", llm=llm)  # type: ignore[arg-type]
+
+    runner = asyncio.create_task(commentator.run())
+    try:
+        await asyncio.sleep(0.05)
+        await bus.publish(
+            Event(kind=EventKind.FILE_EDITED, source="anthropic.proxy", payload={"path": "a.py"})
+        )
+        async with asyncio.timeout(2):
+            while not llm.prompts:
+                await asyncio.sleep(0.01)
+        await bus.publish(
+            Event(
+                kind=EventKind.TOOL_CALL_FINISHED,
+                source="claude.adapter",
+                payload={"tool": "Bash", "is_error": True, "preview": "pytest: 3 failed"},
+            )
+        )
+        await asyncio.sleep(0.1)
+        llm.gate.set()
+
+        def narrations() -> list[str]:
+            # The summary update after each line goes through the same LLM.
+            return [p for p in llm.prompts if "[NEW_EVENTS]" in p]
+
+        async with asyncio.timeout(2):
+            while len(narrations()) < 2:
+                await asyncio.sleep(0.01)
+    finally:
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+
+    assert "FAILED" in narrations()[1]
