@@ -84,7 +84,8 @@ pi:
   label: Pi
   command: pi
   description: Minimal AI agent toolkit with plugins
-  website_url: https://www.npmjs.com/package/@mariozechner/pi-coding-agent
+  # @mariozechner/pi-coding-agent is deprecated on npm in favour of this one.
+  website_url: https://www.npmjs.com/package/@earendil-works/pi-coding-agent
   provider: openai
   base_url_env: OPENAI_BASE_URL
   icon: PI
@@ -123,10 +124,14 @@ omp:
 dsh:
   label: DeepSeek Harness
   command: dsh
-  description: DeepSeek's open-source agent harness
+  description: DeepSeek's agent harness, web UI (preview)
   website_url: https://github.com/deepseek-ai/deepseek-harness
-  provider: deepseek
-  base_url_env: OPENAI_BASE_URL
+  # No terminal UI: bare `dsh` exits asking for a profile, and `dsh web`
+  # serves the agent in the browser (127.0.0.1:3080). Its model traffic is
+  # Anthropic Messages to $DEEPSEEK_BASE_URL (api.deepseek.com/anthropic).
+  provider: deepseek-anthropic
+  base_url_env: DEEPSEEK_BASE_URL
+  launch_args: ["web"]
   icon: DS
   accent: "#4d6bfe"
 
@@ -243,8 +248,10 @@ auggie:
 grok:
   label: Grok CLI
   command: grok
-  description: xAI's Grok agent in your terminal
-  website_url: https://github.com/superagent-ai/grok-cli
+  # xAI's own CLI is Grok Build; the community superagent-ai/grok-cli also
+  # installs a `grok` binary.
+  description: xAI's Grok Build agent in your terminal
+  website_url: https://github.com/xai-org/grok-build
   provider: openai
   base_url_env: OPENAI_BASE_URL
   icon: GK

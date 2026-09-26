@@ -21,10 +21,13 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
+from voice_copilot.core.child_env import child_env
 from voice_copilot.core.config import (
     Config,
     ProxyCliProfileConfig,
@@ -175,7 +178,12 @@ def restore_cli_shim(
     if shim_path.exists():
         shim_path.unlink()
     shim_dir = proxy_shim_dir()
-    remaining_shims = shim_dir.glob("*.cmd") if os.name == "nt" else shim_dir.iterdir()
+    if not shim_dir.is_dir():
+        remaining_shims: Iterable[Path] = ()
+    elif os.name == "nt":
+        remaining_shims = shim_dir.glob("*.cmd")
+    else:
+        remaining_shims = shim_dir.iterdir()
     if not any(path.is_file() for path in remaining_shims):
         _remove_user_path_entry(shim_dir)
     return describe_cli_shims(cfg, host=host, port=port)
@@ -215,6 +223,7 @@ def launch_cli_profile(
             [shell, "-NoExit", "-Command", launch_command],
             cwd=str(working_directory),
             creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            env=child_env(),
         )
     else:
         _launch_posix_terminal(
@@ -246,6 +255,33 @@ class ResolvedCli:
     provider: str
     #: Inserted between the binary and the user's own args at launch.
     launch_args: tuple[str, ...] = ()
+    #: Where the user had already pointed this CLI (their own base-URL
+    #: variable), for the proxy to forward to instead of the route's default.
+    upstream: str | None = None
+    #: The variable `upstream` came from, for the launch notice.
+    upstream_env: str | None = None
+
+
+def _user_upstream(value: str | None, *, proxy_url: str) -> str | None:
+    """The endpoint an existing base-URL value names, as a proxy route base.
+
+    None when unset, not an http(s) URL, or itself a voice-copilot route (a
+    `vc` started inside the proxied Terminal must not chain two proxies).
+    """
+    if not value or not value.strip():
+        return None
+    parts = urlsplit(value.strip())
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    first_segment = parts.path.strip("/").split("/", 1)[0]
+    if parts.hostname in ("127.0.0.1", "localhost", "::1") and first_segment in _ROUTE_ENV_KEYS:
+        return None
+    base = f"{parts.scheme}://{parts.netloc}{parts.path}".rstrip("/")
+    # A route whose proxy URL ends in /v1 hands the upstream a path that
+    # starts with v1/, so the base must not carry its own.
+    if proxy_url.endswith("/v1") and base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    return base
 
 
 def resolve_cli_for_vc(
@@ -293,7 +329,22 @@ def resolve_cli_for_vc(
         raise RuntimeError(f"could not resolve `{command}` on PATH; set a Binary override first")
 
     env_overrides = _proxy_env_overrides(profile_id, profile, meta=meta, host=host, port=port)
-    working_directory = _working_directory_from_config(cfg, profile)
+    # `vc` runs where the user typed it, like the CLI would on its own. The
+    # panel's saved folder is for its Launch button: using it here sent a
+    # `cd projB && vc claude` agent off to edit projA.
+    working_directory = _resolve_working_directory(None)
+    launch_args = _proxy_launch_args(profile, meta=meta, host=host, port=port)
+    # A user who already points the CLI somewhere (z.ai, Moonshot, a company
+    # gateway) keeps that endpoint: the proxy forwards there. Overwriting the
+    # variable sent their vendor's token to the route's default host instead.
+    # Only for CLIs that take their endpoint from this variable at all.
+    upstream: str | None = None
+    endpoint_via_args = meta is not None and any("{proxy_url}" in a for a in meta.launch_args)
+    if not endpoint_via_args and (meta is None or meta.kind != "shell"):
+        upstream = _user_upstream(
+            child_env().get(profile.base_url_env),
+            proxy_url=_proxy_url_for(profile.provider, host=host, port=port),
+        )
     return ResolvedCli(
         profile_id=profile_id,
         label=label,
@@ -301,7 +352,25 @@ def resolve_cli_for_vc(
         env_overrides=env_overrides,
         working_directory=working_directory,
         provider=profile.provider,
-        launch_args=_proxy_launch_args(profile, meta=meta, host=host, port=port),
+        launch_args=launch_args,
+        upstream=upstream,
+        upstream_env=profile.base_url_env if upstream else None,
+    )
+
+
+def proxy_launch_settings(
+    profile_id: str,
+    cfg: Config,
+    *,
+    host: str = _DEFAULT_PROXY_HOST,
+    port: int,
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Env overrides and extra argv that route catalog CLI `profile_id` through the proxy."""
+    meta = _meta_for(profile_id)
+    profile = _profile_from_config(cfg, profile_id)
+    return (
+        _proxy_env_overrides(profile_id, profile, meta=meta, host=host, port=port),
+        _proxy_launch_args(profile, meta=meta, host=host, port=port),
     )
 
 
@@ -354,21 +423,24 @@ def _working_directory_from_config(
     return _resolve_working_directory(override)
 
 
+#: Proxy route → the key `base_urls_for` files its URL under.
+_ROUTE_ENV_KEYS = {
+    "anthropic": "ANTHROPIC_BASE_URL",
+    "openai": "OPENAI_BASE_URL",
+    "openai-chatgpt": "OPENAI_CHATGPT_BASE_URL",
+    "openrouter": "OPENROUTER_BASE_URL",
+    "groq": "GROQ_BASE_URL",
+    "mistral": "MISTRAL_BASE_URL",
+    "deepseek": "DEEPSEEK_BASE_URL",
+    "deepseek-anthropic": "DEEPSEEK_ANTHROPIC_BASE_URL",
+    "ollama": "OLLAMA_BASE_URL",
+    "gemini": "GEMINI_BASE_URL",
+    "opencode-zen": "OPENCODE_ZEN_BASE_URL",
+}
+
+
 def _proxy_url_for(provider: str, *, host: str, port: int) -> str:
-    urls = base_urls_for(host, port)
-    key = {
-        "anthropic": "ANTHROPIC_BASE_URL",
-        "openai": "OPENAI_BASE_URL",
-        "openai-chatgpt": "OPENAI_CHATGPT_BASE_URL",
-        "openrouter": "OPENROUTER_BASE_URL",
-        "groq": "GROQ_BASE_URL",
-        "mistral": "MISTRAL_BASE_URL",
-        "deepseek": "DEEPSEEK_BASE_URL",
-        "ollama": "OLLAMA_BASE_URL",
-        "gemini": "GEMINI_BASE_URL",
-        "opencode-zen": "OPENCODE_ZEN_BASE_URL",
-    }[provider]
-    return urls[key]
+    return base_urls_for(host, port)[_ROUTE_ENV_KEYS[provider]]
 
 
 def _shell_env_overrides(*, host: str, port: int) -> dict[str, str]:
@@ -570,8 +642,11 @@ def _render_shell_launch_command(
         f"export {name}={shlex.quote(value)};" for name, value in env_overrides.items()
     )
     args = "".join(f" {shlex.quote(arg)}" for arg in launch_args)
+    # `|| exit 1`: an agent must never start in whatever directory the new
+    # terminal happened to open in (the home directory, typically).
     return (
-        f"cd {shlex.quote(str(working_directory))}; {exports} exec {shlex.quote(binary_path)}{args}"
+        f"cd {shlex.quote(str(working_directory))} || exit 1; "
+        f"{exports} exec {shlex.quote(binary_path)}{args}"
     )
 
 
@@ -590,9 +665,12 @@ def _launch_posix_terminal(
         launch_args=launch_args,
     )
     if sys.platform == "darwin":
+        # ensure_ascii=False: AppleScript string literals know \" and \\ but
+        # not \uXXXX, so a folder named in Cyrillic (or any non-ASCII) would
+        # reach `cd` mangled.
         script = (
             'tell application "Terminal"\n'
-            f"  do script {json.dumps(command)}\n"
+            f"  do script {json.dumps(command, ensure_ascii=False)}\n"
             "  activate\n"
             "end tell\n"
         )
@@ -623,7 +701,7 @@ def _launch_posix_terminal(
     ]
     for executable, argv in terminal_commands:
         if shutil.which(executable):
-            subprocess.Popen(argv, cwd=str(working_directory))
+            subprocess.Popen(argv, cwd=str(working_directory), env=child_env())
             return
     raise RuntimeError("no supported terminal emulator found on PATH")
 

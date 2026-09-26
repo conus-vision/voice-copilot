@@ -96,6 +96,10 @@ def test_deepseek_route_is_reachable(cfg, monkeypatch) -> None:
     )
     resolved = resolve_cli_for_vc("dsh", cfg, port=8766)
     assert resolved is not None
-    # The harness speaks OpenAI's dialect, so it reads OPENAI_BASE_URL — but the
-    # value points at the deepseek route, whose upstream is api.deepseek.com.
-    assert resolved.env_overrides == {"OPENAI_BASE_URL": "http://127.0.0.1:8766/deepseek/v1"}
+    # The harness speaks Anthropic Messages to $DEEPSEEK_BASE_URL, whose default
+    # is api.deepseek.com/anthropic — the deepseek-anthropic route.
+    assert resolved.env_overrides == {
+        "DEEPSEEK_BASE_URL": "http://127.0.0.1:8766/deepseek-anthropic"
+    }
+    # It has no terminal UI; `dsh web` serves it in the browser.
+    assert resolved.launch_args == ("web",)

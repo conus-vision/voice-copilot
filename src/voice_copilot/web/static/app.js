@@ -14,6 +14,9 @@
 (() => {
   const qs  = (sel) => document.querySelector(sel);
   const qsa = (sel) => document.querySelectorAll(sel);
+  const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+  ));
 
   const isMini =
     new URLSearchParams(location.search).get("mini") === "1" ||
@@ -639,12 +642,13 @@
   applyTracePauseButton();
   applyPromptToggle();
 
-  muteBtn.addEventListener("click", () => {
+  function toggleMute() {
     muted = !muted;
     send({ type: "cmd", cmd: muted ? "mute" : "unmute" });
     applyMuteButton();
     bc.postMessage({ type: "state", paused, muted });
-  });
+  }
+  muteBtn.addEventListener("click", toggleMute);
   interrupt.addEventListener("click", () => send({ type: "cmd", cmd: "interrupt" }));
 
   // Supervisor+ (or the interrupt button / alt+p) left the agent suspended;
@@ -668,7 +672,24 @@
   // instead of racing it. Per-browser preference; the server forgets it when
   // the run ends, so we re-send on every (re)connect.
   let holdWhileNarrating = false;
-  try { holdWhileNarrating = localStorage.getItem("vc.holdWhileNarrating") === "1"; } catch {}
+  // Until this browser has a choice of its own, the config's
+  // `dialog.hold_agent_while_narrating` stands: sending a default `false` on
+  // every connect silently overrode it.
+  let holdChosenHere = false;
+  try {
+    const stored = localStorage.getItem("vc.holdWhileNarrating");
+    if (stored !== null) {
+      holdWhileNarrating = stored === "1";
+      holdChosenHere = true;
+    }
+  } catch {}
+  if (!holdChosenHere) {
+    fetch("/api/config").then((r) => r.json()).then((cfg) => {
+      if (holdChosenHere) return;
+      holdWhileNarrating = !!(cfg.dialog && cfg.dialog.hold_agent_while_narrating);
+      applyHoldButton();
+    }).catch(() => {});
+  }
 
   function applyHoldButton() {
     if (!holdBtn) return;
@@ -681,11 +702,13 @@
   }
 
   function syncHoldWhileNarrating() {
+    if (!holdChosenHere) return;
     send({ type: "cmd", cmd: "hold_while_narrating", enabled: holdWhileNarrating });
   }
 
   holdBtn?.addEventListener("click", () => {
     holdWhileNarrating = !holdWhileNarrating;
+    holdChosenHere = true;
     try { localStorage.setItem("vc.holdWhileNarrating", holdWhileNarrating ? "1" : "0"); } catch {}
     applyHoldButton();
     syncHoldWhileNarrating();
@@ -728,6 +751,10 @@
         if (msg.type === "event") {
           if (!isMini && msg.kind === "user.skip.requested") {
             skipCurrentPlayback();
+            return;
+          }
+          if (!isMini && msg.kind === "user.mute.toggle") {
+            toggleMute();
             return;
           }
           if (!isMini && voiceInputEnabled && msg.kind === "user.speak.requested") {
@@ -901,7 +928,7 @@
     if (item.cls === "prompt") {
       const details = buildDisclosure(
         item,
-        `<span class="tag">PROMPT</span><span>${item.head}</span>`,
+        `<span class="tag">PROMPT</span><span>${escapeHtml(item.head)}</span>`,
         "prompt-item",
       );
       const body = document.createElement("div");
@@ -1319,6 +1346,7 @@
       ["openai-chatgpt", "openai-chatgpt (Codex on a ChatGPT plan)"],
       ["opencode-zen", "opencode-zen (OpenCode Zen)"],
       ["deepseek", "deepseek"],
+      ["deepseek-anthropic", "deepseek-anthropic (DeepSeek Harness)"],
       ["openrouter", "openrouter"],
       ["groq", "groq"],
       ["mistral", "mistral"],
@@ -1385,7 +1413,12 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify(cfg),
       });
-      return res.ok;
+      if (res.ok) return { ok: true, detail: "" };
+      // The server refuses a provider it cannot build (nothing is saved then);
+      // say why instead of a bare "save failed".
+      let detail = "";
+      try { detail = (await res.json()).detail || ""; } catch {}
+      return { ok: false, detail: typeof detail === "string" ? detail : JSON.stringify(detail) };
     }
 
     const PER_CLI_NAMES = ["claude", "codex", "opencode", "gemini", "copilot"];
@@ -1441,10 +1474,6 @@
       }
       cfg.commentator.per_cli = out;
     }
-
-    const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => (
-      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
-    ));
 
     function cliRowMarkup(profile) {
       const isShell = profile.kind === "shell";
@@ -1690,8 +1719,8 @@
       pendingChange = false;
       saveInFlight = true;
       try {
-        const ok = await saveConfig();
-        showSave(ok ? "saved" : "save failed", ok ? "ok" : "err");
+        const { ok, detail } = await saveConfig();
+        showSave(ok ? "saved" : `save failed${detail ? `: ${detail}` : ""}`, ok ? "ok" : "err");
       } catch {
         showSave("save failed", "err");
       } finally {

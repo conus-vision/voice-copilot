@@ -26,6 +26,31 @@ _INCREMENTAL_MIN_CHARS = 120
 _SENTENCE_ENDS = (".", "!", "?", "\n", "。", "！", "？", "…")  # noqa: RUF001
 
 
+def _content_text(value: Any) -> str:
+    """Text of a Chat Completions delta field.
+
+    Usually a string; some providers (Mistral's reasoning models) stream a
+    list of typed chunks instead. Anything else counts as no text — a
+    non-string in the buffer broke every later join, the final one included.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for chunk in value:
+            if isinstance(chunk, str):
+                parts.append(chunk)
+            elif isinstance(chunk, dict):
+                text = chunk.get("text")
+                if not isinstance(text, str):
+                    thinking = chunk.get("thinking")
+                    text = _content_text(thinking) if thinking is not None else None
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
 class OpenAISSEParser:
     def __init__(
         self,
@@ -86,11 +111,14 @@ class OpenAISSEParser:
 
     @staticmethod
     def _split_event(buf: bytes) -> tuple[bytes | None, bytes]:
-        for sep in (b"\n\n", b"\r\n\r\n"):
-            idx = buf.find(sep)
-            if idx != -1:
-                return buf[:idx], buf[idx + len(sep) :]
-        return None, buf
+        # The earliest separator wins: taking the first *kind* found merged an
+        # LF-terminated event into a CRLF one before it, and both were lost.
+        found = [(buf.find(sep), sep) for sep in (b"\n\n", b"\r\n\r\n")]
+        hits = [(idx, sep) for idx, sep in found if idx != -1]
+        if not hits:
+            return None, buf
+        idx, sep = min(hits)
+        return buf[:idx], buf[idx + len(sep) :]
 
     async def _handle_event_bytes(self, raw: bytes) -> None:
         data_parts: list[str] = []
@@ -99,7 +127,11 @@ class OpenAISSEParser:
                 body = line[5:].lstrip()
                 if body == "[DONE]":
                     await self._flush_turn()
-                    await self._emit(EventKind.TURN_ENDED, {"via": "openai.proxy"})
+                    # Chat Completions ends every tool round with [DONE] too; a
+                    # response that called tools is a step, not the end of the turn.
+                    final = not self._turn_called_tools
+                    self._turn_called_tools = False
+                    await self._emit(EventKind.TURN_ENDED, {"via": "openai.proxy", "final": final})
                     return
                 data_parts.append(body)
         if not data_parts:
@@ -118,14 +150,17 @@ class OpenAISSEParser:
         choices = p.get("choices")
         if isinstance(choices, list) and choices:
             delta = (choices[0] or {}).get("delta") or {}
-            text = delta.get("content")
+            text = _content_text(delta.get("content"))
             if text:
                 self._text_buf.append(text)
-            thinking = delta.get("reasoning") or delta.get("reasoning_content")
+            thinking = _content_text(delta.get("reasoning") or delta.get("reasoning_content"))
             if thinking:
                 self._reasoning_buf.append(thinking)
             self._collect_chat_tool_calls(delta.get("tool_calls"))
-            if (choices[0] or {}).get("finish_reason"):
+            finish_reason = (choices[0] or {}).get("finish_reason")
+            if finish_reason in ("tool_calls", "function_call"):
+                self._turn_called_tools = True
+            if finish_reason:
                 await self._flush_tool_calls()
             await self._try_incremental_flush()
             return
@@ -232,6 +267,7 @@ class OpenAISSEParser:
         for call in tool_calls:
             if not isinstance(call, dict):
                 continue
+            self._turn_called_tools = True
             key = str(call.get("index", 0))
             entry = self._tool_calls.setdefault(key, {"id": None, "name": None, "args": ""})
             if call.get("id"):
