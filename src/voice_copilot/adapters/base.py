@@ -18,6 +18,25 @@ from enum import StrEnum
 
 log = logging.getLogger(__name__)
 
+#: Ceiling on one NDJSON line from a wrapped CLI's stdout. asyncio's default
+#: (64 KiB) is smaller than a single tool result (a whole file read back, a
+#: long command's output): `readline()` then raises, the reader task dies,
+#: nobody drains the pipe any more and the CLI blocks on its next write.
+STREAM_LINE_LIMIT = 32 * 1024 * 1024
+
+
+async def read_stream_line(stream: asyncio.StreamReader, who: str) -> bytes | None:
+    """Next line from `stream`, b"" at EOF, None for a line over the limit.
+
+    An oversized line is dropped (its unread tail then arrives as a fragment
+    that fails JSON decoding and is skipped too), so reading carries on.
+    """
+    try:
+        return await stream.readline()
+    except ValueError:
+        log.warning("%s: stdout line over %d bytes skipped", who, STREAM_LINE_LIMIT)
+        return None
+
 
 class QuickAsideCapability(StrEnum):
     NATIVE = "native"

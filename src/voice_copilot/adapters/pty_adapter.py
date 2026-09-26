@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import shutil
 import sys
 import threading
@@ -64,6 +65,48 @@ def kill_process_tree(pid: int | None) -> int:
     return killed
 
 
+def _group_survivors(pgid: int) -> list[Any]:
+    """Live processes still in process group `pgid` (POSIX)."""
+    import psutil
+
+    survivors = []
+    for proc in psutil.process_iter():
+        try:
+            if os.getpgid(proc.pid) == pgid and proc.status() != psutil.STATUS_ZOMBIE:
+                survivors.append(proc)
+        except (psutil.Error, OSError):
+            continue
+    return survivors
+
+
+def end_session(child: Any) -> None:
+    """Take the wrapped CLI, and whatever it left running, down with the session.
+
+    Best-effort, for shutdown; runs in a worker thread.
+    """
+    import psutil
+
+    kill_process_tree(child.pid)
+    if sys.platform != "win32":
+        # A sub-agent the CLI forked and left behind (codex does) stops being
+        # its descendant once the CLI exits, but it stays in the process group
+        # the CLI leads (ptyprocess makes the child a session leader). Ask the
+        # stragglers to stop, then insist.
+        survivors = _group_survivors(child.pid)
+        for proc in survivors:
+            with contextlib.suppress(psutil.Error):
+                proc.terminate()
+        _, alive = psutil.wait_procs(survivors, timeout=2)
+        for proc in alive:
+            with contextlib.suppress(psutil.Error):
+                proc.kill()
+    # kill_process_tree waits on (and so reaps) the child; ptyprocess then
+    # raises from isalive() instead of answering False.
+    with contextlib.suppress(Exception):
+        if child.isalive():
+            child.terminate(force=True)
+
+
 def _terminal_size() -> tuple[int, int]:
     """Return the real terminal's (rows, cols), the order PtyProcess expects.
 
@@ -76,6 +119,41 @@ def _terminal_size() -> tuple[int, int]:
     cols = size.columns if size.columns > 0 else 80
     rows = size.lines if size.lines > 0 else 24
     return rows, cols
+
+
+#: How often the pump re-reads the real terminal's size.
+_RESIZE_POLL_S = 0.2
+
+
+class _ResizeFollower:
+    """Keep the child PTY the size of the real terminal.
+
+    A resized window is invisible to the child otherwise: its TUI keeps
+    drawing for the old width and height. Polling works the same on every
+    platform (Windows has no SIGWINCH, and on POSIX the pump runs in a worker
+    thread, where Python cannot install a signal handler).
+    """
+
+    def __init__(self, child: Any) -> None:
+        self._child = child
+        self._last = _terminal_size()
+        self._next_check = time.monotonic() + _RESIZE_POLL_S
+
+    def poll(self) -> bool:
+        """Resize the child if the terminal changed; False once it can't be."""
+        now = time.monotonic()
+        if now < self._next_check:
+            return True
+        self._next_check = now + _RESIZE_POLL_S
+        current = _terminal_size()
+        if current == self._last:
+            return True
+        self._last = current
+        try:
+            self._child.setwinsize(current[0], current[1])
+        except Exception:  # child gone or resize unsupported
+            return False
+        return True
 
 
 class PtyAdapter(CLIAdapter):
@@ -122,12 +200,7 @@ class PtyAdapter(CLIAdapter):
             # forks sub-agents that outlive `codex exec`; left alone they keep
             # burning the user's quota and hold connections through the proxy
             # that stopped `vc` from ever exiting.
-            await asyncio.to_thread(kill_process_tree, self._child.pid)
-        if self._child is not None and self._child.isalive():
-            try:
-                self._child.terminate(force=True)
-            except Exception as e:  # terminate is best-effort on shutdown
-                log.warning("pty terminate failed: %s", e)
+            await asyncio.to_thread(end_session, self._child)
         if self._pump_task is not None:
             self._pump_task.cancel()
         await self._bus.publish(Event(kind=EventKind.SESSION_ENDED, source="pty"))
@@ -277,18 +350,11 @@ class PtyAdapter(CLIAdapter):
                     return
 
         def watch_resize() -> None:
-            # Windows has no SIGWINCH; poll the console size and tell the child
-            # when it changes so its TUI reflows to the real window.
-            last = _terminal_size()
+            follower = _ResizeFollower(child)
             while child.isalive():
-                time.sleep(0.2)
-                current = _terminal_size()
-                if current != last:
-                    last = current
-                    try:
-                        child.setwinsize(current[0], current[1])
-                    except Exception:  # child gone or resize unsupported
-                        return
+                time.sleep(_RESIZE_POLL_S)
+                if not follower.poll():
+                    return
 
         # Daemon thread: ReadConsoleW can't be interrupted, so after the child
         # exits this stays blocked until the next keypress (or process exit)
@@ -333,10 +399,12 @@ class PtyAdapter(CLIAdapter):
 
         stdin_fd = sys.stdin.fileno()
         old = termios.tcgetattr(stdin_fd)
+        follower = _ResizeFollower(child)
         try:
             tty.setraw(stdin_fd)
             child_fd = child.fileno()
             while child.isalive():
+                follower.poll()
                 rlist, _, _ = select.select([child_fd, stdin_fd], [], [], 0.05)
                 if child_fd in rlist:
                     try:
