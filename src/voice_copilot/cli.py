@@ -46,6 +46,7 @@ from voice_copilot.proxy.server import (
     base_urls_for,
     build_proxy_server,
     provider_has_narration,
+    proxy_bind_host,
 )
 from voice_copilot.proxy.session import SessionRegistry
 from voice_copilot.tray import TrayService
@@ -180,7 +181,7 @@ def run(
         # traffic and needs its endpoint as a `-c openai_base_url=…` flag, or
         # nothing reaches the proxy while the adapter's own events are muted.
         overrides, launch_args = proxy_launch_settings(
-            target, load_config(), host=host, port=proxy_port
+            target, load_config(), host=proxy_bind_host(), port=proxy_port
         )
         env, proxy_args = overrides, list(launch_args)
     builder: Callable[[EventBus], CLIAdapter]
@@ -643,7 +644,9 @@ async def _proxy_only(
 
     commentator = Commentator(bus, cfg.commentator, cfg.commentator_language, sessions=sessions)
     _server_app_state(server).commentator = commentator
-    proxy_server = build_proxy_server(bus, host=host, port=proxy_port, registry=sessions)
+    proxy_server = build_proxy_server(
+        bus, host=proxy_bind_host(), port=proxy_port, registry=sessions
+    )
     servers = [server, proxy_server]
     server_tasks = _start_servers(servers)
     extra: list[asyncio.Task[Any]] = [
@@ -656,7 +659,7 @@ async def _proxy_only(
     if demo:
         extra.append(asyncio.create_task(run_demo(bus), name="demo"))
 
-    urls = base_urls_for(host, proxy_port)
+    urls = base_urls_for(proxy_bind_host(), proxy_port)
     console.print("\n[bold green]voice-copilot proxy ready — point your CLI at:[/bold green]")
     for k, v in urls.items():
         console.print(f"  [cyan]{k}[/cyan]=[white]{v}[/white]")
@@ -695,7 +698,9 @@ async def _run_with_adapter(
     _server_app_state(server).commentator = commentator
     servers: list[uvicorn.Server] = [server]
     if enable_proxy:
-        servers.append(build_proxy_server(bus, host=host, port=proxy_port, registry=sessions))
+        servers.append(
+            build_proxy_server(bus, host=proxy_bind_host(), port=proxy_port, registry=sessions)
+        )
     server_tasks = _start_servers(servers)
     extra: list[asyncio.Task[Any]] = [
         asyncio.create_task(commentator.run(), name="commentator"),
@@ -704,15 +709,16 @@ async def _run_with_adapter(
     if tts_result is not None:
         extra.append(tts_result[1])
     if enable_proxy:
+        phost = proxy_bind_host()
         console.print(
-            f"[green]proxy → ANTHROPIC_BASE_URL=http://{host}:{proxy_port}/anthropic  "
-            f"OPENAI_BASE_URL=http://{host}:{proxy_port}/openai/v1[/green]"
+            f"[green]proxy → ANTHROPIC_BASE_URL=http://{phost}:{proxy_port}/anthropic  "
+            f"OPENAI_BASE_URL=http://{phost}:{proxy_port}/openai/v1[/green]"
         )
         # Wait for uvicorn to actually bind before the child CLI uses the URL,
         # so its first request cannot race past the proxy unnarrated.
-        if not await wait_for_port(host, proxy_port, timeout=10.0):
+        if not await wait_for_port(phost, proxy_port, timeout=10.0):
             console.print(
-                f"[yellow]proxy did not come up on {host}:{proxy_port} in time — "
+                f"[yellow]proxy did not come up on {phost}:{proxy_port} in time — "
                 f"narration may miss the first request[/yellow]"
             )
 
@@ -867,11 +873,13 @@ async def _run_vc(
     focus_router = FocusRouter(
         narrate_only_when_focused=cfg_for_resolve.focus.narrate_only_when_focused
     )
-    actual_proxy_port = proxy_port or free_port(host)
+    actual_proxy_port = proxy_port or free_port(proxy_bind_host())
 
     resolved: ResolvedCli | None
     try:
-        resolved = resolve_cli_for_vc(name, cfg_for_resolve, host=host, port=actual_proxy_port)
+        resolved = resolve_cli_for_vc(
+            name, cfg_for_resolve, host=proxy_bind_host(), port=actual_proxy_port
+        )
     except RuntimeError as e:
         console.print(f"[red]{e}[/red]")
         return
@@ -924,7 +932,7 @@ async def _run_vc(
         servers.append(
             build_proxy_server(
                 bus,
-                host=host,
+                host=proxy_bind_host(),
                 port=actual_proxy_port,
                 registry=sessions,
                 quiet=True,
@@ -953,10 +961,12 @@ async def _run_vc(
         # Wait for the proxy to bind before the child starts using its base URL.
         # The child owns the terminal here, so a failure goes to the log file
         # (routed by `_route_logging_to_file`), never the console.
-        if enable_proxy and not await wait_for_port(host, actual_proxy_port, timeout=10.0):
+        if enable_proxy and not await wait_for_port(
+            proxy_bind_host(), actual_proxy_port, timeout=10.0
+        ):
             logging.getLogger(__name__).warning(
                 "proxy did not come up on %s:%s in time — first request may be unnarrated",
-                host,
+                proxy_bind_host(),
                 actual_proxy_port,
             )
     else:
