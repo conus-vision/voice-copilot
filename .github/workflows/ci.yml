@@ -109,13 +109,24 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Start the panel
+        # Straight from the venv: a background `uv run` holds uv's cache lock,
+        # and setup-uv's cache pruning at the end of the job waits on it.
         run: |
-          uv run voice-copilot serve --port 8799 --no-open --no-hotkeys --no-tray --no-proxy \
+          .venv/bin/voice-copilot serve --port 8799 --no-open --no-hotkeys --no-tray --no-proxy \
             > "$RUNNER_TEMP/panel.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/panel.pid"
 
       - name: Open every tab
         working-directory: tests/smoke
         run: node panel.mjs http://127.0.0.1:8799/
+
+      - name: Stop the panel
+        if: always()
+        run: |
+          pid="$(cat "$RUNNER_TEMP/panel.pid" 2>/dev/null)" || exit 0
+          kill "$pid" 2>/dev/null || exit 0
+          for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 0.5; done
+          kill -9 "$pid" 2>/dev/null || true
 
       - name: Panel log
         if: failure()
