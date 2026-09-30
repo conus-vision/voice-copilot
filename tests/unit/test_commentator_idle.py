@@ -80,11 +80,11 @@ def test_opening_prompt_asks_for_the_task_first() -> None:
         events=[_tool_event()],
         opening=True,
     )
-    assert "первая реплика" in prompt
+    assert "first line about this request" in prompt
     assert "почини парсер" in prompt
 
     later = build_narration_user(user_query="почини парсер", summary=None, events=[_tool_event()])
-    assert "первая реплика" not in later
+    assert "first line about this request" not in later
 
 
 @pytest.mark.asyncio
@@ -122,7 +122,7 @@ async def test_idle_timer_fires_and_opens_with_the_task() -> None:
 
     assert spoken == "Читаем парсеры."
     # Nothing had been said yet, so the line was asked to name the task first.
-    assert llm.prompts and "первая реплика" in llm.prompts[0]
+    assert llm.prompts and "first line about this request" in llm.prompts[0]
     assert "почини парсер" in llm.prompts[0]
     assert "- searched: extract_user_query" in llm.prompts[0]
 
@@ -224,7 +224,7 @@ async def test_a_failure_during_a_narration_is_spoken_right_after_it() -> None:
 
         def narrations() -> list[str]:
             # The summary update after each line goes through the same LLM.
-            return [p for p in llm.prompts if "[NEW_EVENTS]" in p]
+            return [p for p in llm.prompts if "NEW EVENTS (" in p]
 
         async with asyncio.timeout(2):
             while len(narrations()) < 2:
