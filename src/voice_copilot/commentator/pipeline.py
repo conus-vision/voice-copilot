@@ -169,56 +169,73 @@ class Commentator:
         async with self._bus.subscribe() as q:
             while True:
                 try:
-                    event = await self._next_event(q)
-                except TimeoutError:
-                    # Only quiet activity for a while. Say something rather
-                    # than leaving the user listening to nothing.
-                    if not await self._flush(trigger="idle"):
-                        self._buffer_since = time.monotonic()
-                    continue
+                    await self._step(q, loop, debounce_s, max_batch_s)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # One malformed event (or a bug it triggers) must not end
+                    # narration for the rest of the run.
+                    log.exception("commentator: failed on an event, carrying on")
+
+    async def _step(
+        self,
+        q: asyncio.Queue[Event],
+        loop: asyncio.AbstractEventLoop,
+        debounce_s: float,
+        max_batch_s: float,
+    ) -> None:
+        """Take the next event (or the idle timeout) and narrate when due."""
+        try:
+            event = await self._next_event(q)
+        except TimeoutError:
+            # Only quiet activity for a while. Say something rather
+            # than leaving the user listening to nothing.
+            if not await self._flush(trigger="idle"):
+                self._buffer_since = time.monotonic()
+            return
+        control = self._consume_control_event(event)
+        if control == "flush":
+            await self._flush(trigger="playback_ready")
+            return
+        if control == "consume":
+            return  # USER_MESSAGE etc. — context-only, not narrated
+        admitted = self._admit(event)
+        if admitted is None or admitted == "context":
+            return
+        if admitted == "high":
+            await self._flush(trigger="high")
+            return
+
+        # Accumulate until the bus goes quiet for debounce_s OR until
+        # max_batch_s has elapsed — whichever comes first. The deadline
+        # prevents indefinitely deferring narration during long thinking
+        # streams where events arrive faster than the debounce window.
+        deadline = loop.time() + max_batch_s
+        trigger = "normal"
+        try:
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break  # max batch time reached → flush now
+                event = await asyncio.wait_for(
+                    q.get(),
+                    timeout=min(debounce_s, remaining),
+                )
                 control = self._consume_control_event(event)
                 if control == "flush":
                     await self._flush(trigger="playback_ready")
                     continue
                 if control == "consume":
-                    continue  # USER_MESSAGE etc. — context-only, not narrated
-                admitted = self._admit(event)
-                if admitted is None or admitted == "context":
                     continue
-                if admitted == "high":
-                    await self._flush(trigger="high")
-                    continue
+                if self._admit(event) == "high":
+                    # Same as a high event arriving first: an edit or a
+                    # failure is spoken now, not held to the word gate.
+                    trigger = "high"
+                    break
+        except TimeoutError:
+            pass
 
-                # Accumulate until the bus goes quiet for debounce_s OR until
-                # max_batch_s has elapsed — whichever comes first. The deadline
-                # prevents indefinitely deferring narration during long thinking
-                # streams where events arrive faster than the debounce window.
-                deadline = loop.time() + max_batch_s
-                trigger = "normal"
-                try:
-                    while True:
-                        remaining = deadline - loop.time()
-                        if remaining <= 0:
-                            break  # max batch time reached → flush now
-                        event = await asyncio.wait_for(
-                            q.get(),
-                            timeout=min(debounce_s, remaining),
-                        )
-                        control = self._consume_control_event(event)
-                        if control == "flush":
-                            await self._flush(trigger="playback_ready")
-                            continue
-                        if control == "consume":
-                            continue
-                        if self._admit(event) == "high":
-                            # Same as a high event arriving first: an edit or a
-                            # failure is spoken now, not held to the word gate.
-                            trigger = "high"
-                            break
-                except TimeoutError:
-                    pass
-
-                await self._flush(trigger=trigger)
+        await self._flush(trigger=trigger)
 
     async def _next_event(self, q: asyncio.Queue[Event]) -> Event:
         """Next bus event, or raise TimeoutError when the idle window expires."""

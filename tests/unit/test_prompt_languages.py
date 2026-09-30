@@ -84,8 +84,10 @@ def test_user_messages_are_english_and_end_on_the_reply_language(style: str) -> 
         style=style,
         language="ru",
     )
-    assert "USER REQUEST:\nпочини парсер" in narration
-    assert "SO FAR:\nСмотрели парсеры." in narration
+    query = "почини парсер"
+    memory = "Смотрели парсеры."
+    assert f"USER REQUEST:\n{query}" in narration
+    assert f"SO FAR:\n{memory}" in narration
     assert "NEW EVENTS (the agent's actions):" in narration
     assert narration.endswith("Reply in Russian, one or two sentences:")
     # No square-bracket labels: copilot-cli greps for them.
