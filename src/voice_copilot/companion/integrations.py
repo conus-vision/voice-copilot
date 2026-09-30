@@ -135,9 +135,13 @@ def claude_hooks(url: str, *, launch: str | None = None, mode: str | None = None
             "url": f"{url}/hooks/claude?{query}",
             "timeout": timeout,
             # A launched terminal carries its launch id; the permanent plugin
-            # sends it so Voice Copilot can skip the duplicate report.
-            "headers": {"X-Voice-Copilot-Launch": "$VOICE_COPILOT_LAUNCH"},
-            "allowedEnvVars": ["VOICE_COPILOT_LAUNCH"],
+            # sends it so Voice Copilot can skip the duplicate report. The
+            # token is the one you set for the panel, if any.
+            "headers": {
+                "X-Voice-Copilot-Launch": "$VOICE_COPILOT_LAUNCH",
+                "X-Voice-Copilot-Token": "$VOICE_COPILOT_TOKEN",
+            },
+            "allowedEnvVars": ["VOICE_COPILOT_LAUNCH", "VOICE_COPILOT_TOKEN"],
         }
         group: dict[str, Any] = {"hooks": [hook]}
         if matcher is not None:

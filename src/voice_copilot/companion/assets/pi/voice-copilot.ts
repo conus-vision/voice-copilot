@@ -26,6 +26,7 @@ import http from "node:http";
 const BASE = (process.env.VOICE_COPILOT_URL || "http://127.0.0.1:8765/api/companion/v1").replace(/\/+$/, "");
 const LAUNCH = process.env.VOICE_COPILOT_LAUNCH || "";
 const MODE = process.env.VOICE_COPILOT_MODE || "";
+const TOKEN = process.env.VOICE_COPILOT_TOKEN || "";
 const CLI = "pi";
 const FLUSH_MS = 400;
 const CONNECT_TIMEOUT_MS = 2000;
@@ -52,7 +53,14 @@ function post(path: string, body: unknown, timeoutMs = 10_000, signal?: AbortSig
     const data = Buffer.from(JSON.stringify(body));
     const req = http.request(
       url,
-      { method: "POST", headers: { "content-type": "application/json", "content-length": data.length } },
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": data.length,
+          ...(TOKEN ? { "x-voice-copilot-token": TOKEN } : {}),
+        },
+      },
       (res) => {
         responded = true;
         const chunks: Buffer[] = [];

@@ -50,6 +50,7 @@ from voice_copilot.proxy.cli_shims import (
     restore_cli_shim,
 )
 from voice_copilot.proxy.session import SessionRegistry
+from voice_copilot.web.access import PanelAccess
 from voice_copilot.web.guard import LocalOriginGuard
 from voice_copilot.web.ws import register_ws
 
@@ -101,11 +102,15 @@ def create_app(
     bind_host: str | None = None,
     companion: CompanionHub | None = None,
     panel_port: int | None = None,
+    access: PanelAccess | None = None,
 ) -> FastAPI:
     app = FastAPI(title="voice-copilot", version="0.1.0", lifespan=_lifespan)
     # Every page open in the browser can reach loopback: refuse forged
     # cross-site requests, WebSocket hijacking and DNS rebinding (see guard.py).
-    app.add_middleware(LocalOriginGuard, bind_host=bind_host)
+    # Other devices need the panel's token (see access.py).
+    app.add_middleware(
+        LocalOriginGuard, bind_host=bind_host, access=access if access else PanelAccess()
+    )
     app.state.bus = bus
     app.state.config = config
     app.state.audio_hub = audio_hub or AudioHub()
@@ -496,13 +501,14 @@ async def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = 
     """Entry used by `voice-copilot run` — creates a fresh bus + loads config."""
     bus = EventBus()
     config = load_config()
-    app = create_app(bus, config, bind_host=host)
+    access = PanelAccess()
+    app = create_app(bus, config, bind_host=host, access=access)
 
     server_config = uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
     server = ManagedServer(server_config)
 
     if open_browser:
-        url = f"http://{host}:{port}/"
+        url = access.browser_url(host, port)
         asyncio.get_event_loop().call_later(0.5, lambda: webbrowser.open(url))
 
     await server.serve()

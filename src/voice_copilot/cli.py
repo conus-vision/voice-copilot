@@ -50,6 +50,7 @@ from voice_copilot.proxy.server import (
 )
 from voice_copilot.proxy.session import SessionRegistry
 from voice_copilot.tray import TrayService
+from voice_copilot.web.access import PanelAccess
 from voice_copilot.web.demo import run_demo
 from voice_copilot.web.server import ManagedServer, create_app
 
@@ -513,6 +514,7 @@ async def _boot(
     quiet_logging: bool = False,
 ) -> tuple[uvicorn.Server, HotkeyService | None, TrayService | None, Config, AudioHub]:
     cfg = load_config()
+    access = PanelAccess()
 
     hub = AudioHub()
     stt_provider = None
@@ -533,7 +535,18 @@ async def _boot(
         proxy_port=proxy_port,
         bind_host=host,
         panel_port=port,
+        access=access,
     )
+    network_url = access.network_url(host, port)
+    if network_url:
+        message = (
+            f"Panel for other devices: {network_url}\n"
+            "Anyone with this link can control the agent; keep it private."
+        )
+        if quiet_logging:
+            logging.getLogger(__name__).info(message)
+        else:
+            console.print(message, highlight=False, soft_wrap=True)
     # quiet_logging (used by `vc`): pass log_config=None so uvicorn does NOT
     # install its own stderr handlers — its loggers then propagate to the root
     # logger, which `_run_vc` has redirected to a file. Otherwise uvicorn would
@@ -583,13 +596,15 @@ async def _boot(
             if main_task is not None:
                 loop.call_soon_threadsafe(main_task.cancel)
 
-        tray_svc = TrayService(host, port, on_quit=quit_from_tray)
+        tray_svc = TrayService(
+            host, port, on_quit=quit_from_tray, url=access.browser_url(host, port)
+        )
         tray_svc.start()
 
     if open_browser:
         import webbrowser
 
-        loop.call_later(0.7, lambda: webbrowser.open(f"http://{host}:{port}/"))
+        loop.call_later(0.7, lambda: webbrowser.open(access.browser_url(host, port)))
 
     return server, hotkey_svc, tray_svc, cfg, hub
 

@@ -10,8 +10,9 @@ were not there.
 
 Where to post comes from the environment a Voice Copilot launch sets for the
 CLI: ``VOICE_COPILOT_URL`` (default ``http://127.0.0.1:8765/api/companion/v1``),
-``VOICE_COPILOT_LAUNCH`` and ``VOICE_COPILOT_MODE``. ``VOICE_COPILOT_HOOKS=off``
-silences it without uninstalling.
+``VOICE_COPILOT_LAUNCH`` and ``VOICE_COPILOT_MODE``. ``VOICE_COPILOT_TOKEN``,
+when you set one for the panel, goes along as a header.
+``VOICE_COPILOT_HOOKS=off`` silences it without uninstalling.
 
 Standard library only, and nothing from the rest of the package: the CLI
 starts this once per hook, so it has to start fast.
@@ -73,9 +74,11 @@ def main(argv: list[str] | None = None) -> int:
     name = _event_name(event, raw).replace("_", "").lower()
     timeout = _GATE_TIMEOUT_S if name in _GATE_EVENTS else _TIMEOUT_S
 
-    request = urllib.request.Request(
-        url, data=raw or b"{}", method="POST", headers={"Content-Type": "application/json"}
-    )
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("VOICE_COPILOT_TOKEN", "").strip()
+    if token:
+        headers["X-Voice-Copilot-Token"] = token
+    request = urllib.request.Request(url, data=raw or b"{}", method="POST", headers=headers)
     # Loopback only: never route this through HTTP(S)_PROXY.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:

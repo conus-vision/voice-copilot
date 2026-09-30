@@ -347,6 +347,14 @@ There are no fallbacks between providers. If the configured one fails, the
 error shows up in the panel and narration stops, so a broken setup is never
 silent.
 
+The panel and the proxy listen on `127.0.0.1`. To open the panel from a phone
+or another computer, start it with `VOICE_COPILOT_HOST=0.0.0.0 voice-copilot serve`.
+It prints a link with an access token. Another device needs that link once;
+its browser then keeps the token in a cookie. Your own computer needs no token.
+On a machine you share with other people, set `VOICE_COPILOT_TOKEN` to a
+secret of your choice: every request then has to carry it, the panel opens
+with it, and the hooks and plugins send it from the same variable.
+
 ## Interception strategies
 
 1. Stream-JSON mode of the target CLI, used by `voice-copilot run claude` and
@@ -418,6 +426,10 @@ uv run pytest
 - The panel answers `403 unexpected Host header`: it only accepts `localhost`,
   IP addresses and the host it was started with, which keeps other web pages
   out. Open it as `http://127.0.0.1:<port>`.
+- The panel says it needs its access link (HTTP 401): it was opened from
+  another device without the token. Open the link `voice-copilot serve`
+  printed at start, the one that ends in `?token=`. The token is kept in
+  `panel-token` next to the config file.
 - Microphone denied: browsers only allow the mic on a trusted origin such as
   `http://127.0.0.1:<port>`. Don't serve the panel from a LAN IP without HTTPS.
 - `keyring` finds no backend on headless Linux: install `keyrings.alt` into

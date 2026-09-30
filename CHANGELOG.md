@@ -41,6 +41,12 @@
 - The proxy listens on 127.0.0.1 whatever address the panel binds to
   (`VOICE_COPILOT_PROXY_HOST` changes that). Before, `VOICE_COPILOT_HOST=0.0.0.0`
   also put an open model relay on the network.
+- A panel on a network address answers other devices only with its token:
+  before, anyone on the network could launch a terminal, read the trace or
+  replace the API keys. `serve` prints the link to open on a phone; the
+  browser keeps the token in a cookie. Requests from this computer need no
+  token, unless `VOICE_COPILOT_TOKEN` is set, which extends the check to every
+  caller (the hooks and plugins send it).
 
 ### Fixed
 - `vc` runs the agent in the current folder, not the one picked in the panel.

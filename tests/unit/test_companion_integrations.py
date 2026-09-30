@@ -139,7 +139,10 @@ def test_claude_plugin_posts_every_event_to_voice_copilot(tmp_path: Path) -> Non
         "http://127.0.0.1:8765/api/companion/v1/hooks/claude?cli=claude&launch=8765-abc&mode=control"
     )
     assert entry["timeout"] == integrations.GATE_TIMEOUT_S
-    assert entry["headers"] == {"X-Voice-Copilot-Launch": "$VOICE_COPILOT_LAUNCH"}
+    assert entry["headers"] == {
+        "X-Voice-Copilot-Launch": "$VOICE_COPILOT_LAUNCH",
+        "X-Voice-Copilot-Token": "$VOICE_COPILOT_TOKEN",
+    }
     assert hooks["MessageDisplay"][0]["hooks"][0]["timeout"] <= 5
 
 
