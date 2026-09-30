@@ -1654,6 +1654,7 @@
             <span class="cli-status" data-cli-status="${profile.id}">checking…</span>
           </div>
           <p class="cli-row-desc">${escapeHtml(profile.description || "")}</p>
+          ${profile.proxy_note ? `<p class="cli-row-note">${escapeHtml(profile.proxy_note)}</p>` : ""}
           <div class="cli-activity" data-cli-activity-row="${profile.id}" hidden>
             <span class="cli-open-dot" data-cli-open-dot="${profile.id}" data-state="none"></span>
             <span data-cli-activity="${profile.id}"></span>

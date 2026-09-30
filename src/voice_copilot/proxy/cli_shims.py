@@ -86,6 +86,7 @@ def describe_cli_shims(
                 "label": meta.label,
                 "command": meta.command,
                 "description": meta.description,
+                "proxy_note": meta.proxy_note,
                 "website_url": meta.website_url,
                 "kind": meta.kind,
                 "icon": meta.icon,

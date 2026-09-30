@@ -737,6 +737,12 @@ code.pport, span.pport { color: var(--warn); font-family: ui-monospace, monospac
   font-size: 12px;
 }
 
+.cli-row-note {
+  margin: 3px 0 0;
+  color: var(--warn);
+  font-size: 12px;
+}
+
 .cli-row-actions {
   display: flex;
   align-items: center;
