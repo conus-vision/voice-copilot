@@ -104,8 +104,18 @@ hear what it's doing. A Gemini parser can land as a separate change.
 
 ### Sessions
 
-Each distinct `(user-agent, authorization-prefix)` tuple becomes one
-**session**. The popup shows a dropdown in the header letting you pick
-which session to narrate; events from non-active sessions stay silent (they
-still appear in the feed — we don't drop them, just skip TTS). Sessions
-live in memory for the lifetime of the proxy process.
+A client that sends a session id with each request gets one session per
+id: Claude Code (`X-Claude-Code-Session-Id`), Codex (`session-id` and the
+`session_id` in its turn metadata, so sub-agents join their parent), OpenCode
+and Crush (`x-session-id`), Cline (`X-Task-ID`). Two terminals running the
+same CLI with the same key are two sessions. When the CLI's plugin reports
+the same session (see `integrations.md`), both use one id: the proxy narrates,
+and the plugin carries pause, stop and voice messages to that terminal.
+
+Any other client gets one session per `(user-agent, authorization-prefix)`
+pair.
+
+The panel header has a dropdown to pick which session to narrate. Events
+from the others still appear in the feed but are not spoken. Sessions live
+in memory. One that has been quiet for 30 minutes is dropped when a new one
+appears, and gets its old id back if it returns.
