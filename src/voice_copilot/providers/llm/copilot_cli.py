@@ -26,8 +26,15 @@ from voice_copilot.providers.registry import register
 
 log = logging.getLogger(__name__)
 
+#: The narrator reads text the coding agent wrote, so a prompt injection in a
+#: file or a tool result must not become a command. Tools stay pre-approved
+#: (a permission prompt would hang a non-interactive call), but the shell and
+#: file writes are denied outright; a deny rule beats an allow rule. No
+#: --allow-all either: that also approved every URL, a way to send data out.
+NARRATOR_TOOL_FLAGS = ["--allow-all-tools", "--deny-tool", "shell", "--deny-tool", "write"]
+
 _BASE_FLAGS = [
-    "--allow-all",  # skip tool-permission prompts
+    *NARRATOR_TOOL_FLAGS,
     "--no-auto-update",  # don't check for updates mid-narration
     "-s",  # silent: model response only
 ]
