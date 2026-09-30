@@ -420,6 +420,31 @@ The normative machine-readable schema for this RFC is:
 CLI authors SHOULD validate their outgoing and incoming messages against this
 schema during development.
 
+## HTTP Binding (as implemented by Voice Copilot)
+
+Voice Copilot serves this interface over plain HTTP on loopback, under
+`/api/companion/v1` on the panel's port. It suits plugins that run inside a
+CLI and cannot keep a WebSocket open across the CLI's lifecycle events:
+
+- `POST /events` carries event messages. A body may batch several events of
+  one session: `{"cli": "pi", "session_id": "...", "events": [{"kind":
+  "agent.output", "payload": {"text": "..."}}]}`. A single RFC event object
+  is accepted as well.
+- `POST /gate` is an extension for tool gating: the CLI asks before a tool
+  runs and gets `{"decision": "allow"}` or `{"decision": "deny", "reason":
+  "...", "stop": true}`. The companion MAY hold the request while the user has
+  the agent paused.
+- `POST /commands/next` is a long poll that returns the next command for the
+  session (`interrupt`, `send_user_message`) or `{}` when none arrived in
+  `wait_s` seconds. `POST /commands/result` carries the command result.
+- `POST /hooks/{dialect}` accepts a CLI's native hook payload (`claude`,
+  `gemini`, `copilot`) and answers in the same format, so a CLI with a hooks
+  system needs no plugin code at all.
+
+`hello`/`hello_ack` and subscriptions are implicit over HTTP: the first event
+of a session starts it, and the CLI emits every category it supports. See
+[integrations.md](integrations.md) for the plugins built on this binding.
+
 ## VS Code Host Guidance
 
 This RFC is designed so a VS Code extension can act as a host UI without

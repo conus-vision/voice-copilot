@@ -86,6 +86,7 @@
     qsa(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
     qsa(".panel").forEach(p => p.classList.toggle("active", p.dataset.panel === name));
     try { localStorage.setItem("vc.tab", name); } catch {}
+    if (name === "plugins") setTimeout(loadPlugins, 0);
   }
   qsa(".tab").forEach(t => t.addEventListener("click", () => activateTab(t.dataset.tab)));
   // Tabs collapsed from eight to four — map anything a returning browser has
@@ -99,6 +100,150 @@
     const restored = TAB_ALIASES[saved] || saved;
     if (restored && qs(`.panel[data-panel="${restored}"]`)) activateTab(restored);
   } catch {}
+
+
+  // ------------------------------------------------------------------ plugins
+  // CLIs that report through their own plugin or hook system. The list comes
+  // from /api/companion/v1/integrations; "connected now" means the CLI has
+  // reported to this panel in the last few minutes.
+
+  const PLUGIN_ACCENTS = {
+    claude: "#d97757", pi: "#f5b301", opencode: "#cfd3dc", hermes: "#9aa0ad",
+    codex: "#10a37f", gemini: "#4285f4", qwen: "#7c3aed", copilot: "#b3b9c4",
+    grok: "#d0d4de", droid: "#d0d4de", openhands: "#ffb454", kimi: "#6f5cff",
+  };
+  const PLUGIN_CONTROL_LABELS = { pause: "pause", stop: "Supervisor stop", voice: "voice messages" };
+  const PLUGIN_LIVE_WINDOW_S = 600;
+  const pluginReports = {};
+
+  function pluginsVisible() {
+    return !!document.querySelector('.panel.active[data-panel="plugins"]');
+  }
+
+  async function loadPlugins() {
+    const list = document.getElementById("plugins-list");
+    const summary = document.getElementById("plugins-summary");
+    if (!list || !summary) return;
+    try {
+      const r = await fetch("/api/companion/v1/integrations");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      renderPlugins(list, summary, data.integrations || [], data.status || {});
+    } catch (e) {
+      summary.textContent = `Could not load plugins: ${e.message || e}`;
+    }
+  }
+
+  function pluginState(item, status) {
+    const now = Date.now() / 1000;
+    const live = (status.sessions || []).some(
+      s => s.cli === item.id && now - s.last_seen < PLUGIN_LIVE_WINDOW_S);
+    if (live) return { state: "live", label: "connected now" };
+    if (item.installed) return { state: "installed", label: "installed" };
+    if ((status.clis_seen || {})[item.id]) return { state: "installed", label: "seen this run" };
+    return { state: "missing", label: item.session_auto ? "loaded by vc" : "not installed" };
+  }
+
+  function pluginStepsHtml(steps) {
+    const items = [];
+    for (const step of steps || []) {
+      // Config snippets arrive as their own multi-line step: attach them to
+      // the instruction before, as a code block.
+      if (step.includes("\n") && items.length) {
+        items[items.length - 1] += `<pre>${escapeHtml(step)}</pre>`;
+      } else {
+        items.push(escapeHtml(step));
+      }
+    }
+    return items.map(html => `<li>${html}</li>`).join("");
+  }
+
+  function renderPlugins(list, summary, items, status) {
+    const open = new Set(
+      [...list.querySelectorAll("details[open]")].map(d => d.dataset.pluginSteps));
+    list.innerHTML = "";
+    let live = 0;
+    let installed = 0;
+    for (const item of items) {
+      const st = pluginState(item, status);
+      if (st.state === "live") live += 1;
+      if (item.installed) installed += 1;
+      const controls = (item.controls || [])
+        .map(c => `<span class="plugin-chip">${escapeHtml(PLUGIN_CONTROL_LABELS[c] || c)}</span>`)
+        .join("");
+      const tested = item.verified
+        ? `<span class="plugin-chip" title="Checked end to end against the real CLI">tested</span>`
+        : `<span class="plugin-chip" title="Built from the CLI's published hook docs">per the CLI's docs</span>`;
+      const report = pluginReports[item.id];
+      const action = item.installed
+        ? `<button type="button" class="ghost" data-plugin-uninstall="${item.id}">Remove</button>`
+        : `<button type="button" class="primary" data-plugin-install="${item.id}">Install</button>`;
+      const row = document.createElement("div");
+      row.className = "cli-row";
+      row.style.setProperty("--cli-accent", PLUGIN_ACCENTS[item.id] || "#7aa2ff");
+      row.innerHTML = `
+        <span class="cli-badge" aria-hidden="true">${escapeHtml(item.id.slice(0, 2).toUpperCase())}</span>
+        <div class="cli-row-main">
+          <div class="cli-row-title">
+            <h3>${escapeHtml(item.label)}</h3>
+            <span class="cli-status" data-state="${st.state}">${escapeHtml(st.label)}</span>
+          </div>
+          <p class="cli-row-desc">${escapeHtml(item.method)}. Narrates ${escapeHtml(item.gives)}.</p>
+          <div class="plugin-chips">${controls}${tested}</div>
+          <p class="plugin-report" data-state="${report ? report.state : ""}" ${report ? "" : "hidden"}>${report ? escapeHtml(report.text) : ""}</p>
+        </div>
+        <div class="cli-row-actions">
+          <button type="button" class="cmd-chip" data-plugin-copy="${escapeHtml(item.command)}" title="Copy the terminal command">
+            <code>${escapeHtml(item.command)}</code>
+            <span class="material-symbols-rounded" aria-hidden="true">content_copy</span>
+          </button>
+          ${action}
+        </div>
+        <details class="cli-advanced" data-plugin-steps="${item.id}" ${open.has(item.id) ? "open" : ""}>
+          <summary><span class="material-symbols-rounded" aria-hidden="true">tune</span>Do it by hand</summary>
+          <ol class="plugin-steps">${pluginStepsHtml(item.steps)}</ol>
+          ${item.notes ? `<p class="plugin-note">${escapeHtml(item.notes)}</p>` : ""}
+          <p class="plugin-note"><a href="${escapeHtml(item.docs_url)}" target="_blank" rel="noreferrer noopener">How ${escapeHtml(item.label)} loads plugins and hooks</a></p>
+        </details>`;
+      list.appendChild(row);
+    }
+    summary.textContent =
+      `${live} connected now · ${installed} installed · ${items.length} CLIs supported`;
+  }
+
+  async function runPluginAction(id, action) {
+    if (action === "uninstall" && !confirm(`Remove the Voice Copilot plugin from ${id}?`)) return;
+    pluginReports[id] = { state: "", text: action === "install" ? "Installing…" : "Removing…" };
+    await loadPlugins();
+    try {
+      const r = await fetch(`/api/companion/v1/integrations/${encodeURIComponent(id)}/${action}`,
+        { method: "POST" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+      pluginReports[id] = { state: "ok", text: data.report || "Done." };
+    } catch (e) {
+      pluginReports[id] = { state: "error", text: String(e.message || e) };
+    }
+    await loadPlugins();
+  }
+
+  document.addEventListener("click", (ev) => {
+    const target = ev.target instanceof Element ? ev.target : null;
+    const install = target?.closest("[data-plugin-install]");
+    if (install) { runPluginAction(install.dataset.pluginInstall, "install"); return; }
+    const remove = target?.closest("[data-plugin-uninstall]");
+    if (remove) { runPluginAction(remove.dataset.pluginUninstall, "uninstall"); return; }
+    const copy = target?.closest("[data-plugin-copy]");
+    if (copy) {
+      navigator.clipboard?.writeText(copy.dataset.pluginCopy).then(() => {
+        copy.classList.add("copied");
+        setTimeout(() => copy.classList.remove("copied"), 1200);
+      }).catch(() => {});
+    }
+  });
+
+  // Keep "connected now" honest while the tab is open.
+  setInterval(() => { if (pluginsVisible()) loadPlugins(); }, 5000);
 
   // ------------------------------------------------------------------ ws
 
@@ -764,6 +909,8 @@
             return;
           }
           if (!isMini && isNewHumanQuery(msg)) stopPlaybackForSession(messageSessionId(msg));
+          if (msg.kind === "session.started" && String(msg.source || "").startsWith("companion.")
+              && pluginsVisible()) loadPlugins();
           if (msg.kind === "agent.paused") showAgentPaused(msg.payload || {});
           if (msg.kind === "agent.resumed") showAgentPaused(null);
           traceAppend(msg);
