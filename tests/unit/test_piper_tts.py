@@ -66,6 +66,14 @@ async def test_a_voice_already_on_disk_is_used_as_is(tmp_path: Path) -> None:
     assert await tts._voice_folder(str(custom)) == custom
 
 
+async def test_a_folder_that_is_not_a_voice_says_what_is_missing(tmp_path: Path) -> None:
+    (tmp_path / "not-a-voice").mkdir()
+    tts = piper.PiperTTS(voice=str(tmp_path / "not-a-voice"))
+    with pytest.raises(RuntimeError, match=r"tokens\.txt"):
+        async for _ in tts.synthesize("hi", language="en"):
+            pass
+
+
 async def test_without_download_a_missing_voice_is_reported(tmp_path: Path) -> None:
     tts = piper.PiperTTS(models_dir=str(tmp_path), download=False)
     with pytest.raises(RuntimeError, match="not in"):

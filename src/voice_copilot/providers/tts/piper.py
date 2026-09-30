@@ -107,6 +107,11 @@ class PiperTTS(TTSProvider):
     async def _voice_folder(self, voice: str) -> Path:
         given = Path(voice).expanduser()
         if given.is_dir():
+            if not _complete(given):
+                raise RuntimeError(
+                    f"{given} is not a piper voice folder: it needs a .onnx model, "
+                    "tokens.txt and espeak-ng-data/ (unpack one from the sherpa-onnx release)"
+                )
             return given
         folder = self._models_dir / f"vits-piper-{voice}"
         if _complete(folder):
