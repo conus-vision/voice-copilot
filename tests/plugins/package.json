@@ -1,0 +1,11 @@
+{
+  "name": "voice-copilot-plugin-typecheck",
+  "private": true,
+  "description": "Type-checks the TypeScript plugins in src/voice_copilot/companion/assets against the SDK types of the CLIs they target. CI runs `npm install && npx tsc -p .`; bump a version here when a CLI's plugin API changes.",
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@opencode-ai/plugin": "1.18.33",
+    "@types/node": "22.19.1",
+    "typescript": "5.9.3"
+  }
+}
