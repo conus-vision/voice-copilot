@@ -67,6 +67,8 @@ def kill_process_tree(pid: int | None) -> int:
 
 def _group_survivors(pgid: int) -> list[Any]:
     """Live processes still in process group `pgid` (POSIX)."""
+    if sys.platform == "win32":
+        return []  # no process groups to sweep; also keeps os.getpgid off Windows
     import psutil
 
     survivors = []

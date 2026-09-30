@@ -166,14 +166,27 @@ def test_stop_takes_down_what_the_cli_left_running(tmp_path) -> None:
     import psutil
 
     pid_file = tmp_path / "worker.pid"
+    # The worker writes its own pid once nohup has taken hold, and the CLI
+    # waits for it: exiting any sooner, the session leader's SIGHUP can reach
+    # the worker before nohup ignores it (it did on CI runners).
     adapter = _spawn_unpumped(
-        ["sh", "-c", f"nohup sleep 300 >/dev/null 2>&1 & echo $! > {pid_file}; exit 0"]
+        [
+            "sh",
+            "-c",
+            f"nohup sh -c 'echo $$ > {pid_file}; exec sleep 300' >/dev/null 2>&1 & "
+            f"while [ ! -s {pid_file} ]; do sleep 0.05; done; exit 0",
+        ]
     )
     deadline = time.monotonic() + 5
     while not pid_file.exists() or not pid_file.read_text().strip():
         assert time.monotonic() < deadline
         time.sleep(0.02)
     worker = psutil.Process(int(pid_file.read_text()))
+    # Stop only once the CLI has exited: before that the worker is still its
+    # descendant and would go down with the process tree, sweep or no sweep.
+    while worker.ppid() == adapter._child.pid:
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
     asyncio.run(adapter.stop())
     worker.wait(timeout=5)
     assert not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE

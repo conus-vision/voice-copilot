@@ -17,7 +17,9 @@ from voice_copilot.proxy import cli_catalog, cli_shims
 
 
 def test_every_note_is_one_short_line() -> None:
-    raw = yaml.safe_load(Path(cli_catalog.__file__).with_name("cli_catalog.yaml").read_text())
+    raw = yaml.safe_load(
+        Path(cli_catalog.__file__).with_name("cli_catalog.yaml").read_text(encoding="utf-8")
+    )
     for profile_id, entry in raw.items():
         note = entry.get("proxy_note")
         if note:
