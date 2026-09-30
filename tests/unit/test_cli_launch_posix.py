@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -33,12 +34,13 @@ def test_macos_launch_keeps_non_ascii_folder_names(monkeypatch: pytest.MonkeyPat
 
 
 def test_launch_command_refuses_to_run_outside_the_working_directory() -> None:
+    work = Path("/work/app")  # reads \work\app on Windows, where the test runs too
     command = cli_shims._render_shell_launch_command(
         binary_path="/usr/local/bin/claude",
         env_overrides={},
-        working_directory=Path("/work/app"),
+        working_directory=work,
     )
-    assert command.startswith("cd /work/app || exit 1;")
+    assert command.startswith(f"cd {shlex.quote(str(work))} || exit 1;")
 
 
 def test_restore_without_any_shim_directory(

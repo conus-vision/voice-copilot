@@ -610,7 +610,11 @@ class CompanionHub:
             cli, native_id, transport="plugin", proxied=proxied, launch_id=launch, cwd=None
         )
         try:
-            return await asyncio.wait_for(sess.commands.get(), timeout=min(wait_s, MAX_POLL_S))
+            # Not wait_for: on Python 3.11 it takes the command off the queue
+            # even when the poll is cancelled at that moment, and the command
+            # goes to a request that is gone. This way it waits for the next poll.
+            async with asyncio.timeout(min(wait_s, MAX_POLL_S)):
+                return await sess.commands.get()
         except TimeoutError:
             return None
 
