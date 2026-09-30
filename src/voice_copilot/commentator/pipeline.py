@@ -400,6 +400,7 @@ class Commentator:
             events=batch.events,
             style=self._prompt_style,
             opening=batch.opening,
+            language=self._language,
         )
         messages = [LLMMessage(role="user", content=user_content)]
         pieces: list[str] = []
@@ -631,6 +632,7 @@ class Commentator:
             history=ctx.history,
             reason=reason,
             style=self._prompt_style,
+            language=self._language,
         )
         session_payload = (
             {"session_id": batch.session_key} if batch.session_key != _NO_SESSION_KEY else {}
@@ -733,6 +735,7 @@ class Commentator:
             events=batch.events,
             narration=narration,
             style=self._prompt_style,
+            language=self._language,
         )
         messages = [LLMMessage(role="user", content=user_content)]
         pieces: list[str] = []

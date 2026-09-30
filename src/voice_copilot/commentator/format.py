@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from voice_copilot.commentator.prompts import language_name
 from voice_copilot.core.events import Event, EventKind
 
 _MAX_TEXT = 1500
@@ -106,12 +107,12 @@ def _events_hint(events: list[Event]) -> str:
     has_thinking = any(e.kind is EventKind.AGENT_THINKING for e in events)
     has_answer = any(e.kind in (EventKind.AGENT_TEXT, EventKind.TURN_ENDED) for e in events)
     if has_answer and not has_thinking:
-        return "финальный ответ агента"
+        return "the agent's answer"
     if has_thinking and not has_answer:
-        return "размышления агента (ещё не ответил)"
+        return "the agent's thinking, no answer yet"
     if has_thinking and has_answer:
-        return "размышления и финальный ответ агента"
-    return "действия агента"
+        return "the agent's thinking and answer"
+    return "the agent's actions"
 
 
 def build_narration_user(
@@ -121,61 +122,45 @@ def build_narration_user(
     events: list[Event],
     style: str = "api",
     opening: bool = False,
+    language: str = "en",
 ) -> str:
     """Build the user message for the narration call.
 
-    style="api"  — uses [BRACKET] section headers (works with system/user split).
-    style="cli"  — uses plain inline headers (avoids triggering file-search in
-                   copilot-cli, which interprets [SECTION] as grep targets).
-    opening      — nothing has been said about this question yet, so the line
-                   has to set the scene: name the task, then the work so far.
+    The section labels are plain words with a colon in both styles: square
+    brackets made copilot-cli treat "[SECTION]" as something to grep for.
+    The closing line names the reply language once more, right where the
+    model starts writing; English events and file names otherwise pull small
+    models into English.
+
+    opening — nothing has been said about this question yet, so the line
+              has to set the scene: name the task, then the work so far.
     """
-    formatted = _format_events(events) if events else "(empty)"
-    hint = _events_hint(events) if events else "действия агента"
+    del style  # both styles read the same message; see prompts/__init__.py
+    formatted = _format_events(events) if events else "(none)"
+    hint = _events_hint(events) if events else "the agent's actions"
     query_text = ""
     if user_query:
         q = _extract_question(user_query)
         query_text = _trim(q, 400) if q else _trim(user_query, 400)
-
-    if style == "cli":
-        # No bracket labels — plain prose headers.
-        task = (
-            "Это первая реплика по этому запросу: сначала одной фразой назови задачу, "
-            "потом коротко — что уже сделано. Ответ (1-2 предложения прозы, без markdown):"
-            if opening
-            else "Ответ (1-2 предложения прозы, без markdown):"
-        )
-        parts = [
-            f"Пользователь спросил: {query_text or '(неизвестно)'}",
-            "",
-            f"Уже озвучено: {_trim(summary, _MAX_SUMMARY) if summary else '(ничего)'}",
-            "",
-            f"Новые события ({hint}):",
-            formatted,
-            "",
-            task,
-        ]
-    else:
-        task = (
-            f"[NEW_EVENTS] содержит {hint}. Это первая реплика по этому запросу: сначала "
-            "одной фразой назови задачу из [USER_QUERY], потом коротко — что уже сделано. "
-            "Ответ (1-2 предложения прозы):"
-            if opening
-            else f"[NEW_EVENTS] содержит {hint}. "
-            "Ответ (1-2 предложения прозы, только по [NEW_EVENTS]):"
-        )
-        parts = [
-            "[USER_QUERY]",
-            query_text or "(unknown yet)",
-            "",
-            "[ALREADY_DONE_AND_SAID]",
-            _trim(summary, _MAX_SUMMARY) if summary else "(nothing yet)",
-            "",
-            "[NEW_EVENTS]",
-            formatted,
-            "",
-            task,
-        ]
+    name = language_name(language)
+    task = (
+        "This is the first line about this request: name the task in a few words, "
+        f"then say briefly what has been done. Reply in {name}, one or two sentences:"
+        if opening
+        else f"Describe only the NEW EVENTS. Reply in {name}, one or two sentences:"
+    )
+    parts = [
+        "USER REQUEST:",
+        query_text or "(not known yet)",
+        "",
+        "SO FAR:",
+        _trim(summary, _MAX_SUMMARY) if summary else "(nothing yet)",
+        "",
+        f"NEW EVENTS ({hint}):",
+        formatted,
+        "",
+        task,
+    ]
     return "\n".join(parts)
 
 
@@ -186,30 +171,25 @@ def build_supervisor_user(
     history: list[str],
     reason: str,
     style: str = "api",
+    language: str = "en",
 ) -> str:
     """Build the user message for a supervisor checkpoint.
 
     Unlike narration this carries the running transcript, not just the last
     batch: whether the agent is on track is a question about the whole turn.
     """
+    del style  # both styles read the same message; see prompts/__init__.py
     question = _extract_question(user_query) if user_query else None
-    goal = _trim(question or user_query or "", 600) or "(unknown)"
+    goal = _trim(question or user_query or "", 600) or "(not known)"
     memo = summary or "(nothing yet)"
     transcript = "\n".join(history[-80:]) or "(no events yet)"
-    if style == "cli":
-        return (
-            f"Цель пользователя: {goal}\n\n"
-            f"Что сделано (саммари): {memo}\n\n"
-            f"Повод для проверки: {reason}\n\n"
-            f"Последние события:\n{transcript}\n\n"
-            "Вердикт (первая строка OK / WARN / STOP, дальше 1-2 предложения):"
-        )
     return (
-        f"[GOAL]\n{goal}\n\n"
-        f"[SUMMARY_SO_FAR]\n{memo}\n\n"
-        f"[CHECKPOINT_REASON]\n{reason}\n\n"
-        f"[RECENT_EVENTS]\n{transcript}\n\n"
-        "Verdict (first line OK / WARN / STOP, then 1-2 sentences):"
+        f"GOAL:\n{goal}\n\n"
+        f"SUMMARY SO FAR:\n{memo}\n\n"
+        f"CHECKPOINT REASON:\n{reason}\n\n"
+        f"RECENT EVENTS:\n{transcript}\n\n"
+        f"Verdict (line 1: OK, WARN or STOP; for WARN and STOP, then one or two "
+        f"sentences in {language_name(language)}):"
     )
 
 
@@ -219,35 +199,25 @@ def build_summary_user(
     events: list[Event],
     narration: str,
     style: str = "api",
+    language: str = "en",
 ) -> str:
     """User message for the summary-update call."""
-    formatted = _format_events(events) if events else "(empty)"
+    del style  # both styles read the same message; see prompts/__init__.py
+    formatted = _format_events(events) if events else "(none)"
     narr_text = _trim(narration, _MAX_NARRATION_ECHO) if narration else "(nothing)"
     prev_text = _trim(prev_summary, _MAX_SUMMARY) if prev_summary else "(empty)"
-
-    if style == "cli":
-        parts = [
-            f"Предыдущее саммери: {prev_text}",
-            "",
-            f"Только что произошло:\n{formatted}",
-            "",
-            f"Только что озвучено пользователю: {narr_text}",
-            "",
-            "Обновлённое саммери (2-3 предложения прозы, без markdown):",
-        ]
-    else:
-        parts = [
-            "[PREVIOUS_SUMMARY]",
-            prev_text,
-            "",
-            "[JUST_HAPPENED]",
-            formatted,
-            "",
-            "[JUST_NARRATED_TO_USER]",
-            narr_text,
-            "",
-            "Саммери (2-3 предложения прозы, без markdown):",
-        ]
+    parts = [
+        "PREVIOUS MEMORY:",
+        prev_text,
+        "",
+        "JUST HAPPENED:",
+        formatted,
+        "",
+        "JUST SAID:",
+        narr_text,
+        "",
+        f"New memory in {language_name(language)}, two or three sentences:",
+    ]
     return "\n".join(parts)
 
 
