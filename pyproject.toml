@@ -52,11 +52,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Piper voices through sherpa-onnx (ONNX Runtime and espeak-ng, no PyTorch).
 local-tts = [
-    "torch>=2.2",
-    "torchaudio>=2.2",
-    "numpy>=1.26",
-    "soundfile>=0.12",
+    "sherpa-onnx>=1.13",
+    # Its sdist declares no dependencies, so a resolver that reads it (uv's
+    # universal lock) misses the native half; the wheels pin it exactly.
+    "sherpa-onnx-core>=1.13",
 ]
 local-stt = [
     "faster-whisper>=1.0",

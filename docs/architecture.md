@@ -25,7 +25,7 @@
 │         │          └──────┬────────┘                      │
 │         │                 ▼                               │
 │         │          ┌───────────────┐                      │
-│         │          │ TTS driver    │  edge-tts / Silero / │
+│         │          │ TTS driver    │  edge-tts / Piper /  │
 │         │          │ (frames hub)  │  ElevenLabs / OpenAI │
 │         │          └───────────────┘                      │
 │         ▲                                                 │

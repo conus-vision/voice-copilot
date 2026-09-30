@@ -54,7 +54,8 @@ class NotInstalled(TTSProvider):
         if self._planned:
             raise RuntimeError(
                 f"TTS provider {self.name!r} is not implemented yet. "
-                "Use edge-tts, openai or elevenlabs."
+                "Use edge-tts, openai or elevenlabs, or piper for a voice that runs "
+                "on this computer."
             )
         raise RuntimeError(
             f"TTS provider {self.name!r} needs extra dependencies. "

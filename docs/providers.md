@@ -10,10 +10,42 @@ import to the package `__init__.py`.
 | Name          | Install              | Format | Notes                                    |
 | ---           | ---                  | ---    | ---                                      |
 | `edge-tts`    | default              | mp3    | Free Microsoft Azure voice. Needs Internet. |
-| `silero`      | `[local-tts]`        | wav    | Not implemented yet (the name is reserved; selecting it reports so). |
-| `piper`       | `[local-tts]`        | wav    | Not implemented yet (the name is reserved; selecting it reports so). |
+| `piper`       | `[local-tts]`        | wav    | Runs on your computer through sherpa-onnx (no PyTorch). The first line in a language downloads its voice once, about 65 MB. See below. |
+| `silero`      | none                 | wav    | Not implemented yet (the name is reserved; selecting it reports so). |
 | `openai`      | default              | mp3    | `OPENAI_API_KEY`. `gpt-4o-mini-tts`.     |
 | `elevenlabs`  | `[elevenlabs]`       | mp3    | `ELEVENLABS_API_KEY`.                    |
+
+### Piper voices
+
+Each narration language has a default voice from the
+[sherpa-onnx model release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models):
+
+| Language | Voice | Sample rate |
+| --- | --- | --- |
+| English | `en_US-lessac-medium` | 22 kHz |
+| Spanish | `es_ES-davefx-medium` | 22 kHz |
+| French | `fr_FR-siwis-medium` | 22 kHz |
+| Ukrainian | `uk_UA-lada-x_low` | 16 kHz |
+| Russian | `ru_RU-irina-medium` | 22 kHz |
+
+Each was checked by transcribing its speech back with Whisper. The
+`uk_UA-ukrainian_tts-medium` voice in the same release does not work here: it
+reads letters, and sherpa-onnx feeds it phonemes. Options go in `tts.options`:
+
+```yaml
+tts:
+  name: piper
+  options:
+    voices: {en: en_US-amy-medium}  # any vits-piper-* name from the release
+    voice: /path/to/vits-piper-folder  # or one unpacked folder for every language
+    speaker: 0        # voices with several speakers
+    speed: 1.0
+    threads: 2
+    download: true    # false: only use folders already in voices/
+```
+
+Voices keep the license of their training data; the model card in each
+folder names it.
 
 ## STT
 
