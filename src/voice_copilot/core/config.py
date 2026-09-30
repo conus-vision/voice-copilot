@@ -69,7 +69,7 @@ def default_proxy_cli_profiles() -> dict[str, ProxyCliProfileConfig]:
 #: Version of the stored proxy-cli document. Files written before it existed
 #: load as 1; `_normalize_config` runs each one-time migration once and
 #: stamps the current version, so a later explicit choice is left alone.
-PROXY_CLI_SCHEMA_VERSION = 2
+PROXY_CLI_SCHEMA_VERSION = 3
 
 
 class ProxyCliConfig(BaseModel):
@@ -210,6 +210,20 @@ def _normalize_config(cfg: Config) -> Config:
         codex_profile = cfg.proxy_cli.profiles.get("codex")
         if codex_profile is not None and codex_profile.provider == "openai":
             codex_profile.provider = "openai-chatgpt"
+    # Two catalog routes pointed at a variable their CLI never reads, and a
+    # saved file keeps the old default. Crush takes its OpenAI endpoint from
+    # OPENAI_API_ENDPOINT; Oh My Pi honours only ANTHROPIC_BASE_URL.
+    if cfg.proxy_cli.schema_version < 3:
+        crush = cfg.proxy_cli.profiles.get("crush")
+        if crush is not None and (crush.provider, crush.base_url_env) == (
+            "openai",
+            "OPENAI_BASE_URL",
+        ):
+            crush.base_url_env = "OPENAI_API_ENDPOINT"
+        omp = cfg.proxy_cli.profiles.get("omp")
+        if omp is not None and (omp.provider, omp.base_url_env) == ("openai", "OPENAI_BASE_URL"):
+            omp.provider = "anthropic"
+            omp.base_url_env = "ANTHROPIC_BASE_URL"
     cfg.proxy_cli.schema_version = PROXY_CLI_SCHEMA_VERSION
 
     return cfg

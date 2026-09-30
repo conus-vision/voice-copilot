@@ -582,12 +582,21 @@ class OwnHooksFileIntegration(HooksJsonIntegration):
 
 @dataclass
 class KimiIntegration(Integration):
-    """Kimi CLI keeps hooks as [[hooks]] tables in config.toml."""
+    """Kimi Code keeps hooks as [[hooks]] tables in its config.toml.
+
+    The `kimi` command is Kimi Code now (npm @moonshot-ai/kimi-code); the
+    Python kimi-cli's last release only installs it. Kimi Code sends hooks
+    Claude-format JSON (snake_case keys, `hookSpecificOutput.permissionDecision`)
+    and caps a hook's timeout at 600 seconds.
+    """
 
     events: tuple[str, ...] = ()
+    max_timeout_s: int = 600
 
     def target(self) -> Path | None:
-        return _home() / ".kimi" / "config.toml"
+        home = os.environ.get("KIMI_CODE_HOME", "").strip()
+        root = Path(home).expanduser() if home else _home() / ".kimi-code"
+        return root / "config.toml"
 
     _BEGIN = "# >>> voice-copilot hooks >>>"
     _END = "# <<< voice-copilot hooks <<<"
@@ -609,7 +618,7 @@ class KimiIntegration(Integration):
         command = hook_command("claude", cli="kimi").replace("\\", "\\\\").replace('"', '\\"')
         lines = [self._BEGIN]
         for event in self.events:
-            timeout = GATE_TIMEOUT_S if event == "PreToolUse" else 30
+            timeout = min(GATE_TIMEOUT_S, self.max_timeout_s) if event == "PreToolUse" else 30
             lines += [
                 "[[hooks]]",
                 f'event = "{event}"',
@@ -837,14 +846,14 @@ _INTEGRATIONS: list[Integration] = [
     ),
     KimiIntegration(
         id="kimi",
-        label="Kimi CLI",
-        method="hooks in ~/.kimi/config.toml",
+        label="Kimi Code",
+        method="hooks in ~/.kimi-code/config.toml",
         gives="your prompts, tool calls with results, the final answer",
-        controls=("pause", "stop"),
-        verified=False,
-        docs_url="https://github.com/MoonshotAI/kimi-cli/blob/main/docs/en/customization/hooks.md",
+        controls=("pause", "stop", "voice"),
+        verified=True,
+        docs_url="https://www.npmjs.com/package/@moonshot-ai/kimi-code",
         events=(*_CLAUDE_STYLE_EVENTS, "PostToolUseFailure", "Notification"),
-        notes="Kimi hooks are in beta.",
+        notes="Kimi Code stops waiting for a hook after 10 minutes, so a pause lets go then.",
     ),
 ]
 
@@ -868,10 +877,27 @@ def describe_all(*, port: int = DEFAULT_PORT) -> list[dict[str, Any]]:
 #: CLIs whose session plugin reports everything the proxy would (text,
 #: thinking, tools): `vc` narrates them through the plugin and skips the proxy.
 _PLUGIN_NARRATES = frozenset({"pi"})
+#: CLIs whose model traffic skips the proxy on a plain launch: it goes to
+#: their vendor's backend, or needs a provider or auth setting the launcher
+#: cannot guess (see `proxy_note` in the CLI catalog). Once their hooks or
+#: plugin are installed, those narrate the session instead; in control mode
+#: they would wait for a proxy that never sees anything.
+_HOOKS_NARRATE = frozenset(
+    {"copilot", "droid", "gemini", "grok", "hermes", "kimi", "openhands", "qwen"}
+)
 
 
 def plugin_narrates(cli: str) -> bool:
-    return cli in _PLUGIN_NARRATES
+    """Whether `vc` and Launch narrate `cli` through its own reports, not the proxy."""
+    if cli in _PLUGIN_NARRATES:
+        return True
+    integration = _BY_ID.get(cli)
+    if cli not in _HOOKS_NARRATE or integration is None:
+        return False
+    try:
+        return integration.installed()
+    except Exception:  # an unreadable config file: fall back to the proxy
+        return False
 
 
 @dataclass
@@ -912,5 +938,10 @@ def session_wiring(cli: str, *, port: int, launch_id: str, proxied: bool) -> Ses
             ["-e", str(ASSETS / "pi" / "voice-copilot.ts")],
             env,
             "Narrated through the Voice Copilot extension for Pi.",
+        )
+    if cli in _HOOKS_NARRATE and not proxied:
+        kind = "plugin" if cli == "hermes" else "hooks"
+        return SessionWiring(
+            [], env, f"Narrated through the Voice Copilot {kind} for {_BY_ID[cli].label}."
         )
     return SessionWiring([], env)
