@@ -17,6 +17,11 @@ Two kinds of session:
   narrates the model traffic. The plugin then only adds what the proxy cannot
   see (the agent waiting for a permission) and the control channel.
 
+A CLI that names its session on each model request (Claude Code, Codex,
+OpenCode) gets the same registry id from the proxy and from its plugin, so a
+narrate session whose traffic turns out to pass through the proxy after all
+switches itself to control: the proxy narrates, and nothing is said twice.
+
 Launch ids tie a hook call to the Voice Copilot instance that started the
 CLI (``<panel port>-<random>``); a call carrying another instance's id is
 ignored, so two instances never narrate the same terminal.
@@ -39,7 +44,7 @@ from voice_copilot.companion import dialects
 from voice_copilot.companion.dialects import HookCall
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.events import Event, EventKind
-from voice_copilot.proxy.session import SessionRegistry
+from voice_copilot.proxy.session import SessionRegistry, session_key
 from voice_copilot.proxy.tool_events import file_paths_from_tool
 
 log = logging.getLogger(__name__)
@@ -180,9 +185,8 @@ class CompanionHub:
         seed = native_id or launch_id or cwd or cli
         if not native_id:
             native_id = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
-        # Hashed, not truncated: time-ordered ids (UUIDv7, Pi's) share their
-        # first digits across sessions started within the same minute.
-        key = f"{cli}-{hashlib.sha1(native_id.encode('utf-8')).hexdigest()[:8]}"
+        # The id the proxy gives the same session when the CLI names it.
+        key = session_key(cli, native_id)
         sess = self._sessions.get(key)
         created = sess is None
         if sess is None:
@@ -221,16 +225,28 @@ class CompanionHub:
         if sess.narrate and self._registry is not None:
             self._registry.remove(sess.key)
 
+    def _narrates(self, sess: CompanionSession) -> bool:
+        """Whether this session's events are narrated from the plugin."""
+        if not sess.narrate:
+            return False
+        # The proxy carries this very session: it narrates, the plugin controls.
+        return self._registry is None or not self._registry.proxied(sess.key)
+
     async def _publish(
         self, sess: CompanionSession, kind: EventKind, payload: dict[str, Any] | None = None
     ) -> None:
         body = dict(payload or {})
-        if sess.narrate:
+        if self._narrates(sess):
             body["session_id"] = sess.key
         elif kind is EventKind.AGENT_AWAITING_INPUT:
-            # The proxy narrates this terminal under its own session id.
-            active = self._registry.get_active_id() if self._registry is not None else None
-            if active:
+            # The proxy narrates this terminal: under the same id when the CLI
+            # names its session on each request, else under whichever one the
+            # user is listening to.
+            if self._registry is None:
+                return
+            if self._registry.proxied(sess.key):
+                body["session_id"] = sess.key
+            elif active := self._registry.get_active_id():
                 body["session_id"] = active
         else:
             return
@@ -342,7 +358,9 @@ class CompanionHub:
         sess.message_text.clear()
         # The user typed into the terminal: they have taken over.
         await self._release(sess, "user_prompt")
-        if sess.narrate and self._registry is not None and call.prompt.strip():
+        if self._registry is not None and call.prompt.strip():
+            # Also for a proxied session under the same id: the user typed
+            # there, so that is the one to narrate.
             self._registry.observe_query(sess.key, call.prompt)
         await self._publish(sess, EventKind.TURN_STARTED, {"via": "hook"})
         if call.prompt.strip():
@@ -511,7 +529,7 @@ class CompanionHub:
         elif kind == "user.message":
             await self._release(sess, "user_prompt")
             if text.strip():
-                if sess.narrate and self._registry is not None:
+                if self._registry is not None:
                     self._registry.observe_query(sess.key, text)
                 await self._publish(
                     sess, EventKind.USER_MESSAGE, {"text": text, "delivery": "observed"}
@@ -733,7 +751,10 @@ class CompanionHub:
     def status(self) -> dict[str, Any]:
         self._prune()
         return {
-            "sessions": [s.to_dict() for s in self._sessions.values()],
+            "sessions": [
+                {**s.to_dict(), "mode": "narrate" if self._narrates(s) else "control"}
+                for s in self._sessions.values()
+            ],
             "clis_seen": dict(self._cli_seen),
             "owns_dialog": self.owns_dialog,
         }

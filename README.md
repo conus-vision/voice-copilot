@@ -262,8 +262,11 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8766/anthropic \
   aider --model anthropic/claude-sonnet-5
 ```
 
-The panel lists each client that connects, told apart by its User-Agent. Pick
-one in the header dropdown to narrate it; the others keep running silently.
+The panel lists each client that connects. Claude Code, Codex, OpenCode, Crush
+and Cline send a session id with every request, so two terminals running the
+same CLI show up as two entries; other clients are told apart by User-Agent
+and API key. Pick one in the header dropdown to narrate it; the others keep
+running silently.
 
 Supported upstream providers:
 

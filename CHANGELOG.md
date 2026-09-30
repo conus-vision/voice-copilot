@@ -35,7 +35,12 @@
   other sites too.
 - The project's `.env` no longer leaks into the wrapped agent's environment
   (an `ANTHROPIC_API_KEY` there switched Claude Code to API billing).
-- The Claude Code narrator runs tool-free (`--disallowedTools "*"`).
+- The Claude Code narrator runs tool-free (`--disallowedTools "*"`); the
+  Copilot CLI narrator can no longer run a shell or write files
+  (`--deny-tool shell --deny-tool write` instead of `--allow-all`).
+- The proxy listens on 127.0.0.1 whatever address the panel binds to
+  (`VOICE_COPILOT_PROXY_HOST` changes that). Before, `VOICE_COPILOT_HOST=0.0.0.0`
+  also put an open model relay on the network.
 
 ### Fixed
 - `vc` runs the agent in the current folder, not the one picked in the panel.
@@ -69,6 +74,17 @@
   asking for an extra that does not help.
 - Catalog: DeepSeek Harness launches `dsh web` on an Anthropic-format route;
   Pi and Grok link their current projects.
+- One event that breaks the narrator or the TTS driver no longer silences the
+  rest of the run.
+- OpenAI reasoning models (o-series, GPT-5) can narrate: they get
+  `max_completion_tokens`, no `temperature` and a low reasoning effort.
+- Two copies of the same CLI behind one proxy are two sessions. Claude Code,
+  Codex, OpenCode, Crush and Cline are told apart by the session id they
+  send; before, the same User-Agent and key merged them. A plugin and the
+  proxy report such a session under one id, so pause, stop and voice
+  messages reach the terminal being narrated.
+- The proxy reuses one pooled upstream connection instead of a new TLS
+  handshake per model call, and gives up connecting after 15 seconds.
 
 ## 0.1.0 — 2026-09-02
 

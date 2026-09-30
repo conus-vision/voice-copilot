@@ -275,6 +275,7 @@ def create_proxy_app(
             # the only way the commentator knows the question — the proxy
             # otherwise only sees the model's reply stream.
             query = None
+            question = None
             internal = False
             if req.method == "POST" and body:
                 try:
@@ -286,9 +287,9 @@ def create_proxy_app(
                 # A request whose "user" text is the CLI's own scaffolding is the
                 # CLI talking to itself; everything it streams back is tagged so
                 # the narrator and supervisor ignore it and the Trace folds it.
-                internal = bool(query) and clean_user_query(query or "") is None
+                question = clean_user_query(query) if query else None
+                internal = bool(query) and question is None
                 if query:
-                    sess.last_query = query
                     await bus.publish(
                         Event(
                             kind=EventKind.USER_MESSAGE,
@@ -305,7 +306,9 @@ def create_proxy_app(
                 method=req.method,
                 path=f"/{provider}/{path}" if path else f"/{provider}",
                 request_bytes=len(body),
-                query=query,
+                # What the human asked, without the blocks the CLI adds: the
+                # panel shows it to tell sessions apart.
+                query=question,
             )
             return await _forward(
                 req,

@@ -160,6 +160,13 @@ Under `vc`, the terminal wrapper already owns pause and your voice messages
 (it suspends the process and types into the terminal), so the plugin only adds
 what the proxy cannot see.
 
+A CLI can be narrated through the proxy and report through its plugin at the
+same time, for example a globally installed plugin in a terminal whose base
+URL points at the proxy. Claude Code, Codex and OpenCode send their session
+id with every model request, so the panel sees one session, not two: the
+proxy narrates it, and the plugin adds the permission prompts and carries
+pause, stop and voice messages to that terminal.
+
 ## Environment variables
 
 A launch from `vc` or the panel sets these for the CLI; you rarely set them
