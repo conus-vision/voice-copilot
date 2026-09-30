@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -404,6 +405,17 @@ async def _forward(
         headers=resp_headers,
         media_type=ctype or None,
     )
+
+
+def proxy_bind_host() -> str:
+    """Where the proxy listens: loopback, whatever address the panel binds to.
+
+    The proxy relays requests to model APIs with the caller's credentials and
+    answers anyone who can reach it, a local Ollama included; on a LAN
+    address it would be an open relay. `VOICE_COPILOT_PROXY_HOST` is there for
+    a setup that really wants that.
+    """
+    return os.environ.get("VOICE_COPILOT_PROXY_HOST", "").strip() or "127.0.0.1"
 
 
 def build_proxy_server(
