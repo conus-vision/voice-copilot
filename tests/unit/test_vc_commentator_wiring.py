@@ -76,3 +76,15 @@ def test_unknown_cli_returns_auto_without_cli() -> None:
     assert "cli" not in commentator_cfg.provider.options
     assert "Commentator" in status
     assert cfg.commentator.provider.name != "auto"  # shared cfg untouched
+
+
+def test_launch_notice_carries_the_catalog_caveat(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # A CLI whose model traffic can skip the proxy says so at launch.
+    import dataclasses
+
+    from voice_copilot import cli as cli_module
+
+    meta = dataclasses.replace(cli_module.CLI_CATALOG["codex"], proxy_note="Mind the gap.")
+    monkeypatch.setitem(cli_module.CLI_CATALOG, "codex", meta)
+    notice = _launch_notice(_resolved("codex", provider="openai"), "Commentator: auto (codex)")
+    assert notice == "Commentator: auto (codex)  •  Mind the gap."

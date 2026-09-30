@@ -29,6 +29,10 @@ class CliCatalogEntry:
     #: 2-char monogram + badge colour for the launcher grid (no vendor logos).
     icon: str = ""
     accent: str = ""
+    #: What a launch through the proxy does not cover for this CLI (it may
+    #: talk to its vendor's backend whatever the base URL says), shown in the
+    #: launcher and the launch banner. Empty when the proxy sees everything.
+    proxy_note: str = ""
     #: Position in the YAML file — the curated order of the launcher list.
     order: int = 0
 
@@ -57,6 +61,7 @@ def load_cli_catalog() -> dict[str, CliCatalogEntry]:
             kind="shell" if kind == "shell" else "cli",
             icon=str(payload.get("icon") or profile_id[:2].upper()),
             accent=str(payload.get("accent") or "#7aa2ff"),
+            proxy_note=" ".join(str(payload.get("proxy_note") or "").split()),
             order=order,
         )
     return catalog

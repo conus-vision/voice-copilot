@@ -42,6 +42,7 @@ from voice_copilot.providers import registry as provider_registry
 from voice_copilot.providers import stt as _stt  # noqa: F401
 from voice_copilot.providers import tts as _tts  # noqa: F401
 from voice_copilot.providers.tts.base import TTSProvider, UnavailableTTS
+from voice_copilot.proxy.cli_catalog import CLI_CATALOG
 from voice_copilot.proxy.cli_shims import ResolvedCli, proxy_launch_settings, resolve_cli_for_vc
 from voice_copilot.proxy.server import (
     base_urls_for,
@@ -816,6 +817,9 @@ def _launch_notice(
             parts.append(_REMOTE_CONTROL_NOTE)
         if not provider_has_narration(resolved.provider):
             parts.append(_no_narration_note(resolved.label))
+        meta = CLI_CATALOG.get(resolved.profile_id)
+        if meta is not None and meta.proxy_note:
+            parts.append(meta.proxy_note)
     return "  •  ".join(parts)
 
 
