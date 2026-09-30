@@ -1,5 +1,5 @@
 name: voice_copilot
-version: "0.1.0"
+version: "0.2.0"
 description: "Narrates Hermes sessions by voice through Voice Copilot: prompts, tool calls with results and answers go to a running Voice Copilot, which speaks short updates and can pause or stop the agent and pass on voice messages."
 author: "Conus Vision"
 hooks:

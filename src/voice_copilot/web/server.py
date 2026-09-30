@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
+from voice_copilot import __version__
 from voice_copilot.audio.hub import AudioHub
 from voice_copilot.commentator.cli_profiles import NARRATION_PROFILES
 from voice_copilot.commentator.provider_select import resolve_for_launch
@@ -104,7 +105,7 @@ def create_app(
     panel_port: int | None = None,
     access: PanelAccess | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="voice-copilot", version="0.1.0", lifespan=_lifespan)
+    app = FastAPI(title="voice-copilot", version=__version__, lifespan=_lifespan)
     # Every page open in the browser can reach loopback: refuse forged
     # cross-site requests, WebSocket hijacking and DNS rebinding (see guard.py).
     # Other devices need the panel's token (see access.py).
