@@ -79,6 +79,22 @@ def _parse_combo(combo: str) -> tuple[frozenset[str], Any]:
     return frozenset(mods), key
 
 
+#: macOS key codes of the letter and digit keys, as pynput's own table has
+#: them (US positions; the keypad digits too). Option turns a letter into
+#: another character (Option+P types "π", Option+N is a dead key), so on
+#: macOS `alt+p` only matches when the key code names the key.
+_MAC_KEY_CODES: dict[int, str] = {
+    0x00: "a", 0x0B: "b", 0x08: "c", 0x02: "d", 0x0E: "e", 0x03: "f", 0x05: "g",
+    0x04: "h", 0x22: "i", 0x26: "j", 0x28: "k", 0x25: "l", 0x2E: "m", 0x2D: "n",
+    0x1F: "o", 0x23: "p", 0x0C: "q", 0x0F: "r", 0x01: "s", 0x11: "t", 0x20: "u",
+    0x09: "v", 0x0D: "w", 0x07: "x", 0x10: "y", 0x06: "z",
+    0x1D: "0", 0x12: "1", 0x13: "2", 0x14: "3", 0x15: "4",
+    0x17: "5", 0x16: "6", 0x1A: "7", 0x1C: "8", 0x19: "9",
+    0x52: "0", 0x53: "1", 0x54: "2", 0x55: "3", 0x56: "4",
+    0x57: "5", 0x58: "6", 0x59: "7", 0x5B: "8", 0x5C: "9",
+}  # fmt: skip
+
+
 def _canonical_key(k: Any) -> Any:
     """Normalise a pynput key event into our internal representation."""
     name = getattr(k, "name", None)
@@ -91,8 +107,14 @@ def _canonical_key(k: Any) -> Any:
             return "shift"
         if name.startswith("cmd"):
             return "cmd"
-    if isinstance(k, keyboard.KeyCode) and k.char:
-        return k.char.lower()
+    if isinstance(k, keyboard.KeyCode):
+        char = k.char
+        if char and char.isascii():
+            return char.lower()
+        if sys.platform == "darwin" and k.vk in _MAC_KEY_CODES:
+            return _MAC_KEY_CODES[k.vk]
+        if char:
+            return char.lower()
     return k  # a keyboard.Key enum value (space, enter, …)
 
 

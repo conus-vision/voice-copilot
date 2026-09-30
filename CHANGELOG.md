@@ -104,6 +104,9 @@
   line instead of staying silent.
 - Ctrl+C while a line was being spoken left `serve` and `vc` hanging: the
   speech loop swallowed its own cancellation.
+- macOS: Option+letter hotkeys (`Alt+P` pause, `Alt+Shift+N`) match the key.
+  pynput reports the character Option makes (`π`, or none for a dead key), so
+  they never fired.
 
 ## 0.1.0 — 2026-09-02
 
