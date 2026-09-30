@@ -108,6 +108,8 @@ and hook systems, and can speak without the network.
   line instead of staying silent.
 - Ctrl+C while a line was being spoken left `serve` and `vc` hanging: the
   speech loop swallowed its own cancellation.
+- On Python 3.11, stopping could also hang in the narrator when an event
+  arrived at the same moment: `asyncio.wait_for` dropped the cancellation.
 - CLIs whose model traffic skips the proxy were launched as if the proxy
   narrated them: their installed hooks ran in control mode and the session
   stayed silent. Copilot CLI, Droid, Gemini CLI, Grok Build, Hermes Agent,
