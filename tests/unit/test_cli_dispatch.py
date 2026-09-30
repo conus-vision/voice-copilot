@@ -150,3 +150,10 @@ def test_run_codex_with_proxy_points_codex_at_the_proxy(monkeypatch, tmp_path) -
     args = built["adapter"]._extra_args
     i = args.index("-c")
     assert args[i + 1] == 'openai_base_url="http://127.0.0.1:8799/openai-chatgpt"'
+
+
+def test_every_subcommand_is_dispatched_as_itself() -> None:
+    # A hard-coded list once missed a new subcommand, which then launched as
+    # `vc integrate` and failed with "command not found".
+    for name in ("integrate", "config", "version", "serve", "proxy", "run", "vc"):
+        assert _normalize_argv(["voice-copilot", name]) == ["voice-copilot", name]

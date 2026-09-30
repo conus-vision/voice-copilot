@@ -368,7 +368,23 @@ def _format_one(ev: Event) -> str:
             return "sub-agent finished (main task continues)"
         return "turn ended"
     if k is EventKind.AGENT_AWAITING_INPUT:
-        return "agent awaiting user input"
+        # What it waits for is the part worth saying: "permission to run Bash:
+        # rm -rf build" tells the user whether to walk back to the keyboard.
+        detail = p.get("message") or ""
+        tool = p.get("tool")
+        if tool:
+            _, label = _bucket_and_label(
+                Event(
+                    kind=EventKind.TOOL_CALL_STARTED,
+                    payload={"tool": tool, "input": p.get("input")},
+                )
+            )
+            detail = f"permission to use {tool}" + (f": {label}" if label else "")
+        return (
+            f"agent awaiting user input: {_trim(detail, 200)}"
+            if detail
+            else "agent awaiting user input"
+        )
 
     if k is EventKind.ERROR:
         return f"error: {_trim(p.get('message'))}"
