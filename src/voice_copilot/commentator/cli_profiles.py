@@ -27,8 +27,17 @@ class NarrationProfile:
 
 NARRATION_PROFILES: dict[str, NarrationProfile] = {
     # copilot reads the prompt from stdin (interactive); -p triggers agent mode.
+    # Shell and file writes are denied: see copilot_cli.NARRATOR_TOOL_FLAGS.
     "copilot": NarrationProfile(
-        args=["--allow-all", "--no-auto-update", "-s"],
+        args=[
+            "--allow-all-tools",
+            "--deny-tool",
+            "shell",
+            "--deny-tool",
+            "write",
+            "--no-auto-update",
+            "-s",
+        ],
         input_mode="stdin",
         model="gpt-5-mini",
     ),

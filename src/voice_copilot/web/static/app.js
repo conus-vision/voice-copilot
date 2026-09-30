@@ -2180,7 +2180,7 @@
     const providerSelect = qs("#commentator-provider");
     const providerHint   = qs("#provider-hint");
     const PROVIDER_HINTS = {
-      "copilot-cli": "Calls `copilot -p '...' -s --allow-all` as subprocess. Model must be gpt-5-mini or gpt-4.1. Requires `copilot login`.",
+      "copilot-cli": "Calls `copilot -s` with the shell and file writes denied, as a subprocess. Model must be gpt-5-mini or gpt-4.1. Requires `copilot login`.",
       "github-copilot": "Requires GITHUB_COPILOT_TOKEN in API keys tab (or run `gh auth login`).",
       "openai-compat": "Set Base URL to your local Ollama/LM Studio endpoint. Use a non-reasoning model (llama3.1, qwen2.5, mistral).",
     };

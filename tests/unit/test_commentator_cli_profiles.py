@@ -1,3 +1,5 @@
+import itertools
+
 import pytest
 
 from voice_copilot.commentator.cli_profiles import (
@@ -56,3 +58,15 @@ def test_model_override_is_applied() -> None:
 def test_unknown_cli_raises() -> None:
     with pytest.raises(KeyError):
         build_narration_command("totally-unknown", "/usr/bin/x", "s", "u")
+
+
+def test_copilot_narrator_can_never_run_a_shell_or_write_files() -> None:
+    # The narrator reads text the agent wrote; an injected instruction must
+    # not turn into a command. A deny rule beats the blanket tool approval.
+    from voice_copilot.providers.llm.copilot_cli import _BASE_FLAGS
+
+    for args in (NARRATION_PROFILES["copilot"].args, _BASE_FLAGS):
+        assert "--allow-all" not in args and "--yolo" not in args
+        pairs = list(itertools.pairwise(args))
+        assert ("--deny-tool", "shell") in pairs
+        assert ("--deny-tool", "write") in pairs
