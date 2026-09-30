@@ -178,6 +178,7 @@ yourself.
 | `VOICE_COPILOT_LAUNCH` | The id of the launch, so reports reach the instance that started the CLI |
 | `VOICE_COPILOT_MODE` | `narrate`, or `control` when the proxy already narrates this CLI |
 | `VOICE_COPILOT_HOOKS=off` | Silences the forwarder and the Pi, OpenCode and Hermes plugins without removing them |
+| `VOICE_COPILOT_TOKEN` | The panel token, if you set one (see Security); the forwarder and the plugins send it |
 
 The hook entries run `voice-copilot-hook`, a small forwarder installed with
 Voice Copilot. It exits at once without output when Voice Copilot is not
@@ -223,3 +224,10 @@ on `127.0.0.1`, refuses requests that name another host, and refuses POSTs that
 a web page sends from another origin, so a site open in your browser cannot
 report fake events or hold your agent. Every plugin fails open: when the panel
 is unreachable, the CLI carries on as if nothing were installed.
+
+When the panel listens on a network address (`VOICE_COPILOT_HOST=0.0.0.0`),
+requests from other devices must carry its token; calls from this computer,
+the hooks and plugins included, still need none. On a machine shared with
+other people, set `VOICE_COPILOT_TOKEN` in the environment the CLIs start from:
+the panel then asks every caller for it, and the forwarder, the Claude Code
+hooks and the Pi, OpenCode and Hermes plugins send it.

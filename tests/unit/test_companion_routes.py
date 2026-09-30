@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 import pytest
 from fastapi.testclient import TestClient
 
-from voice_copilot.companion import hook
+from voice_copilot.companion import hook, integrations
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.config import Config
 from voice_copilot.proxy.session import SessionRegistry
@@ -132,11 +132,13 @@ def test_a_web_page_cannot_forge_hook_calls() -> None:
 
 class _Capture(BaseHTTPRequestHandler):
     requests: ClassVar[list[tuple[str, bytes]]] = []
+    tokens: ClassVar[list[str | None]] = []
     reply = b""
 
     def do_POST(self) -> None:
         length = int(self.headers.get("content-length") or 0)
         type(self).requests.append((self.path, self.rfile.read(length)))
+        type(self).tokens.append(self.headers.get("x-voice-copilot-token"))
         self.send_response(200)
         self.send_header("content-length", str(len(self.reply)))
         self.end_headers()
@@ -149,6 +151,7 @@ class _Capture(BaseHTTPRequestHandler):
 @pytest.fixture
 def capture_server() -> Any:
     _Capture.requests = []
+    _Capture.tokens = []
     _Capture.reply = b""
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Capture)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -206,6 +209,25 @@ def test_forwarder_passes_the_event_name_for_copilot(
     assert code == 0 and out == b""
     assert "event=preToolUse" in _Capture.requests[0][0]
     assert "cli=copilot" in _Capture.requests[0][0]
+
+
+def test_forwarder_sends_the_panel_token_when_one_is_set(
+    monkeypatch: pytest.MonkeyPatch, capture_server: Any
+) -> None:
+    port = capture_server.server_address[1]
+    monkeypatch.setenv("VOICE_COPILOT_URL", f"http://127.0.0.1:{port}/api/companion/v1")
+    monkeypatch.delenv("VOICE_COPILOT_TOKEN", raising=False)
+    _run_hook(monkeypatch, ["claude"], b'{"hook_event_name": "Stop"}')
+    monkeypatch.setenv("VOICE_COPILOT_TOKEN", "s3cret")
+    _run_hook(monkeypatch, ["claude"], b'{"hook_event_name": "Stop"}')
+    assert _Capture.tokens == [None, "s3cret"]
+
+
+def test_claude_plugin_hooks_carry_the_token_variable() -> None:
+    hooks = integrations.claude_hooks("http://127.0.0.1:8765/api/companion/v1")
+    entry = hooks["hooks"]["Stop"][0]["hooks"][0]
+    assert entry["headers"]["X-Voice-Copilot-Token"] == "$VOICE_COPILOT_TOKEN"
+    assert "VOICE_COPILOT_TOKEN" in entry["allowedEnvVars"]
 
 
 def test_forwarder_stays_out_of_the_way(monkeypatch: pytest.MonkeyPatch) -> None:

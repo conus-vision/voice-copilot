@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 BASE = os.environ.get("VOICE_COPILOT_URL", "http://127.0.0.1:8765/api/companion/v1").rstrip("/")
 LAUNCH = os.environ.get("VOICE_COPILOT_LAUNCH", "")
 MODE = os.environ.get("VOICE_COPILOT_MODE", "")
+TOKEN = os.environ.get("VOICE_COPILOT_TOKEN", "").strip()
 CLI = "hermes"
 GATE_TIMEOUT_S = 3600.0
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback only
@@ -39,11 +40,14 @@ _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopba
 
 def _post(path: str, body: dict[str, Any], timeout: float = 5.0) -> dict[str, Any] | None:
     """POST JSON to Voice Copilot; None when it is not reachable."""
+    headers = {"Content-Type": "application/json"}
+    if TOKEN:
+        headers["X-Voice-Copilot-Token"] = TOKEN
     request = urllib.request.Request(
         BASE + path,
         data=json.dumps(body, default=str).encode("utf-8"),
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     try:
         with _OPENER.open(request, timeout=timeout) as response:
