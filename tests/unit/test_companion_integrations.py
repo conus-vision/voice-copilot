@@ -89,8 +89,11 @@ def test_copilot_gets_its_own_hooks_file(home: Path) -> None:
     assert not copilot.installed()
 
 
-def test_kimi_hooks_live_between_markers_in_config_toml(home: Path) -> None:
-    config = home / ".kimi" / "config.toml"
+def test_kimi_hooks_live_between_markers_in_config_toml(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KIMI_CODE_HOME", raising=False)
+    config = home / ".kimi-code" / "config.toml"
     config.parent.mkdir(parents=True)
     config.write_text('default_model = "kimi-k2"\n')
     kimi = integrations.get("kimi")
@@ -100,8 +103,12 @@ def test_kimi_hooks_live_between_markers_in_config_toml(home: Path) -> None:
     assert text.startswith('default_model = "kimi-k2"')
     assert text.count("# >>> voice-copilot hooks >>>") == 1
     assert 'event = "PreToolUse"' in text
+    # Kimi Code refuses a hook timeout above 600 seconds.
+    assert "timeout = 600" in text and "timeout = 3600" not in text
     kimi.uninstall()
     assert config.read_text().strip() == 'default_model = "kimi-k2"'
+    monkeypatch.setenv("KIMI_CODE_HOME", str(home / "elsewhere"))
+    assert kimi.target() == home / "elsewhere" / "config.toml"
 
 
 def test_pi_extension_is_copied_where_pi_loads_it(home: Path) -> None:
@@ -214,3 +221,28 @@ def test_shells_and_unknown_programs_get_no_wiring(home: Path) -> None:
     for name in ("terminal", "bash", "aider"):
         wiring = integrations.session_wiring(name, port=8800, launch_id="8800-x", proxied=True)
         assert wiring.args == [] and wiring.env == {}
+
+
+def test_installed_hooks_narrate_clis_the_proxy_cannot_see(home: Path) -> None:
+    # Copilot CLI sends its model traffic to GitHub whatever the base URL
+    # says. Launched in control mode its hooks waited for a proxy that never
+    # saw anything, so the session stayed silent.
+    assert not integrations.plugin_narrates("copilot")  # nothing installed yet
+    integrations.get("copilot").install(port=8800)
+    assert integrations.plugin_narrates("copilot")
+    wiring = integrations.session_wiring("copilot", port=8800, launch_id="8800-c", proxied=False)
+    assert wiring.env["VOICE_COPILOT_MODE"] == "narrate"
+    assert wiring.note == "Narrated through the Voice Copilot hooks for Copilot CLI."
+    # Hermes reports through a plugin.
+    hermes = integrations.session_wiring("hermes", port=8800, launch_id="8800-h", proxied=False)
+    assert "plugin for Hermes Agent" in hermes.note
+
+
+def test_clis_the_proxy_does_see_stay_on_it(home: Path) -> None:
+    # Codex reaches the proxy through its config flag; installed hooks only
+    # add control, the proxy keeps narrating the model's stream.
+    integrations.get("codex").install(port=8800)
+    assert integrations.get("codex").installed()
+    assert not integrations.plugin_narrates("codex")
+    assert not integrations.plugin_narrates("claude")
+    assert not integrations.plugin_narrates("aider")

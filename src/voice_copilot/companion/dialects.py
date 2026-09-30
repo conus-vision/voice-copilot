@@ -242,6 +242,10 @@ def halt(call: HookCall, reason: str) -> dict[str, Any]:
 
 def add_context(call: HookCall, text: str) -> dict[str, Any] | None:
     """Hand the model extra context at this hook, or None if the hook can't carry it."""
+    if call.cli == "kimi":
+        # Kimi Code fires PostToolUse without waiting for the answer and reads
+        # no additionalContext; its Stop hook carries the message instead.
+        return None
     if call.dialect == "copilot":
         if call.event in (POST_TOOL, NOTIFICATION):
             return {"additionalContext": text}
@@ -262,4 +266,14 @@ def keep_going(call: HookCall, text: str) -> dict[str, Any] | None:
         return None
     if call.dialect == "gemini":
         return {"decision": "deny", "reason": text}
+    if call.cli == "kimi":
+        # Kimi Code continues after a Stop hook only on a "deny", and feeds
+        # the model its reason as the next user message.
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": call.native_event or STOP,
+                "permissionDecision": "deny",
+                "permissionDecisionReason": text,
+            }
+        }
     return {"decision": "block", "reason": text}

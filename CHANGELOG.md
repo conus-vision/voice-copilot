@@ -6,9 +6,10 @@
 - Plugins and hooks: twelve coding CLIs can report to Voice Copilot through
   their own plugin or hook system, without the proxy, and answer to pause,
   Supervisor stop and voice messages. Claude Code (HTTP hooks), Pi
-  (extension), OpenCode (plugin) and Hermes Agent (Python plugin) were tested
-  end to end; Codex, Gemini CLI, Qwen Code, Copilot CLI, Grok Build, Droid,
-  OpenHands and Kimi get hook entries from their published references.
+  (extension), OpenCode (plugin), Hermes Agent (Python plugin) and Kimi Code
+  (hooks) were tested end to end; Codex, Gemini CLI, Qwen Code, Copilot CLI,
+  Grok Build, Droid and OpenHands get hook entries from their published
+  references.
   `vc claude`, `vc pi` and Launch load the plugin for the session;
   `voice-copilot integrate <cli>` and the panel's new Plugins tab install it
   for good. See `docs/integrations.md`.
@@ -104,6 +105,15 @@
   line instead of staying silent.
 - Ctrl+C while a line was being spoken left `serve` and `vc` hanging: the
   speech loop swallowed its own cancellation.
+- CLIs whose model traffic skips the proxy were launched as if the proxy
+  narrated them: their installed hooks ran in control mode and the session
+  stayed silent. Copilot CLI, Droid, Gemini CLI, Grok Build, Hermes Agent,
+  Kimi, OpenHands and Qwen Code are now narrated through their hooks or
+  plugin once installed. The Launch tab and the launch banner say what the
+  proxy misses for each CLI, from a check of each one's source or docs.
+- Crush launches with `OPENAI_API_ENDPOINT` (it never read `OPENAI_BASE_URL`)
+  and Oh My Pi with `ANTHROPIC_BASE_URL` (its OpenAI models ignore the
+  variable); saved launcher settings are moved once.
 - macOS: Option+letter hotkeys (`Alt+P` pause, `Alt+Shift+N`) match the key.
   pynput reports the character Option makes (`π`, or none for a dead key), so
   they never fired.

@@ -162,7 +162,7 @@ companions like this one (see the integration RFC below).
   narrator nothing to work with.
 - Plugs into the plugin and hook systems of twelve CLIs (Claude Code, Pi,
   OpenCode, Hermes Agent, Codex, Gemini CLI, Qwen Code, Copilot CLI, Grok
-  Build, Droid, OpenHands, Kimi), so they are narrated without the proxy and
+  Build, Droid, OpenHands, Kimi Code), so they are narrated without the proxy and
   answer to pause, stop and voice messages. `voice-copilot integrate` sets one
   up.
 - Offers push-to-talk (`Alt+Space`, off in this build): your question goes
@@ -242,9 +242,9 @@ claude                             # any terminal, as usual
 ```
 
 The panel's Plugins tab has the same Install button per CLI and shows which
-ones are connected right now. Claude Code, Pi, OpenCode and Hermes Agent were
-tested end to end; the hook setups for Codex, Gemini CLI, Qwen Code, Copilot
-CLI, Grok Build, Droid, OpenHands and Kimi follow each CLI's hook reference.
+ones are connected right now. Claude Code, Pi, OpenCode, Hermes Agent and Kimi
+Code were tested end to end; the hook setups for Codex, Gemini CLI, Qwen Code,
+Copilot CLI, Grok Build, Droid and OpenHands follow each CLI's hook reference.
 Every step, per CLI, is in
 [docs/integrations.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/integrations.md).
 
@@ -252,9 +252,8 @@ Every step, per CLI, is in
 
 The **Launch** tab does this for you. To wire it up by hand
 (`voice-copilot run <target>` only knows `claude` and `codex`), run the proxy as
-a standalone service and point your CLI's base URL at it. That covers aider,
-opencode, Cline, GitHub Copilot CLI when it calls OpenAI or Anthropic, and any
-other CLI that reads its endpoint from a base-URL variable:
+a standalone service and point your CLI's base URL at it. That covers aider and
+any other CLI that reads its endpoint from a base-URL variable:
 
 ```bash
 voice-copilot proxy
@@ -266,6 +265,13 @@ voice-copilot proxy
 ANTHROPIC_BASE_URL=http://127.0.0.1:8766/anthropic \
   aider --model anthropic/claude-sonnet-5
 ```
+
+Not every CLI reads that variable. Crush reads `OPENAI_API_ENDPOINT`, Goose
+needs `GOOSE_PROVIDER=openai`, Cline takes the URL through `cline auth`, and
+Copilot CLI routes only bring-your-own-key models, through
+`COPILOT_PROVIDER_BASE_URL`. Amp, Auggie and Droid's hosted models go to their
+vendor whatever you set. The Launch tab says this for each CLI. Where a CLI has
+hooks, `voice-copilot integrate <cli>` narrates it without the proxy.
 
 The panel lists each client that connects. Claude Code, Codex, OpenCode, Crush
 and Cline send a session id with every request, so two terminals running the

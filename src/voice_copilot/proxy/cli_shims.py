@@ -484,6 +484,8 @@ def _shell_env_overrides(*, host: str, port: int) -> dict[str, str]:
         )
     }
     overrides["GOOGLE_GEMINI_BASE_URL"] = urls["GEMINI_BASE_URL"]
+    # Crush reads its OpenAI endpoint from here and never OPENAI_BASE_URL.
+    overrides["OPENAI_API_ENDPOINT"] = urls["OPENAI_BASE_URL"]
     return overrides
 
 

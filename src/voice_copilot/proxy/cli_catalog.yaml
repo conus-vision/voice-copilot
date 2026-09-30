@@ -4,6 +4,11 @@
 # missing ones after). `icon` is a 2-char monogram and `accent` its badge
 # colour — we ship no third-party logos. `kind: shell` marks a plain terminal
 # that gets every proxy route exported instead of a single base-URL var.
+#
+# `proxy_note` tells the user what a launch through the proxy does not cover:
+# a CLI that sends its model traffic to its vendor, or reads the base URL only
+# with a provider setting the launcher cannot guess. Each was checked against
+# the CLI's source, its docs or its published package (September 2026).
 
 claude:
   label: Claude Code
@@ -37,6 +42,9 @@ openclaw:
   website_url: https://github.com/openclaw/openclaw
   provider: anthropic
   base_url_env: ANTHROPIC_BASE_URL
+  proxy_note: >-
+    Its built-in Anthropic models ignore ANTHROPIC_BASE_URL: set
+    models.providers.anthropic.baseUrl to the proxy URL in the OpenClaw config.
   icon: OW
   accent: "#e2574c"
 
@@ -57,6 +65,9 @@ hermes:
   website_url: https://hermes-agent.nousresearch.com/
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Uses the proxy only with --provider openai-api. Its plugin narrates any
+    provider: voice-copilot integrate hermes.
   icon: HR
   accent: "#9aa0ad"
 
@@ -77,6 +88,9 @@ droid:
   website_url: https://docs.factory.ai/droid-cli/quickstart
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Sends Factory-hosted models to Factory, not the proxy. Its hooks narrate:
+    voice-copilot integrate droid.
   icon: DR
   accent: "#d0d4de"
 
@@ -88,6 +102,8 @@ pi:
   website_url: https://www.npmjs.com/package/@earendil-works/pi-coding-agent
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Ignores OPENAI_BASE_URL; vc pi and Launch narrate it through its extension.
   icon: PI
   accent: "#f5b301"
 
@@ -98,6 +114,9 @@ cline:
   website_url: https://cline.bot/cli
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Ignores OPENAI_BASE_URL: point it at the proxy with
+    cline auth --provider openai-compatible --baseurl <proxy URL>.
   icon: CN
   accent: "#4c8bf5"
 
@@ -108,6 +127,9 @@ copilot:
   website_url: https://docs.github.com/en/copilot/how-tos/cli/install-github-copilot-cli
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Sends its requests to GitHub, not the proxy (only BYOK models read
+    COPILOT_PROVIDER_BASE_URL). Its hooks narrate: voice-copilot integrate copilot.
   icon: GH
   accent: "#b3b9c4"
 
@@ -116,8 +138,13 @@ omp:
   command: omp
   description: Coding agent with the IDE wired in
   website_url: https://github.com/can1357/oh-my-pi
-  provider: openai
-  base_url_env: OPENAI_BASE_URL
+  # Built-in OpenAI models carry their own URL; ANTHROPIC_BASE_URL does
+  # override the stock Anthropic provider.
+  provider: anthropic
+  base_url_env: ANTHROPIC_BASE_URL
+  proxy_note: >-
+    Only Anthropic models go through the proxy; for OpenAI models set
+    providers.openai.baseUrl in ~/.omp/agent/models.yml.
   icon: OM
   accent: "#a855f7"
 
@@ -142,6 +169,9 @@ qwen:
   website_url: https://github.com/QwenLM/qwen-code
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Uses the proxy only with OpenAI-compatible auth (--auth-type openai). Its
+    hooks narrate with any sign-in: voice-copilot integrate qwen.
   icon: QW
   accent: "#7c3aed"
 
@@ -152,6 +182,9 @@ gemini:
   website_url: https://github.com/google-gemini/gemini-cli
   provider: gemini
   base_url_env: GOOGLE_GEMINI_BASE_URL
+  proxy_note: >-
+    The proxy forwards Gemini without narrating it, and a Google sign-in skips
+    it. Its hooks narrate: voice-copilot integrate gemini.
   icon: GM
   accent: "#4285f4"
 
@@ -166,12 +199,14 @@ aider:
   accent: "#2ecc71"
 
 kimi:
-  label: Kimi CLI
+  label: Kimi Code
   command: kimi
   description: Moonshot's Kimi agent for the terminal
-  website_url: https://www.kimi.com/
+  website_url: https://www.npmjs.com/package/@moonshot-ai/kimi-code
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Kimi Code ignores OPENAI_BASE_URL. Its hooks narrate: voice-copilot integrate kimi.
   icon: KM
   accent: "#6f5cff"
 
@@ -180,8 +215,12 @@ crush:
   command: crush
   description: Charmbracelet's glamourous coding agent
   website_url: https://github.com/charmbracelet/crush
+  # Its OpenAI provider always sets its own URL unless OPENAI_API_ENDPOINT
+  # names one (catwalk configs/openai.json); OPENAI_BASE_URL is never read.
   provider: openai
-  base_url_env: OPENAI_BASE_URL
+  base_url_env: OPENAI_API_ENDPOINT
+  proxy_note: >-
+    With a ChatGPT sign-in Crush talks to OpenAI directly and is not narrated.
   icon: CR
   accent: "#ff5fa2"
 
@@ -192,6 +231,9 @@ cursor:
   website_url: https://docs.cursor.com/en/cli/overview
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Not known to send model traffic to a custom base URL: it may talk only to
+    Cursor's own service, and then nothing reaches the proxy.
   icon: CU
   accent: "#d0d4de"
 
@@ -202,6 +244,9 @@ goose:
   website_url: https://github.com/block/goose
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Uses the proxy only with GOOSE_PROVIDER=openai (Goose 1.33 or later; older
+    versions read OPENAI_HOST).
   icon: GS
   accent: "#7aa2ff"
 
@@ -212,6 +257,8 @@ amp:
   website_url: https://ampcode.com/
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Runs its agent on Sourcegraph's servers: no model traffic reaches the proxy.
   icon: AM
   accent: "#ff8a3d"
 
@@ -222,6 +269,9 @@ continue:
   website_url: https://docs.continue.dev/guides/cli
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Ignores OPENAI_BASE_URL: set apiBase to the proxy URL in the config you pass
+    with cn --config.
   icon: CT
   accent: "#4ecb71"
 
@@ -232,6 +282,9 @@ openhands:
   website_url: https://github.com/All-Hands-AI/OpenHands
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Reads LLM_BASE_URL only with --override-with-envs (plus LLM_API_KEY and
+    LLM_MODEL). Its hooks narrate: voice-copilot integrate openhands.
   icon: OH
   accent: "#ffb454"
 
@@ -242,6 +295,8 @@ auggie:
   website_url: https://docs.augmentcode.com/cli/overview
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Sends chat to Augment's service, keys included: no model traffic reaches the proxy.
   icon: AU
   accent: "#00d3a7"
 
@@ -254,6 +309,9 @@ grok:
   website_url: https://github.com/xai-org/grok-build
   provider: openai
   base_url_env: OPENAI_BASE_URL
+  proxy_note: >-
+    Grok Build reads GROK_MODELS_BASE_URL and the community grok-cli
+    GROK_BASE_URL, not OPENAI_BASE_URL. Its hooks narrate: voice-copilot integrate grok.
   icon: GK
   accent: "#d0d4de"
 

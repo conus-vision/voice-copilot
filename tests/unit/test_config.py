@@ -107,3 +107,31 @@ def test_codex_route_migration_runs_once(tmp_path: Path) -> None:
     cfg.proxy_cli.profiles["codex"].provider = "openai"
     save_config(cfg, config_file)
     assert load_config(config_file).proxy_cli.profiles["codex"].provider == "openai"
+
+
+def test_crush_and_oh_my_pi_move_to_variables_they_read(tmp_path: Path) -> None:
+    # Saved files keep the old catalog defaults: Crush never reads
+    # OPENAI_BASE_URL, and Oh My Pi only honours ANTHROPIC_BASE_URL.
+    config_file = tmp_path / "config.yaml"
+    proxy_cli_config_path(config_file).write_text(
+        "schema_version: 2\n"
+        "profiles:\n"
+        "  crush:\n    provider: openai\n    base_url_env: OPENAI_BASE_URL\n"
+        "  omp:\n    provider: openai\n    base_url_env: OPENAI_BASE_URL\n"
+        "  goose:\n    provider: openrouter\n    base_url_env: OPENROUTER_BASE_URL\n",
+        encoding="utf-8",
+    )
+    profiles = load_config(config_file).proxy_cli.profiles
+    assert profiles["crush"].base_url_env == "OPENAI_API_ENDPOINT"
+    assert (profiles["omp"].provider, profiles["omp"].base_url_env) == (
+        "anthropic",
+        "ANTHROPIC_BASE_URL",
+    )
+    # A route the user chose is theirs.
+    assert profiles["goose"].provider == "openrouter"
+
+    # And the move happens once: going back to OPENAI_BASE_URL sticks.
+    cfg = load_config(config_file)
+    cfg.proxy_cli.profiles["crush"].base_url_env = "OPENAI_BASE_URL"
+    save_config(cfg, config_file)
+    assert load_config(config_file).proxy_cli.profiles["crush"].base_url_env == "OPENAI_BASE_URL"

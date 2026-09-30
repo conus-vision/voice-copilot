@@ -42,7 +42,7 @@ argument lists every integration and whether it is installed.
 | Grok Build | `~/.grok/hooks/voice-copilot.json` | prompt, tools, answer | yes | yes | yes | docs |
 | Droid | hooks in `~/.factory/settings.json` | prompt, tools, answer | yes | yes | yes | docs |
 | OpenHands CLI | hooks in `~/.openhands/hooks.json` | prompt, tools, answer | yes | yes | no | docs |
-| Kimi CLI | hooks in `~/.kimi/config.toml` | prompt, tools, answer | yes | yes | no | docs |
+| Kimi Code | hooks in `~/.kimi-code/config.toml` | prompt, tools, answer | yes | yes | at the end of a turn | yes |
 
 "Tested" means the integration was run end to end against the real CLI:
 narration, pause, stop and a voice message. "Docs" means it follows the CLI's
@@ -52,6 +52,13 @@ see.
 Hooks carry no reasoning, so for Claude Code `vc claude` keeps the proxy as
 well: the proxy narrates the thinking and the plugin adds permission prompts.
 Pi's extension reports everything, so `vc pi` skips the proxy.
+
+Copilot CLI, Droid, Gemini CLI, Grok Build, Hermes Agent, Kimi, OpenHands and
+Qwen Code send their model traffic past the proxy on a plain launch: to their
+vendor, or through a provider setting the launcher cannot guess. Once their
+hooks or plugin are installed, `vc` and Launch skip the proxy for them and
+narrate the session from those reports. Before that, the Launch tab says what
+the proxy misses for each of them.
 
 ## Setting up each CLI
 
@@ -126,11 +133,15 @@ project hooks; user-level hooks run without asking.
 and `voice-copilot integrate grok` writes `~/.grok/hooks/voice-copilot.json`.
 Both are files of their own, so removing them never touches your settings.
 
-### Kimi CLI
+### Kimi Code
 
 `voice-copilot integrate kimi` appends `[[hooks]]` tables to
-`~/.kimi/config.toml`, between `# >>> voice-copilot hooks >>>` markers so they
-can be removed cleanly. Kimi's hooks are still in beta.
+`~/.kimi-code/config.toml` (or `$KIMI_CODE_HOME/config.toml`), between
+`# >>> voice-copilot hooks >>>` markers so they can be removed cleanly. The
+`kimi` command is Kimi Code now; the Python kimi-cli's last release only
+installs it. Kimi Code stops waiting for a hook after 10 minutes, so a pause
+lets go then. It takes no context from a tool hook, so a voice message reaches
+the agent when its turn ends. Tested end to end with Kimi Code 2.1.1.
 
 ### DeepSeek Harness, Oh My Pi and others
 
