@@ -78,6 +78,8 @@ dev = [
 
 [project.scripts]
 voice-copilot = "voice_copilot.cli:main"
+# Run by coding CLIs for each hook they fire; see voice_copilot/companion/hook.py.
+voice-copilot-hook = "voice_copilot.companion.hook:main"
 
 [project.urls]
 Homepage = "https://voice-copilot.conus.vision"

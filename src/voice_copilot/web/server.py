@@ -27,6 +27,9 @@ from pydantic import ValidationError
 from voice_copilot.audio.hub import AudioHub
 from voice_copilot.commentator.cli_profiles import NARRATION_PROFILES
 from voice_copilot.commentator.provider_select import resolve_for_launch
+from voice_copilot.companion import integrations
+from voice_copilot.companion.hub import CompanionHub
+from voice_copilot.companion.routes import build_router as build_companion_router
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.config import CommentatorConfig, Config, load_config, save_config
 from voice_copilot.core.secrets import (
@@ -96,6 +99,8 @@ def create_app(
     sessions: SessionRegistry | None = None,
     proxy_port: int | None = None,
     bind_host: str | None = None,
+    companion: CompanionHub | None = None,
+    panel_port: int | None = None,
 ) -> FastAPI:
     app = FastAPI(title="voice-copilot", version="0.1.0", lifespan=_lifespan)
     # Every page open in the browser can reach loopback: refuse forged
@@ -110,6 +115,9 @@ def create_app(
     app.state.voice_input_enabled = config.voice_input.enabled
     app.state.sessions = sessions
     app.state.proxy_port = proxy_port
+    app.state.panel_port = panel_port
+    # Plugins and hooks of coding CLIs report here (see companion/).
+    app.state.companion = companion or CompanionHub(bus, sessions, port=panel_port)
     app.state.commentator = None  # set by cli.py after Commentator is created
     app.state.dialog = None  # set by `vc`: lets the panel hold the agent live
     app.state.launch_notice = None  # set by `vc` to surface launch status in the panel
@@ -131,6 +139,7 @@ def create_app(
         return proxy_port
 
     register_ws(app)
+    app.include_router(build_companion_router())
 
     @app.get("/api/info")
     async def get_info() -> dict[str, Any]:
@@ -430,15 +439,31 @@ def create_app(
         app.state.launch_notice = notice
 
     @app.post("/api/proxy/cli-shims/{profile_id}/launch")
-    async def post_cli_launch(profile_id: str) -> dict[str, Any]:
+    async def post_cli_launch(profile_id: str, request: Request) -> dict[str, Any]:
         try:
             proxy_port = _require_proxy_port()
+            # The CLI's own plugin, when it has one, reports to this panel for
+            # the session; Pi's reports everything, so it skips the proxy.
+            plugin_narrates = integrations.plugin_narrates(profile_id)
+            hub: CompanionHub = app.state.companion
+            launch = hub.new_launch(profile_id, proxied=not plugin_narrates)
+            wiring = integrations.session_wiring(
+                profile_id,
+                port=app.state.panel_port or request.url.port or integrations.DEFAULT_PORT,
+                launch_id=launch.id,
+                proxied=not plugin_narrates,
+            )
             result = launch_cli_profile(
                 profile_id,
                 app.state.config,
                 host="127.0.0.1",
                 port=proxy_port,
+                use_proxy=not plugin_narrates,
+                extra_env=wiring.env,
+                extra_args=wiring.args,
             )
+            if wiring.note:
+                result["note"] = wiring.note
         except KeyError as e:
             raise HTTPException(404, str(e)) from e
         except RuntimeError as e:

@@ -129,6 +129,71 @@ class SessionRegistry:
             self._notify()
         return sess
 
+    def register_external(
+        self,
+        sid: str,
+        *,
+        label: str,
+        cli_id: str | None,
+        provider: str = "hooks",
+    ) -> Session:
+        """Return the session a plugin or hook reports under `sid`, creating it once.
+
+        Proxy sessions are keyed by who is calling; a CLI that reports its own
+        events through the companion API names its session itself.
+        """
+        created = False
+        with self._lock:
+            sess = self._sessions.get(sid)
+            if sess is None:
+                created = True
+                now = time.time()
+                sess = Session(
+                    id=sid,
+                    label=label,
+                    user_agent="",
+                    provider=provider,
+                    cli_id=cli_id,
+                    first_seen=now,
+                    last_seen=now,
+                )
+                self._sessions[sid] = sess
+                if self._active_id is None:
+                    self._active_id = sid
+                log.info("companion: new session %s (%s)", sid, label)
+            sess.touch()
+        if created:
+            self._notify()
+        return sess
+
+    def observe_query(self, sid: str, query: str) -> None:
+        """A user prompt arrived in `sid`: remember it and make the session active.
+
+        Same rule as a proxied request that carries a question: whichever
+        terminal the user just typed into is the one worth narrating.
+        """
+        with self._lock:
+            sess = self._sessions.get(sid)
+            if sess is None:
+                return
+            sess.last_seen = time.time()
+            sess.last_query = query
+            changed = self._active_id != sid
+            self._active_id = sid
+        if changed:
+            log.info("companion: auto-selected active session %s from a user prompt", sid)
+        self._notify()
+
+    def remove(self, sid: str) -> None:
+        """Forget a session that ended; the active one falls back to the newest left."""
+        with self._lock:
+            if self._sessions.pop(sid, None) is None:
+                return
+            if self._active_id == sid:
+                newest = max(self._sessions.values(), key=lambda s: s.last_seen, default=None)
+                self._active_id = newest.id if newest else None
+        self._notify()
+
     # ------------------------------------------------------------------ active
 
     def get_active_id(self) -> str | None:

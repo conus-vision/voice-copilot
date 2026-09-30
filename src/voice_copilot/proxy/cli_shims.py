@@ -195,7 +195,16 @@ def launch_cli_profile(
     *,
     host: str = _DEFAULT_PROXY_HOST,
     port: int = 8766,
+    use_proxy: bool = True,
+    extra_env: dict[str, str] | None = None,
+    extra_args: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Open a terminal running the CLI, routed through the proxy.
+
+    `extra_env` / `extra_args` wire the CLI's Voice Copilot plugin for this
+    session; `use_proxy=False` leaves the model traffic alone for a CLI whose
+    plugin already reports everything.
+    """
     _require_supported()
     meta = _meta_for(profile_id)
     profile = _profile_from_config(cfg, profile_id)
@@ -205,8 +214,16 @@ def launch_cli_profile(
     working_directory = _working_directory_from_config(cfg, profile)
     if working_directory is None:
         raise RuntimeError("working directory does not exist; choose another folder")
-    env_overrides = _proxy_env_overrides(profile_id, profile, meta=meta, host=host, port=port)
-    launch_args = _proxy_launch_args(profile, meta=meta, host=host, port=port)
+    env_overrides = (
+        _proxy_env_overrides(profile_id, profile, meta=meta, host=host, port=port)
+        if use_proxy
+        else {}
+    )
+    env_overrides.update(extra_env or {})
+    launch_args = (
+        *(extra_args or ()),
+        *(_proxy_launch_args(profile, meta=meta, host=host, port=port) if use_proxy else ()),
+    )
     title = f"voice-copilot - {meta.label}"
     if os.name == "nt":
         shell = _powershell_path()

@@ -7,6 +7,7 @@ can be opened in a browser. `run` (wraps a target CLI) lands in Э5.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
 import sys
@@ -26,6 +27,7 @@ from voice_copilot.alias_install import ensure_vc_alias
 from voice_copilot.audio import AudioHub, TTSDriver
 from voice_copilot.commentator import Commentator
 from voice_copilot.commentator.provider_select import resolve_for_launch
+from voice_copilot.companion import integrations
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.child_env import child_env, load_dotenv_for_self
 from voice_copilot.core.config import CommentatorConfig, Config, load_config
@@ -65,9 +67,20 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+#: The Typer app itself, for reading its commands even where tests replace `app`.
+_TYPER_APP = app
 console = Console()
 
-_KNOWN_SUBCOMMANDS = {"version", "serve", "run", "proxy", "config", "vc"}
+
+def _known_subcommands() -> set[str]:
+    """Names of our own subcommands, read from the app so a new one is never missed."""
+    names = set()
+    for command in _TYPER_APP.registered_commands:
+        if command.name:
+            names.add(command.name)
+        elif command.callback is not None:
+            names.add(command.callback.__name__.replace("_", "-"))
+    return names
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
@@ -79,7 +92,7 @@ def _normalize_argv(argv: list[str]) -> list[str]:
     if len(argv) < 2:
         return argv
     first = argv[1]
-    if first.startswith("-") or first in _KNOWN_SUBCOMMANDS:
+    if first.startswith("-") or first in _known_subcommands():
         return argv
     return [argv[0], "vc", *argv[1:]]
 
@@ -236,6 +249,85 @@ def proxy(
 
 
 @app.command()
+def integrate(
+    cli: str | None = typer.Argument(
+        None,
+        help="CLI to connect: claude, pi, opencode, hermes, codex, gemini, qwen, copilot, "
+        "grok, droid, openhands, kimi. Leave it out to list them.",
+    ),
+    uninstall: bool = typer.Option(False, "--uninstall", help="Remove what an install added."),
+    port: int = typer.Option(
+        8765,
+        "--port",
+        envvar="VOICE_COPILOT_PORT",
+        help="Panel port the Claude Code plugin reports to (the port of `voice-copilot serve`).",
+    ),
+    print_only: bool = typer.Option(
+        False, "--print", help="Show the steps to do it by hand instead of changing anything."
+    ),
+) -> None:
+    """Connect a coding CLI to Voice Copilot through its own plugin or hook system.
+
+    Once connected, the CLI reports what it does to a running Voice Copilot
+    (`voice-copilot serve`, or any `vc` session) and gets narrated without the
+    proxy. `vc claude` and `vc pi` load their plugin for the session on their
+    own; this command is for running the CLI directly.
+    """
+    if cli is None:
+        _print_integrations(port)
+        return
+    try:
+        integration = integrations.get(cli.lower())
+    except KeyError:
+        known = ", ".join(i.id for i in integrations.all_integrations())
+        console.print(f"[red]No integration for {cli!r}.[/red] Known: {known}")
+        raise typer.Exit(2) from None
+    if print_only:
+        integration.prepare(port=port)
+        console.print(f"[bold]{integration.label}[/bold]: {integration.method}")
+        for step in integration.steps(port=port):
+            console.print(step, markup=False, highlight=False)
+        return
+    try:
+        report = integration.uninstall() if uninstall else integration.install(port=port)
+    except integrations.IntegrationError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"[green]{report}[/green]")
+    if not uninstall:
+        for step in integration.after_install:
+            console.print(f"[bold]Next:[/bold] {step.format(port=port)}", highlight=False)
+        if integration.notes:
+            console.print(f"[dim]{integration.notes}[/dim]")
+        console.print(
+            "[dim]Start `voice-copilot serve` and use the CLI as usual; "
+            "the panel's Integrations section shows when it connects.[/dim]"
+        )
+
+
+def _print_integrations(port: int) -> None:
+    from rich.table import Table
+
+    table = Table(title="Voice Copilot integrations", show_lines=False)
+    for column in ("CLI", "Id", "How", "Installed", "Controls", "Tested"):
+        table.add_column(column)
+    for item in integrations.describe_all(port=port):
+        table.add_row(
+            item["label"],
+            item["id"],
+            item["method"] + (" (auto in vc)" if item["session_auto"] else ""),
+            "yes" if item["installed"] else "no",
+            ", ".join(item["controls"]),
+            "yes" if item["verified"] else "docs only",
+        )
+    console.print(table)
+    console.print(
+        "Connect one with `voice-copilot integrate <id>`; `--print` shows the manual steps, "
+        "`--uninstall` removes it."
+    )
+
+
+@app.command()
 def config() -> None:
     """Print the resolved config path. For editing, open the /settings page."""
     from voice_copilot.core.config import config_path, proxy_cli_config_path
@@ -298,6 +390,17 @@ def _start_tts_driver(
 
 def _server_app_state(server: uvicorn.Server) -> Any:
     return cast(Any, server.config.app).state
+
+
+def _start_companion_control(server: uvicorn.Server) -> asyncio.Task[None]:
+    """Let plugin sessions take the user's pause, interrupt and voice messages.
+
+    Only where no DialogManager runs (``serve``): with ``vc`` the terminal
+    wrapper already owns those controls.
+    """
+    companion = _server_app_state(server).companion
+    companion.owns_dialog = True
+    return asyncio.create_task(companion.run(), name="companion.control")
 
 
 def _start_servers(servers: list[uvicorn.Server]) -> list[asyncio.Task[Any]]:
@@ -428,6 +531,7 @@ async def _boot(
         sessions=sessions,
         proxy_port=proxy_port,
         bind_host=host,
+        panel_port=port,
     )
     # quiet_logging (used by `vc`): pass log_config=None so uvicorn does NOT
     # install its own stderr handlers — its loggers then propagate to the root
@@ -503,7 +607,7 @@ async def _serve(
     )
 
     server_tasks = _start_servers([server])
-    extra: list[asyncio.Task[Any]] = []
+    extra: list[asyncio.Task[Any]] = [_start_companion_control(server)]
     tts_result = _start_tts_driver(bus, hub, cfg)
     if tts_result is not None:
         extra.append(tts_result[1])
@@ -544,6 +648,7 @@ async def _proxy_only(
     server_tasks = _start_servers(servers)
     extra: list[asyncio.Task[Any]] = [
         asyncio.create_task(commentator.run(), name="commentator"),
+        _start_companion_control(server),
     ]
     tts_result = _start_tts_driver(bus, hub, cfg)
     if tts_result is not None:
@@ -676,10 +781,12 @@ def _no_narration_note(provider: str) -> str:
     )
 
 
-def _launch_notice(resolved: ResolvedCli | None, commentator_status: str) -> str:
+def _launch_notice(
+    resolved: ResolvedCli | None, commentator_status: str, *, plugin_narrates: bool = False
+) -> str:
     """Compose the panel banner shown at launch (status + any caveats)."""
     parts = [commentator_status]
-    if resolved is not None:
+    if resolved is not None and not plugin_narrates:
         if resolved.upstream:
             parts.append(
                 f"Forwarding to {urlsplit(resolved.upstream).netloc} "
@@ -715,7 +822,11 @@ def _apply_commentator_resolution(
 
 
 def _make_commentator_resolver(
-    resolved: ResolvedCli | None, name: str
+    resolved: ResolvedCli | None,
+    name: str,
+    *,
+    plugin_narrates: bool = False,
+    wiring_note: str = "",
 ) -> Callable[[Config], tuple[CommentatorConfig, str]]:
     """Bind this launch's resolved CLI so /api/config can redo the resolution.
 
@@ -730,8 +841,12 @@ def _make_commentator_resolver(
     def resolve(cfg: Config) -> tuple[CommentatorConfig, str]:
         commentator_cfg, status = _apply_commentator_resolution(cfg, resolved)
         if resolved is not None:
-            return commentator_cfg, _launch_notice(resolved, status)
-        return commentator_cfg, f"{_not_recognized_note(name)}  •  {status}"
+            notice = _launch_notice(resolved, status, plugin_narrates=plugin_narrates)
+        else:
+            notice = f"{_not_recognized_note(name)}  •  {status}"
+        if wiring_note:
+            notice = f"{notice}  •  {wiring_note}"
+        return commentator_cfg, notice
 
     return resolve
 
@@ -761,8 +876,17 @@ async def _run_vc(
         console.print(f"[red]{e}[/red]")
         return
 
-    enable_proxy = resolved is not None
-    sessions = SessionRegistry() if enable_proxy else None
+    companion_cli = resolved.profile_id if resolved is not None else name
+    # A CLI whose plugin reports everything (Pi) is narrated through it; the
+    # proxy would only duplicate those events, or miss them on another provider.
+    plugin_narrates = integrations.plugin_narrates(companion_cli)
+    if plugin_narrates and resolved is not None:
+        resolved = dataclasses.replace(
+            resolved, env_overrides={}, launch_args=(), upstream=None, upstream_env=None
+        )
+    enable_proxy = resolved is not None and not plugin_narrates
+    # Plugin sessions register here too, so it exists even without the proxy.
+    sessions = SessionRegistry()
     server, hotkey_svc, tray_svc, cfg, hub = await _boot(
         bus,
         host,
@@ -776,7 +900,14 @@ async def _run_vc(
         quiet_logging=True,
     )
 
-    resolve_commentator = _make_commentator_resolver(resolved, name)
+    companion = _server_app_state(server).companion
+    launch = companion.new_launch(companion_cli, proxied=enable_proxy)
+    wiring = integrations.session_wiring(
+        companion_cli, port=port, launch_id=launch.id, proxied=enable_proxy
+    )
+    resolve_commentator = _make_commentator_resolver(
+        resolved, name, plugin_narrates=plugin_narrates, wiring_note=wiring.note
+    )
     commentator_cfg, launch_notice = resolve_commentator(cfg)
     commentator = Commentator(bus, commentator_cfg, cfg.commentator_language, sessions=sessions)
     _server_app_state(server).commentator = commentator
@@ -815,13 +946,14 @@ async def _run_vc(
     # PTY clears the screen on handover.
     if resolved is not None:
         binary = resolved.resolved_binary
-        launch_args = list(resolved.launch_args)
-        full_env = child_env(resolved.env_overrides)
+        # The plugin flag goes first: the user's own args may be a subcommand.
+        launch_args = [*wiring.args, *resolved.launch_args]
+        full_env = child_env({**resolved.env_overrides, **wiring.env})
         cwd = str(resolved.working_directory) if resolved.working_directory else None
         # Wait for the proxy to bind before the child starts using its base URL.
         # The child owns the terminal here, so a failure goes to the log file
         # (routed by `_route_logging_to_file`), never the console.
-        if not await wait_for_port(host, actual_proxy_port, timeout=10.0):
+        if enable_proxy and not await wait_for_port(host, actual_proxy_port, timeout=10.0):
             logging.getLogger(__name__).warning(
                 "proxy did not come up on %s:%s in time — first request may be unnarrated",
                 host,
@@ -829,8 +961,8 @@ async def _run_vc(
             )
     else:
         binary = name
-        launch_args = []
-        full_env = child_env()
+        launch_args = list(wiring.args)
+        full_env = child_env(wiring.env)
         cwd = None
 
     adapter = PtyAdapter(bus, [binary, *launch_args, *cli_args], env=full_env, cwd=cwd)
