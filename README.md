@@ -172,10 +172,10 @@ companions like this one (see the integration RFC below).
   its process with `psutil`, so it cannot race ahead while you talk. Only the
   agent's own process is suspended; processes it started keep running.
 - Narrates in English, Spanish, French, Ukrainian and Russian.
-- Loads speech output, speech input and the narrator model as plug-ins. The
-  narrator can run on a local model (Ollama or another OpenAI-compatible
-  server) and speech input can run locally with faster-whisper; speech output
-  currently needs a cloud service.
+- Loads speech output, speech input and the narrator model as plug-ins. Each
+  can run on your computer: the narrator on a local model (Ollama or another
+  OpenAI-compatible server), speech output with Piper voices, speech input
+  with faster-whisper.
 
 ## What Voice Copilot is not
 
@@ -192,20 +192,25 @@ The Quickstart uses the light default. Extras add optional backends:
 # light default: cloud TTS and STT
 pipx install voice-copilot
 
+# + local TTS (Piper voices through sherpa-onnx)
+pipx install "voice-copilot[local-tts]"
+
 # + local STT (faster-whisper)
 pipx install "voice-copilot[local-stt]"
 
 # + ElevenLabs TTS
 pipx install "voice-copilot[elevenlabs]"
 
-# every extra, including local-tts (see the note below)
+# every extra
 pipx install "voice-copilot[all]"
 ```
 
-The `local-tts` extra installs PyTorch for the Silero and Piper voices, but
-neither engine is implemented yet, and neither is Deepgram speech input.
-Selecting one of them reports that it is not available. For now, speech output
-comes from edge-tts (free), OpenAI or ElevenLabs.
+With `local-tts`, pick `piper` as the voice in Settings. The extra adds about
+45 MB and no PyTorch. The first line in each language downloads its voice once
+(about 65 MB, from the sherpa-onnx releases on GitHub) into `voices/` next to
+the config file; after that speech output needs no network. A short line takes
+a fraction of a second on a laptop CPU. Silero and Deepgram are reserved names
+without an engine yet, and selecting them says so.
 
 Or with [uv](https://docs.astral.sh/uv/):
 
@@ -312,7 +317,7 @@ Every layer is pluggable. The defaults use cloud services, so
 
 |          | Default (light)       | Local (extra)              | Premium cloud        | Secret name              |
 | ---      | ---                   | ---                        | ---                  | ---                      |
-| **TTS**  | `edge-tts`            | `silero`, `piper` (not implemented yet) | `elevenlabs`, `openai` | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` |
+| **TTS**  | `edge-tts`            | `piper`                    | `elevenlabs`, `openai` | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` |
 | **STT**  | `openai-whisper-api`  | `faster-whisper`           | `deepgram` (not implemented yet) | `OPENAI_API_KEY`, `DEEPGRAM_API_KEY` |
 | **LLM**  | `auto` (the launched CLI, no key); API: `anthropic` (Haiku) | `openai-compat` (Ollama)   | `openai`, `github-copilot` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_API_KEY`, `GITHUB_COPILOT_TOKEN` |
 

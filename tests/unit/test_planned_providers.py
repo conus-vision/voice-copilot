@@ -1,8 +1,8 @@
 """Registered names without an engine must not send users to install extras.
 
-Silero, Piper and Deepgram are placeholders: their error used to say
-"install voice-copilot[local-tts]", which pulls in PyTorch and changes
-nothing.
+Silero and Deepgram are placeholders: their error used to say "install
+voice-copilot[local-tts]", which changed nothing for them. The local voice
+that does exist is Piper.
 """
 
 from __future__ import annotations
@@ -14,10 +14,9 @@ from voice_copilot.providers import stt as _stt  # noqa: F401
 from voice_copilot.providers import tts as _tts  # noqa: F401
 
 
-@pytest.mark.parametrize("name", ["silero", "piper"])
-async def test_planned_tts_says_not_implemented(name: str) -> None:
-    provider = registry.build("tts", name, {})
-    with pytest.raises(RuntimeError, match="not implemented yet"):
+async def test_planned_tts_says_not_implemented_and_names_the_local_voice() -> None:
+    provider = registry.build("tts", "silero", {})
+    with pytest.raises(RuntimeError, match=r"not implemented yet.*piper"):
         async for _ in provider.synthesize("hi", language="en"):
             pass
 

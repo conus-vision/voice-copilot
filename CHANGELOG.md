@@ -17,7 +17,14 @@
 - Narration says what the agent is waiting for ("permission to use Bash:
   rm -rf build") instead of just that it waits.
 
+- Piper voices run on your computer (`tts.name: piper`, `local-tts` extra):
+  sherpa-onnx instead of PyTorch, about 45 MB. Each narration language gets
+  a default voice, downloaded once on first use (about 65 MB); after that
+  speech output needs no network.
+
 ### Changed
+- The `local-tts` extra installs sherpa-onnx instead of PyTorch (about 2 GB
+  that no engine used).
 - Narrator, summary and Supervisor prompts are English templates for every
   language, plus native example lines per language and a closing line that
   names the reply language. In blind A/B runs on Haiku 4.5 the new narrator
@@ -76,8 +83,8 @@
 - Settings refuse a provider that can't be built instead of saving it and
   failing every later start; the codex route migration runs once, so
   `openai` can be kept; config files are written atomically.
-- Silero, Piper and Deepgram say they are not implemented yet instead of
-  asking for an extra that does not help.
+- Silero and Deepgram say they are not implemented yet instead of asking for
+  an extra that does not help.
 - Catalog: DeepSeek Harness launches `dsh web` on an Anthropic-format route;
   Pi and Grok link their current projects.
 - One event that breaks the narrator or the TTS driver no longer silences the
