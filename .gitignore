@@ -34,6 +34,8 @@ CLAUDE.md
 # plugin type-check (tests/plugins): installed by npm, never committed
 /tests/plugins/node_modules/
 /tests/plugins/package-lock.json
+/tests/smoke/node_modules/
+/tests/smoke/package-lock.json
 
 # playwright cli artifacts
 .playwright-cli/
