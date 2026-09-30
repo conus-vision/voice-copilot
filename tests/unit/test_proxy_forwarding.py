@@ -142,3 +142,28 @@ def test_a_web_page_on_another_site_cannot_post_through_the_proxy() -> None:
         headers={"Origin": "https://evil.example", "Content-Type": "text/plain"},
     )
     assert res.status_code == 403
+
+
+def test_upstream_calls_share_one_pooled_client(
+    upstream: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A fresh client per request paid a TCP and TLS handshake on every model
+    # call; the app's client is created once and reused.
+    import httpx
+
+    used: list[int] = []
+    real_send = httpx.AsyncClient.send
+
+    async def spy(self: httpx.AsyncClient, *args: object, **kwargs: object) -> httpx.Response:
+        used.append(id(self))
+        return await real_send(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", spy)
+    app = proxy_server.create_proxy_app(EventBus())
+    with TestClient(app) as client:  # runs the lifespan that opens the pool
+        assert _post(client).status_code == 200
+        assert _post(client).status_code == 200
+        pooled = app.state.http
+        assert isinstance(pooled, httpx.AsyncClient)
+        assert pooled.timeout.connect is not None and pooled.timeout.read is None
+    assert len(used) == 2 and used[0] == used[1] == id(pooled)
