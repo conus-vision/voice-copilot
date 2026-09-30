@@ -74,3 +74,49 @@ jobs:
       - name: Type-check Pi and OpenCode plugins
         working-directory: tests/plugins
         run: npx tsc -p .
+
+  panel-smoke:
+    # Opens the panel in Chromium against a running `voice-copilot serve`:
+    # script errors, failed requests, the icon font and the live WebSocket.
+    name: Panel in a browser
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Playwright and Chromium
+        working-directory: tests/smoke
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Start the panel
+        run: |
+          uv run voice-copilot serve --port 8799 --no-open --no-hotkeys --no-tray --no-proxy \
+            > "$RUNNER_TEMP/panel.log" 2>&1 &
+
+      - name: Open every tab
+        working-directory: tests/smoke
+        run: node panel.mjs http://127.0.0.1:8799/
+
+      - name: Panel log
+        if: failure()
+        run: cat "$RUNNER_TEMP/panel.log"

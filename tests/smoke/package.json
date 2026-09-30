@@ -1,0 +1,9 @@
+{
+  "name": "voice-copilot-panel-smoke",
+  "private": true,
+  "type": "module",
+  "description": "Opens the panel in Chromium and fails on script errors, failed requests, a missing icon font or a dead WebSocket. CI runs it against `voice-copilot serve`.",
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}
