@@ -41,6 +41,7 @@ from voice_copilot.providers import llm as _llm  # noqa: F401
 from voice_copilot.providers import registry as provider_registry
 from voice_copilot.providers import stt as _stt  # noqa: F401
 from voice_copilot.providers import tts as _tts  # noqa: F401
+from voice_copilot.providers.tts.base import TTSProvider, UnavailableTTS
 from voice_copilot.proxy.cli_shims import ResolvedCli, proxy_launch_settings, resolve_cli_for_vc
 from voice_copilot.proxy.server import (
     base_urls_for,
@@ -379,14 +380,17 @@ def vc_launch(
 
 
 def _start_tts_driver(
-    bus: EventBus, hub: AudioHub, cfg: Config
-) -> tuple[TTSDriver, asyncio.Task[None]] | None:
+    bus: EventBus, hub: AudioHub, cfg: Config, server: uvicorn.Server
+) -> tuple[TTSDriver, asyncio.Task[None]]:
+    tts: TTSProvider
     try:
         tts = provider_registry.build("tts", cfg.tts.name, dict(cfg.tts.options))
     except Exception as e:
         console.print(f"[yellow]TTS provider unavailable: {e}[/yellow]")
-        return None
+        # Each line says why in the panel, and a voice saved there takes over.
+        tts = UnavailableTTS(f"voice {cfg.tts.name!r} could not start: {e}")
     driver = TTSDriver(bus, hub, tts, cfg.commentator_language)
+    _server_app_state(server).tts_driver = driver
     return driver, asyncio.create_task(driver.run(), name="tts.driver")
 
 
@@ -584,6 +588,7 @@ async def _boot(
                 is_focused=is_focused,
             )
             hotkey_svc.start()
+            fast_app.state.hotkeys = hotkey_svc
         except Exception as e:
             console.print(f"[yellow]hotkeys unavailable: {e}[/yellow]")
 
@@ -624,9 +629,7 @@ async def _serve(
 
     server_tasks = _start_servers([server])
     extra: list[asyncio.Task[Any]] = [_start_companion_control(server)]
-    tts_result = _start_tts_driver(bus, hub, cfg)
-    if tts_result is not None:
-        extra.append(tts_result[1])
+    extra.append(_start_tts_driver(bus, hub, cfg, server)[1])
     if demo:
         extra.append(asyncio.create_task(run_demo(bus), name="demo"))
         commentator = Commentator(bus, cfg.commentator, cfg.commentator_language, sessions=None)
@@ -668,9 +671,7 @@ async def _proxy_only(
         asyncio.create_task(commentator.run(), name="commentator"),
         _start_companion_control(server),
     ]
-    tts_result = _start_tts_driver(bus, hub, cfg)
-    if tts_result is not None:
-        extra.append(tts_result[1])
+    extra.append(_start_tts_driver(bus, hub, cfg, server)[1])
     if demo:
         extra.append(asyncio.create_task(run_demo(bus), name="demo"))
 
@@ -720,9 +721,7 @@ async def _run_with_adapter(
     extra: list[asyncio.Task[Any]] = [
         asyncio.create_task(commentator.run(), name="commentator"),
     ]
-    tts_result = _start_tts_driver(bus, hub, cfg)
-    if tts_result is not None:
-        extra.append(tts_result[1])
+    extra.append(_start_tts_driver(bus, hub, cfg, server)[1])
     if enable_proxy:
         phost = proxy_bind_host()
         console.print(
@@ -956,11 +955,9 @@ async def _run_vc(
         )
     server_tasks = _start_servers(servers)
     extra: list[asyncio.Task[Any]] = [asyncio.create_task(commentator.run(), name="commentator")]
-    tts_result = _start_tts_driver(bus, hub, cfg)
-    if tts_result is not None:
-        tts_driver, tts_task = tts_result
-        extra.append(tts_task)
-        focus_router.on_narrate_gate(tts_driver.set_focus_gate)
+    tts_driver, tts_task = _start_tts_driver(bus, hub, cfg, server)
+    extra.append(tts_task)
+    focus_router.on_narrate_gate(tts_driver.set_focus_gate)
 
     focus_router.start()
 

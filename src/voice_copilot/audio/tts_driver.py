@@ -27,7 +27,7 @@ from voice_copilot.core.bus import EventBus
 from voice_copilot.core.config import Language
 from voice_copilot.core.events import Event, EventKind
 from voice_copilot.core.user_query import clean_user_query
-from voice_copilot.providers.tts.base import TTSProvider
+from voice_copilot.providers.tts.base import TTSProvider, TTSUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +106,13 @@ class TTSDriver:
         utterance = self._build_utterance(ev)
         if utterance is not None:
             self._replace_pending(utterance)
+
+    def set_provider(self, tts: TTSProvider) -> None:
+        """Speak from the next line on with another voice (settings were saved)."""
+        self._tts = tts
+
+    def set_language(self, language: Language) -> None:
+        self._language = language
 
     @property
     def muted(self) -> bool:
@@ -232,7 +239,13 @@ class TTSDriver:
                 try:
                     await task
                 except asyncio.CancelledError:
-                    pass
+                    # A line cut short (barge-in, skip) ends here and the next
+                    # one plays. The loop's own cancellation must go on:
+                    # swallowing it left shutdown waiting forever whenever a
+                    # line was being spoken.
+                    me = asyncio.current_task()
+                    if me is not None and me.cancelling():
+                        raise
                 except Exception:
                     log.exception("tts: speaking a line failed")
                 finally:
@@ -271,7 +284,9 @@ class TTSDriver:
             utterance.session_key,
             utterance.language,
         )
-        fmt = self._tts.output_format
+        # One voice for the whole line, even if settings swap it meanwhile.
+        tts = self._tts
+        fmt = tts.output_format
         async with self._hub.utterance_lock():
             await self._bus.publish(
                 Event(
@@ -300,7 +315,7 @@ class TTSDriver:
                 }
             )
             try:
-                stream = self._tts.synthesize(utterance.text, language=utterance.language)
+                stream = tts.synthesize(utterance.text, language=utterance.language)
                 async for chunk in stream:
                     if chunk.is_last:
                         break
@@ -319,7 +334,10 @@ class TTSDriver:
                 await self._publish_finished(utt_id, utterance, aborted=True)
                 raise
             except Exception as e:
-                log.exception("tts synth failed")
+                if isinstance(e, TTSUnavailable):
+                    log.warning("tts: %s", e)
+                else:
+                    log.exception("tts synth failed")
                 await self._bus.publish(
                     Event(
                         kind=EventKind.ERROR,

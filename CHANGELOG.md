@@ -98,6 +98,12 @@
   messages reach the terminal being narrated.
 - The proxy reuses one pooled upstream connection instead of a new TLS
   handshake per model call, and gives up connecting after 15 seconds.
+- Settings apply when saved: the voice, speech input and hotkeys used to wait
+  for a restart, and so did the narrator's debounce. A voice that cannot start
+  is refused like a commentator; one that failed at launch reports why on each
+  line instead of staying silent.
+- Ctrl+C while a line was being spoken left `serve` and `vc` hanging: the
+  speech loop swallowed its own cancellation.
 
 ## 0.1.0 — 2026-09-02
 
