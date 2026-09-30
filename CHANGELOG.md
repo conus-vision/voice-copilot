@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-09-30
+
+The plugins release: Voice Copilot works inside the coding CLIs' own plugin
+and hook systems, and can speak without the network.
 
 ### Added
 - Plugins and hooks: twelve coding CLIs can report to Voice Copilot through
