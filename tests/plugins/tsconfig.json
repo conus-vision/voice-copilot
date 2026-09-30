@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "types": [
+      "node"
+    ],
+    "typeRoots": [
+      "./node_modules/@types"
+    ],
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "./node_modules/@earendil-works/pi-coding-agent"
+      ],
+      "@opencode-ai/plugin": [
+        "./node_modules/@opencode-ai/plugin/dist/index.d.ts"
+      ]
+    }
+  },
+  "files": [
+    "../../src/voice_copilot/companion/assets/pi/voice-copilot.ts",
+    "../../src/voice_copilot/companion/assets/opencode/voice-copilot.ts"
+  ]
+}

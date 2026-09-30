@@ -157,7 +157,7 @@ def serve(
 
 @app.command()
 def run(
-    target: str = typer.Argument(..., help="Target CLI to wrap: claude | codex | pty"),
+    target: str = typer.Argument(..., help="Target CLI to wrap: claude | codex"),
     prompt: str = typer.Option(None, "--prompt", "-p", help="Initial prompt for the agent."),
     host: str = typer.Option("127.0.0.1", envvar="VOICE_COPILOT_HOST"),
     port: int = typer.Option(8765, envvar="VOICE_COPILOT_PORT"),

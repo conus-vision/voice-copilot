@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - name: Check out repository
@@ -48,3 +48,29 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+  web-and-plugins:
+    # The panel script and the TypeScript plugins for Pi and OpenCode are not
+    # covered by the Python checks above. The plugins are type-checked against
+    # the SDK versions pinned in tests/plugins/package.json.
+    name: Panel script and CLI plugins
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check panel script syntax
+        run: node --check src/voice_copilot/web/static/app.js
+
+      - name: Install plugin SDK types
+        working-directory: tests/plugins
+        run: npm install --no-audit --no-fund
+
+      - name: Type-check Pi and OpenCode plugins
+        working-directory: tests/plugins
+        run: npx tsc -p .
