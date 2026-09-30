@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import mimetypes
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from voice_copilot.core.bus import EventBus
@@ -55,3 +57,18 @@ def test_font_is_served_as_woff2() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "font/woff2"
     assert response.content == _FONT.read_bytes()
+
+
+def test_panel_files_keep_their_types_whatever_the_system_says(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Python takes MIME types from the system. On Windows that is the
+    # registry: it has no .woff2, and on some machines .js reads text/plain.
+    system = mimetypes.MimeTypes(filenames=())
+    system.add_type("text/plain", ".js")
+    monkeypatch.setattr(mimetypes, "_db", system)
+    client = TestClient(create_app(EventBus(), Config()), base_url="http://127.0.0.1:8765")
+    font = client.get("/static/fonts/material-symbols-rounded.woff2")
+    assert font.headers["content-type"] == "font/woff2"
+    script = client.get("/static/app.js")
+    assert script.headers["content-type"].startswith("text/javascript")

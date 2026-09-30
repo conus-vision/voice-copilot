@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import mimetypes
 import webbrowser
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -56,6 +57,16 @@ from voice_copilot.web.guard import LocalOriginGuard
 from voice_copilot.web.ws import register_ws
 
 STATIC_DIR = Path(__file__).parent / "static"
+#: Types of the panel's own files. Python reads MIME types from the system,
+#: and the Windows registry has no .woff2 and on some machines maps .js to
+#: text/plain.
+_STATIC_TYPES = {
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".woff2": "font/woff2",
+}
 
 
 class ManagedServer(uvicorn.Server):
@@ -530,6 +541,8 @@ def create_app(
         # string. Kept as a route so window.open() URLs stay stable.
         return FileResponse(STATIC_DIR / "index.html")
 
+    for ext, media_type in _STATIC_TYPES.items():
+        mimetypes.add_type(media_type, ext)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app
 

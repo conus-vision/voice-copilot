@@ -217,10 +217,8 @@ class Commentator:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     break  # max batch time reached → flush now
-                event = await asyncio.wait_for(
-                    q.get(),
-                    timeout=min(debounce_s, remaining),
-                )
+                async with asyncio.timeout(min(debounce_s, remaining)):
+                    event = await q.get()
                 control = self._consume_control_event(event)
                 if control == "flush":
                     await self._flush(trigger="playback_ready")
@@ -238,11 +236,14 @@ class Commentator:
         await self._flush(trigger=trigger)
 
     async def _next_event(self, q: asyncio.Queue[Event]) -> Event:
-        """Next bus event, or raise TimeoutError when the idle window expires."""
-        timeout = self._idle_timeout()
-        if timeout is None:
+        """Next bus event, or raise TimeoutError when the idle window expires.
+
+        Queue waits here and in `_step` use `asyncio.timeout`, not `wait_for`:
+        on Python 3.11 `wait_for` drops a cancellation that arrives as the
+        queue hands over an event, and the narrator kept running after stop.
+        """
+        async with asyncio.timeout(self._idle_timeout()):
             return await q.get()
-        return await asyncio.wait_for(q.get(), timeout=timeout)
 
     def _idle_timeout(self) -> float | None:
         idle_s = self._cfg.idle_narration_ms / 1000.0
