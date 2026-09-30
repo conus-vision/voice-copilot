@@ -74,32 +74,38 @@ class TTSDriver:
             async with self._bus.subscribe() as q:
                 while True:
                     ev = await q.get()
-                    if ev.kind is EventKind.USER_MESSAGE:
-                        if self._register_query(ev):
-                            self._clear_pending(self._session_key_of(ev.payload))
-                            await self._abort_current()
-                        continue
-                    if ev.kind is EventKind.USER_SPEAK_REQUESTED:
-                        if ev.payload.get("phase") == "start":
-                            self._clear_pending()
-                            await self._abort_current(silence_clients=True)
-                        continue
-                    if ev.kind is EventKind.USER_INTERRUPT:
-                        self._clear_pending()
-                        await self._abort_current(silence_clients=True)
-                        continue
-                    if ev.kind is not EventKind.COMMENTATOR_UTTERANCE:
-                        continue
-                    if ev.payload.get("streaming"):
-                        continue  # only speak finalised utterances
-                    utterance = self._build_utterance(ev)
-                    if utterance is None:
-                        continue
-                    self._replace_pending(utterance)
+                    try:
+                        await self._on_event(ev)
+                    except Exception:
+                        # One odd event must not end speech for the rest of the run.
+                        log.exception("tts driver failed on %s", ev.kind)
         finally:
             speaker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await speaker
+
+    async def _on_event(self, ev: Event) -> None:
+        if ev.kind is EventKind.USER_MESSAGE:
+            if self._register_query(ev):
+                self._clear_pending(self._session_key_of(ev.payload))
+                await self._abort_current()
+            return
+        if ev.kind is EventKind.USER_SPEAK_REQUESTED:
+            if ev.payload.get("phase") == "start":
+                self._clear_pending()
+                await self._abort_current(silence_clients=True)
+            return
+        if ev.kind is EventKind.USER_INTERRUPT:
+            self._clear_pending()
+            await self._abort_current(silence_clients=True)
+            return
+        if ev.kind is not EventKind.COMMENTATOR_UTTERANCE:
+            return
+        if ev.payload.get("streaming"):
+            return  # only speak finalised utterances
+        utterance = self._build_utterance(ev)
+        if utterance is not None:
+            self._replace_pending(utterance)
 
     @property
     def muted(self) -> bool:
@@ -227,6 +233,8 @@ class TTSDriver:
                     await task
                 except asyncio.CancelledError:
                     pass
+                except Exception:
+                    log.exception("tts: speaking a line failed")
                 finally:
                     if self._current is task:
                         self._current = None
