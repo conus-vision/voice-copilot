@@ -333,7 +333,9 @@ The config file lives in your platform's config folder:
 `%LOCALAPPDATA%\voice-copilot\config.yaml` on Windows. `voice-copilot config`
 prints the exact path, and the launcher profiles sit next to it in
 `proxy-cli.yaml`. You can edit both by hand or in the Settings tab, which
-refuses to save a provider it cannot start.
+refuses to save a provider it cannot start. Saved settings apply at once: the
+narrator, the voice, speech input, hotkeys and the debounce. Only the panel's
+host and port need a restart.
 
 The Supervisor is configured with `commentator.supervisor.mode` (`off`, `watch`
 or `guard`), `commentator.supervisor.model` and

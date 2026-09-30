@@ -158,16 +158,16 @@ class Commentator:
 
     async def run(self) -> None:
         """Main loop — subscribe to the bus and narrate until cancelled."""
-        debounce_s = max(0.05, self._cfg.debounce_ms / 1000.0)
-        # Maximum time to keep accumulating events before forcing a flush,
-        # even when new events arrive continuously (e.g. long thinking streams).
-        # 4x debounce is a sensible default: responsive but not spammy.
-        max_batch_s = debounce_s * 4
-
         loop = asyncio.get_event_loop()
 
         async with self._bus.subscribe() as q:
             while True:
+                # Read per batch: a debounce saved in the panel applies at once.
+                debounce_s = max(0.05, self._cfg.debounce_ms / 1000.0)
+                # Maximum time to keep accumulating events before forcing a
+                # flush, even when new events arrive continuously (e.g. long
+                # thinking streams): responsive but not spammy.
+                max_batch_s = debounce_s * 4
                 try:
                     await self._step(q, loop, debounce_s, max_batch_s)
                 except asyncio.CancelledError:

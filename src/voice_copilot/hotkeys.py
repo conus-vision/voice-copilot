@@ -120,18 +120,33 @@ class HotkeyService:
         self._bus = bus
         self._loop = loop
         self._is_focused = is_focused
-        self._bindings: list[tuple[Binding, frozenset[str], Any]] = []
+        self._bindings = self._parse(bindings)
+
+        self._pressed: set[Any] = set()
+        self._active: set[str] = set()
+        self._listener: keyboard.Listener | None = None
+
+    @staticmethod
+    def _parse(bindings: list[Binding]) -> list[tuple[Binding, frozenset[str], Any]]:
+        parsed = []
         for b in bindings:
             try:
                 mods, key = _parse_combo(b.combo)
             except ValueError as e:
                 log.warning("skipping hotkey %s: %s", b.name, e)
                 continue
-            self._bindings.append((b, mods, key))
+            parsed.append((b, mods, key))
+        return parsed
 
-        self._pressed: set[Any] = set()
-        self._active: set[str] = set()
-        self._listener: keyboard.Listener | None = None
+    @property
+    def combos(self) -> dict[str, str]:
+        return {b.name: b.combo for b, _, _ in self._bindings}
+
+    def apply_config(self, hotkeys_cfg: Any, *, voice_input: bool) -> None:
+        """Rebind from saved settings; the listener thread picks it up at the next key."""
+        self._bindings = self._parse(default_bindings(hotkeys_cfg, voice_input=voice_input))
+        self._active.clear()
+        log.info("hotkeys rebound: %s", list(self.combos.values()))
 
     def _pressed_mods(self) -> frozenset[str]:
         return frozenset(m for m in ("alt", "ctrl", "shift", "cmd") if m in self._pressed)

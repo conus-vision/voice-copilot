@@ -62,3 +62,26 @@ class NotInstalled(TTSProvider):
             f"Install with: pipx install 'voice-copilot[{self._extra}]'"
         )
         yield  # pragma: no cover
+
+
+class TTSUnavailable(RuntimeError):
+    """The configured voice could not start; the reason says why."""
+
+
+class UnavailableTTS(TTSProvider):
+    """Stands in for a voice that failed to build, until settings replace it.
+
+    Each line then reports the reason in the panel instead of passing in
+    silence, and saving working settings swaps a real voice in.
+    """
+
+    name = "unavailable"
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    async def synthesize(
+        self, text: str, *, language: str, voice: str | None = None
+    ) -> AsyncIterator[TTSChunk]:
+        raise TTSUnavailable(self.reason)
+        yield  # pragma: no cover
