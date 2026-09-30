@@ -55,6 +55,8 @@ jobs:
     # the SDK versions pinned in tests/plugins/package.json.
     name: Panel script and CLI plugins
     runs-on: ubuntu-latest
+    # A stalled npm download otherwise holds the check for GitHub's 6 hours.
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -80,6 +82,9 @@ jobs:
     # script errors, failed requests, the icon font and the live WebSocket.
     name: Panel in a browser
     runs-on: ubuntu-latest
+    # The Chromium download stalled once on a runner and held the check;
+    # the job takes about a minute.
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
