@@ -14,6 +14,7 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -33,6 +34,10 @@ from voice_copilot.proxy.openai import OpenAISSEParser
 from voice_copilot.proxy.session import SessionRegistry
 
 log = logging.getLogger(__name__)
+
+#: Connecting must be quick; a model stream may go quiet for minutes while it
+#: thinks, so reading has no limit.
+_UPSTREAM_TIMEOUT = httpx.Timeout(connect=15.0, read=None, write=60.0, pool=None)
 
 #: How long a server waits for open connections on shutdown before closing them.
 _GRACEFUL_SHUTDOWN_S = 3
@@ -225,9 +230,21 @@ def create_proxy_app(
     upstreams: Mapping[str, str] | None = None,
 ) -> FastAPI:
     """`upstreams` replaces a route's default host (a user's own base URL)."""
-    app = FastAPI(title="voice-copilot proxy")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # One pooled client for every upstream call: a fresh client per
+        # request paid a TCP and TLS handshake on each model call.
+        app.state.http = httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT)
+        try:
+            yield
+        finally:
+            await app.state.http.aclose()
+
+    app = FastAPI(title="voice-copilot proxy", lifespan=lifespan)
     app.state.bus = bus
     app.state.registry = registry or SessionRegistry()
+    app.state.http = None
 
     @app.get("/health")
     async def health() -> dict[str, bool]:
@@ -292,6 +309,7 @@ def create_proxy_app(
             )
             return await _forward(
                 req,
+                client=app.state.http,
                 upstream=f"{upstream_base}/{path}",
                 parser_factory=_make_parser_factory(
                     bus,
@@ -322,19 +340,24 @@ async def _forward(
     upstream: str,
     parser_factory: Any,
     prefetched_body: bytes | None = None,
+    client: httpx.AsyncClient | None = None,
 ) -> Response:
     body = prefetched_body if prefetched_body is not None else await req.body()
     headers = {k: v for k, v in req.headers.items() if k.lower() not in _REQUEST_DROP}
     params = dict(req.query_params)
 
-    client = httpx.AsyncClient(timeout=None)
+    # The app's pooled client; a throwaway one only where no lifespan ran
+    # (a test app driven without startup).
+    own_client = client is None
+    http = client if client is not None else httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT)
     try:
-        upstream_req = client.build_request(
+        upstream_req = http.build_request(
             req.method, upstream, content=body, headers=headers, params=params
         )
-        upstream_resp = await client.send(upstream_req, stream=True)
+        upstream_resp = await http.send(upstream_req, stream=True)
     except Exception as e:
-        await client.aclose()
+        if own_client:
+            await http.aclose()
         log.warning("proxy upstream error: %s", e)
         return Response(status_code=502, content=f"upstream error: {e}".encode())
 
@@ -393,7 +416,8 @@ async def _forward(
                 log.exception("proxy: parser failed while closing")
             finally:
                 await upstream_resp.aclose()
-                await client.aclose()
+                if own_client:
+                    await http.aclose()
 
     # Body is now decoded, so the upstream's content-encoding/length no longer
     # describe it — dropping them lets the client read the plaintext stream.
