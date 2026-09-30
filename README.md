@@ -160,6 +160,11 @@ companions like this one (see the integration RFC below).
   route set. A CLI is narrated when its model traffic goes through the proxy; a
   CLI that only talks to its vendor's own service still launches, but gives the
   narrator nothing to work with.
+- Plugs into the plugin and hook systems of twelve CLIs (Claude Code, Pi,
+  OpenCode, Hermes Agent, Codex, Gemini CLI, Qwen Code, Copilot CLI, Grok
+  Build, Droid, OpenHands, Kimi), so they are narrated without the proxy and
+  answer to pause, stop and voice messages. `voice-copilot integrate` sets one
+  up.
 - Offers push-to-talk (`Alt+Space`, off in this build): your question goes
   through speech-to-text and is typed into the running agent, or queued for its
   next turn.
@@ -210,6 +215,33 @@ uvx voice-copilot run claude -p "refactor the auth module"
 ```
 
 Codex works the same way: `voice-copilot run codex -p "explain what this repo does"`.
+
+## Narrate a CLI through its own plugin
+
+Most coding CLIs can load a plugin or run hooks, and Voice Copilot ships one
+for twelve of them. The CLI then reports from the inside: your prompt, the
+answer, every tool call with its result, and the moment it waits for your
+permission. Nothing is rerouted, so the CLI keeps its own login and endpoint.
+The plugin also takes the controls back to the CLI: pause holds the agent at
+its next tool call, a Supervisor STOP refuses its tool calls, and a voice
+message reaches the model while it works.
+
+For one session there is nothing to set up: `vc claude`, `vc pi` and the
+Launch tab load the plugin themselves. To narrate a CLI you start on your own,
+connect it once and keep the panel running:
+
+```bash
+voice-copilot integrate claude     # or pi, opencode, hermes, codex, gemini, qwen, ...
+voice-copilot serve
+claude                             # any terminal, as usual
+```
+
+The panel's Plugins tab has the same Install button per CLI and shows which
+ones are connected right now. Claude Code, Pi, OpenCode and Hermes Agent were
+tested end to end; the hook setups for Codex, Gemini CLI, Qwen Code, Copilot
+CLI, Grok Build, Droid, OpenHands and Kimi follow each CLI's hook reference.
+Every step, per CLI, is in
+[docs/integrations.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/integrations.md).
 
 ## Narrate _any_ CLI through the proxy
 
@@ -328,6 +360,12 @@ silent.
 3. The `vc` terminal wrapper runs any program in a real terminal and narrates
    it through the proxy when the CLI is in the catalog. An unknown CLI runs
    without narration until you add a proxy profile for it.
+4. The CLI's own plugin or hooks report to the panel at
+   `/api/companion/v1` (see
+   [docs/integrations.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/integrations.md)).
+   This needs no proxy, sees permission prompts and tool results, and is the
+   only strategy that can hold or stop a CLI running in a terminal Voice
+   Copilot did not start.
 
 See [docs/architecture.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/architecture.md).
 
@@ -340,7 +378,8 @@ idea with advanced users. Planned work:
   budgets) and corrections delivered to the agent as well as spoken
 - improve the quality and timing of narration and cut its noise
 - make multi-session workflows and session switching stable
-- add structured integrations with more coding CLIs
+- run the hook integrations of Codex, Gemini CLI, Qwen Code, Copilot CLI and
+  the others against each CLI, and add Oh My Pi, Cline and Amp
 - refine the companion interface with CLI authors so it fits real integrations
 - improve advanced configuration, onboarding and developer documentation
 - explore richer host UIs such as VS Code while keeping the core small

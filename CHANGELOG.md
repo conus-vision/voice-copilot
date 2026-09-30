@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Added
+- Plugins and hooks: twelve coding CLIs can report to Voice Copilot through
+  their own plugin or hook system, without the proxy, and answer to pause,
+  Supervisor stop and voice messages. Claude Code (HTTP hooks), Pi
+  (extension), OpenCode (plugin) and Hermes Agent (Python plugin) were tested
+  end to end; Codex, Gemini CLI, Qwen Code, Copilot CLI, Grok Build, Droid,
+  OpenHands and Kimi get hook entries from their published references.
+  `vc claude`, `vc pi` and Launch load the plugin for the session;
+  `voice-copilot integrate <cli>` and the panel's new Plugins tab install it
+  for good. See `docs/integrations.md`.
+- `voice-copilot-hook`, the forwarder those hook entries run, and the
+  `/api/companion/v1` endpoints behind them (RFC 0001 over HTTP).
+- Narration says what the agent is waiting for ("permission to use Bash:
+  rm -rf build") instead of just that it waits.
+
+### Changed
+- Narrator, summary and Supervisor prompts are English templates for every
+  language, plus native example lines per language and a closing line that
+  names the reply language. In blind A/B runs on Haiku 4.5 the new narrator
+  won 79 of 99 comparisons against the old per-language prompts and stopped
+  mixing languages (a Ukrainian line with Russian words in it).
+- The panel's icon font ships with the package: no request to Google Fonts,
+  icons work offline.
+
 ### Security
 - The local panel refuses forged cross-site requests: it checks the `Host`
   header (DNS rebinding) and the `Origin` of state-changing requests and

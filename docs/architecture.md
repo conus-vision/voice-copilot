@@ -65,8 +65,11 @@ subscribes via `EventBus.subscribe()`.
 
 ## Pause / resume semantics
 
-The CLI subprocess is suspended via `psutil.Process.suspend()` (works on
-Windows / macOS / Linux without signals). Two paths:
+With `vc` and `run`, the CLI subprocess is suspended via
+`psutil.Process.suspend()` (works on Windows / macOS / Linux without signals).
+Under `serve`, where the CLI runs in a terminal Voice Copilot does not own, a
+CLI connected through its plugin is held at its next tool call instead (see
+`companion/hub.py`). Two paths:
 
 - **Manual** — `Alt+P` (or the Pause button) toggles; dialog manager emits
   `AGENT_PAUSED`/`AGENT_RESUMED`.
@@ -105,6 +108,14 @@ sends an `audio_interrupt` and cancels the in-flight synthesis.
 3. **PTY wrapper** (`vc <cli>`) — runs any binary in a real terminal and
    proxies its API traffic when the CLI is in the catalog. Lower fidelity
    for unknown CLIs, last resort.
+4. **Plugins and hooks** (`companion/`) — the CLI's own plugin or hook
+   entries post to `/api/companion/v1` on the panel. `CompanionHub` turns the
+   reports into the same bus events (one session per CLI session, registered
+   next to the proxy's), holds or refuses tool calls at the gate, and hands
+   voice messages to the next hook that can carry them. A launch id in the
+   child's environment ties reports to the instance that started the CLI;
+   when that launch is proxied, the hub keeps to what the proxy cannot see.
+   See [integrations.md](integrations.md).
 
 
 ## Supervisor

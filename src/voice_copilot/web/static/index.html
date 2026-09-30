@@ -36,6 +36,7 @@
 
   <nav class="tabs" id="tabs">
     <button type="button" class="tab active" data-tab="launch">Launch</button>
+    <button type="button" class="tab" data-tab="plugins">Plugins</button>
     <button type="button" class="tab" data-tab="trace">Trace</button>
     <button type="button" class="tab" data-tab="settings">Settings</button>
     <button type="button" class="tab" data-tab="help">Help</button>
@@ -238,6 +239,27 @@
 
     <div class="save-indicator" id="save-indicator" aria-hidden="true"></div>
 
+    <!-- Plugins: CLIs that report through their own plugin or hook system -->
+    <section class="panel" data-panel="plugins">
+      <div class="plugins-intro">
+        <p class="hint">
+          A plugin lets a CLI tell Voice Copilot what it does from the inside: no proxy,
+          nothing to reroute. You also get the agent waiting for your permission, and the
+          buttons above work on it: pause holds it at its next tool call, the Supervisor can
+          stop it, and a voice message reaches it while it works.
+        </p>
+        <p class="hint">
+          <strong>For one session</strong> nothing needs installing: <code>vc claude</code>,
+          <code>vc pi</code> and the Launch tab load the plugin themselves.
+          <strong>For every session</strong> press Install (or run
+          <code>voice-copilot integrate &lt;cli&gt;</code>), keep this panel running and use
+          the CLI as usual.
+        </p>
+      </div>
+      <p class="hint plugins-summary" id="plugins-summary">Loading plugins…</p>
+      <div class="cli-list" id="plugins-list"></div>
+    </section>
+
     <!-- Help: quick start, manual wiring, project info -->
     <section class="panel docs" data-panel="help">
 
@@ -248,6 +270,11 @@
         <li>Work as usual. Voice Copilot narrates what the agent is doing; <strong>Trace</strong> shows the same stream as text.</li>
       </ol>
       <p class="hint">Same thing from your own terminal: <code>vc claude</code>, <code>vc codex</code>, <code>vc opencode</code> — any id from the Launch list.</p>
+
+      <div class="doc-card">
+        <div class="doc-card-title">Plugins<br><span class="dim-sm">No proxy, and the controls reach the CLI</span></div>
+        <p class="about-copy">Claude Code, Pi, OpenCode, Hermes Agent and eight more CLIs can report through their own plugin or hooks. <code>vc claude</code>, <code>vc pi</code> and Launch load the plugin for one session. For CLIs you start yourself, press Install in the <strong>Plugins</strong> tab (or run <code>voice-copilot integrate &lt;cli&gt;</code>) and keep this panel running. Pause, Supervisor stop and voice messages then reach the agent too.</p>
+      </div>
 
       <div class="doc-card">
         <div class="doc-card-title">Terminal profile<br><span class="dim-sm">Every route at once</span></div>
