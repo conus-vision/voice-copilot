@@ -24,20 +24,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any, cast
+from uuid import uuid4
 
-from voice_copilot.commentator.cli_profiles import strong_model_for
+from voice_copilot.commentator.cli_profiles import NARRATION_PROFILES, strong_model_for
 from voice_copilot.commentator.format import (
+    build_ask_user,
     build_narration_user,
     build_summary_user,
     build_supervisor_user,
+    edit_excerpt,
     format_events,
+    plain_output,
+    read_edited_files,
+    speech_text,
 )
 from voice_copilot.commentator.importance import classify, meets_threshold
 from voice_copilot.commentator.prompts import load as load_prompt
+from voice_copilot.commentator.prompts import load_ask as load_ask_prompt
 from voice_copilot.commentator.prompts import load_summary as load_summary_prompt
 from voice_copilot.commentator.prompts import load_supervisor as load_supervisor_prompt
 from voice_copilot.core.bus import EventBus
@@ -52,6 +61,13 @@ log = logging.getLogger(__name__)
 
 _NO_SESSION_KEY = "_none"
 
+#: How long a narrator or supervisor call may take. Without a limit a model that never
+#: answers means silence with nothing in the panel to say why. Long enough for a local
+#: model that has to load first.
+_LLM_TIMEOUT_S = 120.0
+_FAILURE_KEY_CHARS = 120
+_FAILURE_LABEL_CHARS = 200
+
 
 #: Injected blocks the CLI wraps around the human's turn. Stripped before the
 #: text is used as the narration anchor — they change between requests, and a
@@ -59,6 +75,8 @@ _NO_SESSION_KEY = "_none"
 @dataclass
 class _SessionContext:
     user_query: str | None = None
+    #: What the user told the agent on top of `user_query` while it worked.
+    corrections: list[str] = field(default_factory=list)
     summary: str | None = None
     # Monotonic "query version" — bumped each time a new USER_QUERY lands.
     # Events that arrived before the latest query are dropped from narration
@@ -69,12 +87,49 @@ class _SessionContext:
     last_narrated_query_version: int = -1
     # Supervisor bookkeeping: a rolling transcript of formatted events (the
     # narrator only ever sees the last batch), tool calls since the last
-    # review, and the last tool that failed — a repeat is a checkpoint.
+    # review, and how often each failure came up — a repeat is a checkpoint.
     history: list[str] = field(default_factory=list)
     tools_since_review: int = 0
     last_verdict: tuple[str, str] | None = None
-    last_failed_tool: str | None = None
-    failed_streak: int = 0
+    failures: dict[str, int] = field(default_factory=dict)
+    #: A failure that just came up again, for the next review: (description, count).
+    repeated_failure: tuple[str, int] | None = None
+    #: The turn ended while a review was still running.
+    final_review_due: _Batch | None = None
+    #: For the supervisor's sense of progress on the current request.
+    started_at: float = field(default_factory=time.monotonic)
+    tool_calls: int = 0
+    files_edited: set[str] = field(default_factory=set)
+    #: The latest changes the agent made, for the supervisor to read.
+    edits: list[str] = field(default_factory=list)
+    #: The session's folder, and the files it changed with the latest last.
+    cwd: str | None = None
+    recent_files: list[str] = field(default_factory=list)
+    #: Events on record already: `vc ask` may get to them before the narrator does.
+    recorded: set[str] = field(default_factory=set)
+    last_event_at: float | None = None
+
+    @property
+    def quiet_s(self) -> int | None:
+        """How long the agent has said nothing, as far as we can tell."""
+        return None if self.last_event_at is None else int(time.monotonic() - self.last_event_at)
+
+    @property
+    def progress(self) -> str:
+        minutes = (time.monotonic() - self.started_at) / 60
+        spent = f"{minutes:.0f} min" if minutes >= 1 else "under a minute"
+        return (
+            f"{spent} since the request, {self.tool_calls} tool calls, "
+            f"{len(self.files_edited)} files edited"
+        )
+
+    @property
+    def goal(self) -> str | None:
+        """The task as it stands now, for the narrator's and the supervisor's prompts."""
+        if not self.user_query or not self.corrections:
+            return self.user_query
+        added = "; ".join(self.corrections)
+        return f"{self.user_query}\nThen, while the agent worked, the user added: {added}"
 
 
 @dataclass
@@ -128,6 +183,99 @@ class Commentator:
         # Per-session context; key is session_id or `_NO_SESSION_KEY` for
         # events without one (CLI adapters, internal sources).
         self._contexts: dict[str, _SessionContext] = {}
+        #: For `vc log` and `vc cost`.
+        self._said: deque[str] = deque(maxlen=_SAID_LINES)
+        self._usage: Counter[str] = Counter()
+
+    @property
+    def supervisor_mode(self) -> str:
+        return self._cfg.supervisor.mode
+
+    def models(self) -> dict[str, str]:
+        """What the narrator and the supervisor use, by the name `vc model` gives it."""
+        provider = self._cfg.provider
+        model = provider.options.get("model")
+        if model and provider.name == "openai-compat":
+            narrator = f"ollama/{model}"
+        else:
+            cli = str(provider.options.get("cli") or provider.name)
+            profile = NARRATION_PROFILES.get(cli)
+            narrator = str(model or (profile.model if profile else None) or f"{cli} default")
+        strong = strong_model_for(str(provider.options.get("cli") or ""))
+        supervisor = self._cfg.supervisor.model or strong or narrator
+        return {"narrator": narrator, "supervisor": str(supervisor)}
+
+    def recent_lines(self, count: int) -> list[str]:
+        return list(self._said)[-count:]
+
+    def usage(self) -> Counter[str]:
+        return Counter(self._usage)
+
+    def _count(self, role: str, sent: str, got: str) -> None:
+        self._usage[f"{role}.calls"] += 1
+        self._usage[f"{role}.in"] += len(sent)
+        self._usage[f"{role}.out"] += len(got)
+
+    def _files_for_models(self, ctx: _SessionContext) -> tuple[list[str], list[str]]:
+        """(edits, whole files) that `vc access` lets the models read."""
+        access = self._cfg.file_access
+        if access == "events":
+            return [], []
+        if access == "edits":
+            return ctx.edits, []
+        latest = list(dict.fromkeys(reversed(ctx.recent_files)))[:_WHOLE_FILES]
+        return ctx.edits, read_edited_files(latest, ctx.cwd)
+
+    async def say_line(self, text: str, *, session_key: str | None = None) -> None:
+        """Speak this as it is, with no model involved."""
+        ctx = self._contexts.setdefault(session_key or _NO_SESSION_KEY, _SessionContext())
+        await self._emit(
+            {
+                "utterance_id": f"say-{uuid4().hex}",
+                "text": text,
+                "read_text": speech_text(text),
+                "streaming": False,
+                "language": self._language,
+                "role": "answer",
+                "query_version": ctx.query_version,
+                **({"session_id": session_key} if session_key else {}),
+            }
+        )
+
+    async def answer_question(self, question: str, session_id: str | None) -> str:
+        """`vc ask`: the second model answers the user, out loud. The agent is not involved."""
+        key = session_id or _NO_SESSION_KEY
+        ctx = self._contexts.setdefault(key, _SessionContext())
+        # What the narrator hasn't got to yet happened too, and may be the very thing asked about.
+        self._record_events(key, [ev for ev in self._buffer if self._session_key_of(ev) == key])
+        edits, files = self._files_for_models(ctx)
+        user_content = build_ask_user(
+            question=question,
+            user_query=ctx.goal,
+            summary=ctx.summary,
+            history=ctx.history,
+            progress=ctx.progress,
+            edits=edits,
+            files=files,
+        )
+        system = load_ask_prompt(self._language, self._prompt_style)
+        pieces: list[str] = []
+        async with asyncio.timeout(_LLM_TIMEOUT_S):
+            stream = self._supervisor().stream_chat(
+                [LLMMessage(role="user", content=user_content)],
+                system=system,
+                max_tokens=300,
+                temperature=0.2,
+            )
+            async for delta in stream:
+                if delta:
+                    pieces.append(delta)
+        answer = "".join(pieces).strip()
+        if not answer:
+            raise RuntimeError("the model returned no text")
+        self._count("question", system + user_content, answer)
+        await self.say_line(answer, session_key=session_id)
+        return answer
 
     def update_config(self, cfg: CommentatorConfig, language: Language | None = None) -> None:
         """Hot-reload provider / settings without restarting. Called when user saves config."""
@@ -177,6 +325,9 @@ class Commentator:
                 if control == "flush":
                     await self._flush(trigger="playback_ready")
                     continue
+                if control == "check":
+                    await self._check_now(event)
+                    continue
                 if control == "consume":
                     continue  # USER_MESSAGE etc. — context-only, not narrated
                 admitted = self._admit(event)
@@ -203,6 +354,9 @@ class Commentator:
                         control = self._consume_control_event(event)
                         if control == "flush":
                             await self._flush(trigger="playback_ready")
+                            continue
+                        if control == "check":
+                            await self._check_now(event)
                             continue
                         if control == "consume":
                             continue
@@ -237,6 +391,29 @@ class Commentator:
         user talking to *us*, not to the agent, and the dialog manager
         handles it — we ignore it here.
         """
+        if event.kind is EventKind.USER_CHECK:
+            return "check"
+
+        if event.kind is EventKind.NARRATION_STOP:
+            only = event.payload.get("session_id")
+            self._buffer = (
+                [ev for ev in self._buffer if self._session_key_of(ev) != only] if only else []
+            )
+            if not self._buffer:
+                self._buffer_since = None
+            for key, ctx in self._contexts.items():
+                if only in (None, key):
+                    ctx.query_version += 1  # whatever is being generated now comes back stale
+                    ctx.final_review_due = None
+            return "consume"
+
+        if event.kind is EventKind.SESSION_STARTED:
+            # Not consumed: only noted, for what `vc access files` may read.
+            cwd = event.payload.get("cwd")
+            if isinstance(cwd, str):
+                self._contexts.setdefault(self._session_key_of(event), _SessionContext()).cwd = cwd
+            return None
+
         if event.kind is EventKind.USER_MESSAGE:
             if event.source.startswith(("stt.", "web.", "hotkey")):
                 return None
@@ -253,11 +430,26 @@ class Commentator:
             text = cleaned
             key = self._session_key_of(event)
             ctx = self._contexts.setdefault(key, _SessionContext())
+            if ctx.user_query and _is_correction(event):
+                # Said to a working agent: it changes the task, it doesn't replace it.
+                # As the new "goal", "skip the README" would make the rest of the work
+                # look unrelated, and the supervisor would stop the agent for it.
+                if text != ctx.user_query and text not in ctx.corrections:
+                    ctx.corrections.append(text)
+                    ctx.history.append(f"- the user said: {text}")
+                return "consume"
             if ctx.user_query != text:
                 dropped = sum(1 for ev in self._buffer if self._session_key_of(ev) == key)
                 if dropped:
                     self._buffer = [ev for ev in self._buffer if self._session_key_of(ev) != key]
                 ctx.user_query = text
+                ctx.corrections = []
+                ctx.failures = {}
+                ctx.repeated_failure = None
+                ctx.started_at = time.monotonic()
+                ctx.tool_calls = 0
+                ctx.files_edited = set()
+                ctx.edits = []
                 ctx.summary = None  # fresh question → forget previous thread
                 ctx.query_version += 1
                 ctx.playback_ready_for_next = False
@@ -308,6 +500,9 @@ class Commentator:
             return None  # don't narrate our own utterances
         if not self._accepts(event):
             return None  # filtered by active-session rule
+        self._contexts.setdefault(
+            self._session_key_of(event), _SessionContext()
+        ).last_event_at = time.monotonic()
         if not self._buffer:
             self._buffer_since = time.monotonic()
         self._buffer.append(event)
@@ -345,7 +540,7 @@ class Commentator:
         batch = _Batch(
             events=events,
             session_key=session_key,
-            user_query=ctx.user_query,
+            user_query=ctx.goal,
             summary=ctx.summary,
             query_version=ctx.query_version,
             opening=(trigger == "idle" and ctx.query_version > ctx.last_narrated_query_version),
@@ -355,6 +550,8 @@ class Commentator:
             return False
         self._buffer = []
         self._buffer_since = None
+        # Now, not after the narration: a question may come while that model is thinking.
+        self._record_events(session_key, events)
         log.info(
             "narrate: kickoff batch of %d events (session=%s, trigger=%s, words=%d, has_query=%s, has_summary=%s, rate=%.2f)",
             len(events),
@@ -373,13 +570,64 @@ class Commentator:
 
     async def _drain_and_narrate(self, batch: _Batch) -> None:
         """Narrate one batch, update summary, then re-flush if more piled up."""
+        given_up = False
         try:
             await self._narrate(batch)
+            # Whatever became of the narration: a narrator that fails or stays silent
+            # must not take the supervisor down with it.
+            self._review_if_due(batch)
+        except asyncio.CancelledError:
+            # The user asked for a check and this call was in the way. Its events still count.
+            given_up = True
+            self._buffer = [*batch.events, *self._buffer]
+            raise
         finally:
             if self._speak_task is asyncio.current_task():
                 self._speak_task = None
-            if self._buffer:
+            if self._buffer and not given_up:
                 await self._flush(trigger="normal")
+
+    # --------------------------------------------------------------- check
+
+    async def _check_now(self, event: Event) -> None:
+        """The user asked what is going on, so answer even if nothing new happened.
+
+        Everything else here moves only when an event arrives. An agent stuck inside a
+        tool sends none, so no line and no checkpoint ever comes, and a hung model call
+        holds up the lines behind it. This is the way out of both.
+        """
+        key = self._check_target(event)
+        ctx = self._contexts.setdefault(key, _SessionContext())
+        await self._give_up_on_calls(key)
+        recent = [line.lstrip("- ") for line in ctx.history[-_CHECK_RECENT_LINES:]]
+        recent += [_format_for_recent(ev) for ev in self._buffer[-_CHECK_RECENT_LINES:]]
+        payload: dict[str, Any] = {"quiet_s": ctx.quiet_s, "recent": recent[-_CHECK_RECENT_LINES:]}
+        if key != _NO_SESSION_KEY:
+            payload["session_id"] = key
+        log.info("check: requested for session=%s, quiet for %s s", key, ctx.quiet_s)
+        self._buffer.append(Event(kind=EventKind.USER_CHECK, source=event.source, payload=payload))
+        self._buffer_since = None
+        await self._flush(trigger="check")
+
+    def _check_target(self, event: Event) -> str:
+        sid = event.payload.get("session_id") or (
+            self._sessions.get_active_id() if self._sessions is not None else None
+        )
+        if sid:
+            return str(sid)
+        return next(reversed(self._contexts), _NO_SESSION_KEY)
+
+    async def _give_up_on_calls(self, key: str) -> None:
+        running = [
+            t
+            for t in (self._speak_task, *self._supervisor_tasks)
+            if t is not None
+            and not t.done()
+            and (t is self._speak_task or t.get_name() == f"commentator.supervisor:{key}")
+        ]
+        for task in running:
+            task.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
 
     # ------------------------------------------------------------ narration
 
@@ -427,63 +675,63 @@ class Commentator:
         )
         got_first = False
 
-        try:
-            stream = self._llm.stream_chat(
-                messages,
-                system=self._system_prompt,
-                max_tokens=160,
-                temperature=0.4,
-            )
-            async for delta in stream:
-                if not delta:
-                    continue
-                if not got_first:
-                    log.info("narrate: first delta (%d chars)", len(delta))
-                    got_first = True
-                pieces.append(delta)
-                await self._emit(
-                    {
-                        "utterance_id": utterance_id,
-                        "text": delta,
-                        "streaming": True,
-                        "language": self._language,
-                        "query_version": batch.query_version,
-                        **(
-                            {"session_id": batch.session_key}
-                            if batch.session_key != _NO_SESSION_KEY
-                            else {}
-                        ),
-                    }
-                )
-        except asyncio.CancelledError:
-            log.info("narrate: cancelled after %d chars", sum(len(p) for p in pieces))
-            raise
-        except Exception as e:
-            log.exception("commentator LLM error")
+        session_payload = (
+            {"session_id": batch.session_key} if batch.session_key != _NO_SESSION_KEY else {}
+        )
+
+        async def report(message: str) -> None:
+            # Tagged with the batch's session so the panel files it in the same
+            # Trace bucket as the prompt it failed on — untagged, it lands in the
+            # no-session bucket and the user just sees a prompt with no reply.
             await self._bus.publish(
                 Event(
                     kind=EventKind.ERROR,
                     source="commentator",
-                    # Tagged with the batch's session so the panel files it in the
-                    # same Trace bucket as the prompt it failed on — untagged, it
-                    # lands in the no-session bucket and the user just sees a
-                    # prompt with no reply.
-                    payload={
-                        "where": "llm",
-                        "message": str(e),
-                        **(
-                            {"session_id": batch.session_key}
-                            if batch.session_key != _NO_SESSION_KEY
-                            else {}
-                        ),
-                    },
+                    payload={"where": "llm", "message": message, **session_payload},
                 )
             )
+
+        try:
+            async with asyncio.timeout(_LLM_TIMEOUT_S):
+                stream = self._llm.stream_chat(
+                    messages,
+                    system=self._system_prompt,
+                    max_tokens=160,
+                    temperature=0.4,
+                )
+                async for delta in stream:
+                    if not delta:
+                        continue
+                    if not got_first:
+                        log.info("narrate: first delta (%d chars)", len(delta))
+                        got_first = True
+                    pieces.append(delta)
+                    await self._emit(
+                        {
+                            "utterance_id": utterance_id,
+                            "text": delta,
+                            "streaming": True,
+                            "language": self._language,
+                            "query_version": batch.query_version,
+                            **session_payload,
+                        }
+                    )
+        except asyncio.CancelledError:
+            log.info("narrate: cancelled after %d chars", sum(len(p) for p in pieces))
+            raise
+        except TimeoutError:
+            log.warning("narrate: no answer in %.0f s", _LLM_TIMEOUT_S)
+            await report(f"The narrator's model didn't answer in {_LLM_TIMEOUT_S:.0f} s.")
+            return
+        except Exception as e:
+            log.exception("commentator LLM error")
+            await report(str(e))
             return
 
         full = "".join(pieces).strip()
         if not full:
             log.warning("narrate: stream ended empty — model returned no tokens")
+            await report("The narrator's model returned no text.")
             return
         if self._is_stale_batch(batch):
             log.info(
@@ -493,18 +741,16 @@ class Commentator:
             )
             return
         log.info("narrate: done (%d chars)", len(full))
+        self._count("narrator", self._system_prompt + user_content, full)
         await self._emit(
             {
                 "utterance_id": utterance_id,
                 "text": full,
+                "read_text": speech_text(full),
                 "streaming": False,
                 "language": self._language,
                 "query_version": batch.query_version,
-                **(
-                    {"session_id": batch.session_key}
-                    if batch.session_key != _NO_SESSION_KEY
-                    else {}
-                ),
+                **session_payload,
             }
         )
         ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
@@ -522,54 +768,88 @@ class Commentator:
         self._summary_tasks.add(task)
         task.add_done_callback(self._summary_tasks.discard)
 
+    # ---------------------------------------------------------- supervisor
+
+    def _review_if_due(self, batch: _Batch) -> None:
+        if self._is_stale_batch(batch):
+            return
+        ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
         self._record_for_supervisor(batch)
         reason = self._checkpoint_reason(batch, ctx)
         if reason is not None:
             review = asyncio.create_task(
-                self._supervise(batch, reason),
+                self._review(batch, reason, ctx),
                 name=f"commentator.supervisor:{batch.session_key}",
             )
             self._supervisor_tasks.add(review)
             review.add_done_callback(self._supervisor_tasks.discard)
 
-    # ---------------------------------------------------------- supervisor
+    async def _review(self, batch: _Batch, reason: str, ctx: _SessionContext) -> None:
+        await self._supervise(batch, reason)
+        due, ctx.final_review_due = ctx.final_review_due, None
+        if due is not None and due.query_version == ctx.query_version:
+            await self._supervise(due, "turn ended")
 
     def _record_for_supervisor(self, batch: _Batch) -> None:
-        ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
-        ctx.history.extend(format_events(batch.events).splitlines())
+        self._record_events(batch.session_key, batch.events)
+
+    def _record_events(self, session_key: str, events: list[Event]) -> None:
+        """Put these on record, once each, as soon as anything may ask about them."""
+        ctx = self._contexts.setdefault(session_key, _SessionContext())
+        fresh = [
+            ev for ev in events if ev.kind is not EventKind.USER_CHECK and ev.id not in ctx.recorded
+        ]
+        ctx.recorded.update(ev.id for ev in fresh)
+        ctx.history.extend(format_events(fresh).splitlines())
         if len(ctx.history) > _SUPERVISOR_HISTORY_LINES:
             ctx.history = ctx.history[-_SUPERVISOR_HISTORY_LINES:]
-        for ev in batch.events:
+        for ev in fresh:
             if ev.kind is EventKind.TOOL_CALL_STARTED:
                 ctx.tools_since_review += 1
+                ctx.tool_calls += 1
+                edit = edit_excerpt(ev.payload)
+                if edit:
+                    ctx.edits = [*ctx.edits, edit][-_SUPERVISOR_EDITS:]
+            elif ev.kind is EventKind.FILE_EDITED:
+                ctx.files_edited.add(str(ev.payload.get("path")))
+                ctx.recent_files.append(str(ev.payload.get("path")))
             elif ev.kind is EventKind.TOOL_CALL_FINISHED and ev.payload.get("is_error"):
-                tool = str(ev.payload.get("tool") or "?")
-                ctx.failed_streak = ctx.failed_streak + 1 if tool == ctx.last_failed_tool else 1
-                ctx.last_failed_tool = tool
-            elif ev.kind is EventKind.TOOL_CALL_FINISHED:
-                ctx.failed_streak = 0
-                ctx.last_failed_tool = None
+                key, description = _describe_failure(ev.payload)
+                count = ctx.failures[key] = ctx.failures.get(key, 0) + 1
+                if count >= 2:
+                    ctx.repeated_failure = (description, count)
 
     def _checkpoint_reason(self, batch: _Batch, ctx: _SessionContext) -> str | None:
         """Why the supervisor should look now, or None to stay quiet.
 
         Cheap model every few seconds, expensive model only here: the end of
-        the agent's turn, a run of tool calls, or the same tool failing twice.
+        the agent's turn, a run of tool calls, or the same failure coming back.
         """
         sup = self._cfg.supervisor
         if sup.mode == "off":
             return None
-        if self._review_in_flight(batch.session_key):
-            return None  # one review at a time per session; the next checkpoint will look
-        if any(
+        if batch.events[-1].kind is EventKind.USER_CHECK:
+            return (
+                f"{_CHECK_REASON}, {batch.events[-1].payload.get('quiet_s')} s since the last event"
+            )
+        turn_over = any(
             ev.kind is EventKind.TURN_ENDED
             and ev.payload.get("final") is not False
             and not ev.payload.get("subagent")
             for ev in batch.events
-        ):
+        )
+        if self._review_in_flight(batch.session_key):
+            # One review at a time per session; the next checkpoint will look. The end
+            # of the turn has no next checkpoint, so that one waits its turn instead.
+            if turn_over:
+                ctx.final_review_due = batch
+            return None
+        if turn_over:
             return "turn ended"
-        if ctx.failed_streak >= 2:
-            return f"{ctx.last_failed_tool} failed {ctx.failed_streak} times in a row"
+        if ctx.repeated_failure is not None:
+            description, count = ctx.repeated_failure
+            ctx.repeated_failure = None  # reviewed once per recurrence, not at every batch
+            return f"the same failure came up {count} times: {description}"
         if sup.every_n_tools > 0 and ctx.tools_since_review >= sup.every_n_tools:
             return f"{ctx.tools_since_review} tool calls since the last review"
         return None
@@ -602,12 +882,17 @@ class Commentator:
     async def _supervise(self, batch: _Batch, reason: str) -> None:
         ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
         ctx.tools_since_review = 0
+        edits, files = self._files_for_models(ctx)
         user_content = build_supervisor_user(
             user_query=batch.user_query,
             summary=ctx.summary or batch.summary,
             history=ctx.history,
             reason=reason,
             style=self._prompt_style,
+            already_said=ctx.last_verdict[1] if ctx.last_verdict else None,
+            progress=ctx.progress,
+            edits=edits,
+            files=files,
         )
         session_payload = (
             {"session_id": batch.session_key} if batch.session_key != _NO_SESSION_KEY else {}
@@ -616,15 +901,30 @@ class Commentator:
         pieces: list[str] = []
         try:
             llm = self._supervisor()
-            stream = llm.stream_chat(
-                [LLMMessage(role="user", content=user_content)],
-                system=self._supervisor_prompt,
-                max_tokens=200,
-                temperature=0.2,
+            async with asyncio.timeout(_LLM_TIMEOUT_S):
+                stream = llm.stream_chat(
+                    [LLMMessage(role="user", content=user_content)],
+                    system=self._supervisor_prompt,
+                    max_tokens=200,
+                    temperature=0.2,
+                )
+                async for delta in stream:
+                    if delta:
+                        pieces.append(delta)
+        except TimeoutError:
+            log.warning("supervisor: no answer in %.0f s", _LLM_TIMEOUT_S)
+            await self._bus.publish(
+                Event(
+                    kind=EventKind.ERROR,
+                    source="commentator.supervisor",
+                    payload={
+                        "where": "supervisor",
+                        "message": f"The supervisor's model didn't answer in {_LLM_TIMEOUT_S:.0f} s.",
+                        **session_payload,
+                    },
+                )
             )
-            async for delta in stream:
-                if delta:
-                    pieces.append(delta)
+            return
         except RuntimeError as e:
             if _is_shutdown_error(e):
                 return  # the run is over; nothing to review or report
@@ -647,7 +947,24 @@ class Commentator:
                 )
             )
             return
-        status, message = parse_supervisor_verdict("".join(pieces))
+        reply = "".join(pieces)
+        if not reply.strip():
+            # Unreadable counts as OK below; no reply at all means nobody looked.
+            await self._bus.publish(
+                Event(
+                    kind=EventKind.ERROR,
+                    source="commentator.supervisor",
+                    payload={
+                        "where": "supervisor",
+                        "message": "The supervisor's model returned no text, "
+                        "so this checkpoint went unreviewed.",
+                        **session_payload,
+                    },
+                )
+            )
+            return
+        self._count("supervisor", self._supervisor_prompt + user_content, reply)
+        status, message = parse_supervisor_verdict(reply)
         if ctx.query_version != batch.query_version:
             log.info("supervisor: dropping stale verdict for session=%s", batch.session_key)
             return
@@ -655,7 +972,11 @@ class Commentator:
         acted = status == "stop" and mode == "guard"
         # The same complaint at every checkpoint is nagging, not oversight:
         # a verdict that restates the last spoken one goes to the Trace only.
-        repeat = status != "ok" and _same_verdict(ctx.last_verdict, (status, message))
+        repeat = (
+            status != "ok"
+            and not reason.startswith(_CHECK_REASON)  # They asked: "as I said" is still an answer.
+            and _same_verdict(ctx.last_verdict, (status, message))
+        )
         if status != "ok":
             ctx.last_verdict = (status, message)
         log.info(
@@ -691,6 +1012,9 @@ class Commentator:
             {
                 "utterance_id": f"sup-{batch.events[-1].id}",
                 "text": f"{spoken['stop'] if acted else spoken['warn']} {message}",
+                "read_text": speech_text(
+                    f"{spoken['stop'] if acted else spoken['warn']} {message}"
+                ),
                 "streaming": False,
                 "language": self._language,
                 "role": "supervisor",
@@ -730,6 +1054,7 @@ class Commentator:
             return
 
         new_summary = "".join(pieces).strip()
+        self._count("summary", self._summary_prompt + user_content, new_summary)
         if not new_summary:
             log.info("summary: empty response, keeping previous")
             return
@@ -752,6 +1077,8 @@ class Commentator:
         )
 
     async def _emit(self, payload: dict[str, Any]) -> None:
+        if not payload.get("streaming"):
+            self._said.append(str(payload.get("text")))
         await self._bus.publish(
             Event(kind=EventKind.COMMENTATOR_UTTERANCE, source="commentator", payload=payload)
         )
@@ -764,7 +1091,7 @@ class Commentator:
         trigger: str,
         word_count: int,
     ) -> bool:
-        if trigger == "high":
+        if trigger in ("high", "check"):
             return True
         if trigger == "idle":
             # The whole point of the timer: the batch never reaches the usual
@@ -841,6 +1168,15 @@ def _build_llm(cfg: CommentatorConfig) -> LLMProvider:
 
 #: How much of the transcript the supervisor gets to see.
 _SUPERVISOR_HISTORY_LINES = 80
+_SUPERVISOR_EDITS = 6
+
+#: `vc check`: what the supervisor is told, and how much of the recent past the line draws on.
+_CHECK_REASON = "the user asked for a check right now"
+_CHECK_RECENT_LINES = 5
+
+_SAID_LINES = 30
+#: How many of the files the agent changed `vc access files` lets the supervisor read.
+_WHOLE_FILES = 3
 
 #: Spoken lead-ins so the user can tell the supervisor from the narrator.
 _SPOKEN_PREFIX: dict[str, dict[str, str]] = {
@@ -851,10 +1187,38 @@ _SPOKEN_PREFIX: dict[str, dict[str, str]] = {
 _STATUS_WORDS = {"OK": "ok", "WARN": "warn", "STOP": "stop"}
 
 
+def _format_for_recent(event: Event) -> str:
+    return format_events([event]).lstrip("- ")
+
+
 def _is_shutdown_error(e: BaseException) -> bool:
     """asyncio's default executor is closed once the run ends; a background
     LLM call that lands after that is not an error worth the user's ear."""
     return "shutdown" in str(e).lower()
+
+
+def _is_correction(event: Event) -> bool:
+    """Is this the user talking to a working agent, rather than the agent's next prompt?
+
+    What actually reached the CLI as a prompt arrives as `delivery: observed`.
+    """
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    return event.source == "web" or payload.get("delivery") in ("sent", "delivered")
+
+
+def _describe_failure(payload: dict[str, Any]) -> tuple[str, str]:
+    """(what makes this the same failure, how to name it).
+
+    Shell commands all report the tool name "Bash", so the tool alone would call
+    a git error, a missing module and a failed test "the same failure". Numbers
+    are dropped to match reruns: durations and line numbers change, the error doesn't.
+    Taken from the end, where a test run's verdict and most errors are: long output
+    starts with progress dots and truncation notices that look alike whatever failed.
+    """
+    tool = str(payload.get("tool") or "?")
+    text = plain_output(payload.get("preview"))
+    key = re.sub(r"\d+", "#", text[-_FAILURE_KEY_CHARS:].lower())
+    return f"{tool}:{key}", f"{tool}: {text[-_FAILURE_LABEL_CHARS:]}"
 
 
 def _same_verdict(prev: tuple[str, str] | None, cur: tuple[str, str]) -> bool:

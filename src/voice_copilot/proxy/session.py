@@ -124,6 +124,41 @@ class SessionRegistry:
             sess.touch()
         return sess
 
+    def ensure_external(self, sid: str, *, label: str, cli_id: str | None) -> Session:
+        """The Session for a CLI that reports itself (plugin hooks) with its own id."""
+        with self._lock:
+            sess = self._sessions.get(sid)
+            created = sess is None
+            if sess is None:
+                now = time.time()
+                sess = Session(
+                    id=sid,
+                    label=label,
+                    user_agent="",
+                    provider="hooks",
+                    cli_id=cli_id,
+                    first_seen=now,
+                    last_seen=now,
+                )
+                self._sessions[sid] = sess
+                if self._active_id is None:
+                    self._active_id = sid
+            sess.touch()
+        if created:
+            log.info("hooks: new session %s (%s)", sid, label)
+            self._notify()
+        return sess
+
+    def forget(self, sid: str) -> None:
+        """Drop a session that ended; the most recently seen one takes over as active."""
+        with self._lock:
+            removed = self._sessions.pop(sid, None)
+            if self._active_id == sid:
+                rest = sorted(self._sessions.values(), key=lambda s: s.last_seen, reverse=True)
+                self._active_id = rest[0].id if rest else None
+        if removed is not None:
+            self._notify()
+
     # ------------------------------------------------------------------ active
 
     def get_active_id(self) -> str | None:

@@ -33,6 +33,8 @@ class EventKind(StrEnum):
     USER_INTERRUPT = "user.interrupt"
     USER_PAUSE_TOGGLE = "user.pause.toggle"
     USER_SKIP_REQUESTED = "user.skip.requested"
+    #: The user asked what is going on, right now: `vc check`, the panel or the hotkey.
+    USER_CHECK = "user.check"
 
     AGENT_PAUSED = "agent.paused"
     AGENT_RESUMED = "agent.resumed"
@@ -50,6 +52,10 @@ class EventKind(StrEnum):
     TTS_FINISHED = "tts.finished"
     PLAYBACK_STATE = "playback.state"
     PLAYBACK_READY = "playback.ready"
+    #: A `vc` word for the panel: speed, volume, mute. The panel is what plays the audio.
+    PANEL_COMMAND = "panel.command"
+    #: The user switched Voice Copilot off: drop what is queued and being generated.
+    NARRATION_STOP = "narration.stop"
 
     ERROR = "error"
 

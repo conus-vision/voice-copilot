@@ -27,6 +27,7 @@ class OpenAIProvider(LLMProvider):
         self._api_key = api_key or get_secret("OPENAI_API_KEY")
         self._base_url = base_url
         self._client: Any = None
+        self._request_options: dict[str, Any] = {}
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -56,6 +57,7 @@ class OpenAIProvider(LLMProvider):
             max_tokens=max_tokens,
             temperature=temperature,
             stream=True,
+            **self._request_options,
         )
         chunks = 0
         yielded = 0

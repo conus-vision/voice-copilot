@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Voice Copilot - 0.1.0 alpha</title>
-  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded&icon_names=content_copy,delete,folder_open,front_hand,hourglass_top,mic,open_in_new,pause,pause_circle,play_arrow,play_circle,skip_next,tune,volume_off,volume_up&display=block" rel="stylesheet" />
+  <title>Voice Copilot - 0.2.0 alpha</title>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded&icon_names=content_copy,delete,folder_open,front_hand,help,hourglass_top,mic,open_in_new,pause,pause_circle,play_arrow,play_circle,skip_next,tune,volume_off,volume_up&display=block" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body class="app">
@@ -14,6 +14,7 @@
       <button type="button" id="btn-mute"      class="ctrl" title="Mute narration" aria-label="Mute narration"><span class="material-symbols-rounded" aria-hidden="true">volume_up</span></button>
       <button type="button" id="btn-speak"     class="ctrl" title="Push-to-talk" aria-label="Push-to-talk" data-voice-input hidden><span class="material-symbols-rounded" aria-hidden="true">mic</span></button>
       <button type="button" id="btn-interrupt" class="ctrl" title="Interrupt agent" aria-label="Interrupt agent"><span class="material-symbols-rounded" aria-hidden="true">front_hand</span></button>
+      <button type="button" id="btn-check" class="ctrl" title="What's going on? Ask the narrator and the supervisor now (Alt+Shift+C)" aria-label="What's going on? Ask the narrator and the supervisor now"><span class="material-symbols-rounded" aria-hidden="true">help</span></button>
       <button type="button" id="btn-hold"      class="ctrl" title="Hold the agent while a line is read" aria-label="Hold the agent while a line is read" aria-pressed="false"><span class="material-symbols-rounded" aria-hidden="true">hourglass_top</span></button>
     </div>
 
@@ -23,6 +24,8 @@
       <button type="button" class="speed-btn" data-playback-rate="2">2x</button>
       <button type="button" class="speed-btn" data-playback-rate="2.5">2.5x</button>
     </div>
+
+    <input type="range" id="volume" class="volume" min="0" max="100" step="5" value="100" title="Volume" aria-label="Volume" />
 
     <button type="button" id="btn-skip" class="ctrl" title="Skip current narration" aria-label="Skip current narration"><span class="material-symbols-rounded" aria-hidden="true">skip_next</span></button>
 
@@ -51,6 +54,12 @@
   </div>
 
   <div id="launch-notice" class="launch-notice" hidden></div>
+
+  <!-- Shown when attached through a CLI plugin. -->
+  <div id="agent-message" class="agent-message" hidden>
+    <input type="text" id="agent-message-text" placeholder="Tell the agent…" aria-label="Message to the agent" autocomplete="off" title="Stops its next tool call, or reaches it when it is about to finish">
+    <button type="button" id="btn-agent-message" class="ghost">Send</button>
+  </div>
 
   <main>
     <form id="settings-form" autocomplete="off">
@@ -179,6 +188,7 @@
           <label>Toggle mute         <input name="hotkeys.mute_toggle"  placeholder="alt+m" /></label>
           <label>Pause / resume CLI  <input name="hotkeys.pause_toggle" placeholder="alt+p" /></label>
           <label>Skip narration      <input name="hotkeys.skip_current" placeholder="alt+shift+n" /></label>
+          <label>Check now           <input name="hotkeys.check_now"    placeholder="alt+shift+c" /></label>
         </details>
 
         <details class="fold" data-voice-input hidden>
@@ -248,6 +258,11 @@
         <li>Work as usual. Voice Copilot narrates what the agent is doing; <strong>Trace</strong> shows the same stream as text.</li>
       </ol>
       <p class="hint">Same thing from your own terminal: <code>vc claude</code>, <code>vc codex</code>, <code>vc opencode</code> — any id from the Launch list.</p>
+
+      <div class="doc-card">
+        <div class="doc-card-title">Commands in the chat<br><span class="dim-sm">In any CLI, as the whole message. The model never sees them.</span></div>
+        <p class="about-copy">Type <code>vc</code> for the list. <code>vc off</code> stops this session and <code>vc off all</code> every session; <code>vc check</code> has it look at the agent now; <code>vc ask</code> asks the second model; <code>vc speed</code>, <code>vc volume</code>, <code>vc model</code>, <code>vc review</code>, <code>vc detail</code>, <code>vc access</code>, <code>vc pause</code>, <code>vc go</code> and <code>vc settings</code> do what they say. The same words work in a terminal.</p>
+      </div>
 
       <div class="doc-card">
         <div class="doc-card-title">Terminal profile<br><span class="dim-sm">Every route at once</span></div>
@@ -342,7 +357,7 @@ copilot login
       <h3 class="section-title">About</h3>
       <div class="about-hero">
         <h2>Voice Copilot</h2>
-        <p class="about-version">Version 0.1.0 alpha</p>
+        <p class="about-version">Version 0.2.0 alpha</p>
         <p class="about-copy">Voice Copilot is a listening-first companion for coding agents. A parallel commentator LLM analyzes what a coding agent is doing so you can mainly listen, optionally read the trace, and intervene at the right moment with less cognitive load. It is not prompt dictation or raw playback of model output. We are open to collaboration and to growing the project together.</p>
         <p class="about-copy" data-voice-note>Voice input (push-to-talk questions back into the agent) is temporarily switched off in this build while that flow is reworked — narration and the launcher are unaffected.</p>
       </div>
@@ -367,7 +382,7 @@ copilot login
   <footer class="app-footer">
     <div class="app-footer__content">
       <span>Voice Copilot</span>
-      <span>Version 0.1.0 alpha</span>
+      <span>Version 0.2.0 alpha</span>
       <span>Author: Volodymyr Moskvin</span>
       <span>Website: <a class="app-footer__link" href="https://voice-copilot.conus.vision/" target="_blank" rel="noreferrer noopener">voice-copilot.conus.vision</a></span>
       <span>Conus Vision - <a class="app-footer__link" href="https://conus.vision" target="_blank" rel="noreferrer noopener">https://conus.vision</a></span>

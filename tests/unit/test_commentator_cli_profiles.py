@@ -52,3 +52,14 @@ def test_model_override_is_applied() -> None:
 def test_unknown_cli_raises() -> None:
     with pytest.raises(KeyError):
         build_narration_command("totally-unknown", "/usr/bin/x", "s", "u")
+
+
+def test_pi_narrates_with_the_users_own_default_model_and_nothing_else() -> None:
+    argv, stdin_text = build_narration_command(
+        "pi", "pi", "be brief", "what happened", system_file_path="sys.txt"
+    )
+    assert "--model" not in argv
+    assert argv[argv.index("--system-prompt") + 1] == "sys.txt"
+    for flag in ("--no-tools", "--no-extensions", "--no-session", "--no-context-files"):
+        assert flag in argv
+    assert stdin_text == "what happened"

@@ -20,6 +20,7 @@ recordings/
 
 # private launch materials
 /launch/*
+/promo/
 /docs/launch/
 
 # editor

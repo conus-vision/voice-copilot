@@ -23,6 +23,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from voice_copilot import __version__
 from voice_copilot.audio.hub import AudioHub
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.config import Config, load_config, save_config
@@ -83,6 +84,22 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     _ = bus
 
 
+def apply_config(app: FastAPI, new_cfg: Config) -> None:
+    """Save this config and make it take effect now, whoever changed it."""
+    save_config(new_cfg)
+    app.state.config = new_cfg
+    app.state.human_language = new_cfg.human_language
+    app.state.commentator_language = new_cfg.commentator_language
+    app.state.voice_input_enabled = new_cfg.voice_input.enabled
+    commentator_cfg = new_cfg.commentator
+    resolver = app.state.commentator_resolver
+    if resolver is not None:
+        commentator_cfg, app.state.launch_notice = resolver(new_cfg)
+    commentator = app.state.commentator
+    if commentator is not None:
+        commentator.update_config(commentator_cfg, new_cfg.commentator_language)
+
+
 def create_app(
     bus: EventBus,
     config: Config,
@@ -92,7 +109,7 @@ def create_app(
     sessions: SessionRegistry | None = None,
     proxy_port: int | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="voice-copilot", version="0.1.0", lifespan=_lifespan)
+    app = FastAPI(title="voice-copilot", version=__version__, lifespan=_lifespan)
     app.state.bus = bus
     app.state.config = config
     app.state.audio_hub = audio_hub or AudioHub()
@@ -105,6 +122,8 @@ def create_app(
     app.state.commentator = None  # set by cli.py after Commentator is created
     app.state.dialog = None  # set by `vc`: lets the panel hold the agent live
     app.state.launch_notice = None  # set by `vc` to surface launch status in the panel
+    app.state.attached = False  # set by `companion`: the panel can message the agent
+    app.state.app = app  # lets cli.py add routes once it has built what they need
     # set by `vc`: (Config) -> (effective CommentatorConfig, launch notice). Re-applies
     # the launch-time auto/api + per-CLI resolution so a panel save can't drop the
     # running `auto` provider back to the saved API one.
@@ -131,7 +150,10 @@ def create_app(
             "proxy_host": "127.0.0.1",
             "launch_notice": getattr(app.state, "launch_notice", None),
             "voice_input_enabled": bool(app.state.voice_input_enabled),
+            "attached": bool(app.state.attached),
             "version": app.version,
+            # What `vc speed` and the like asked for while the panel was closed.
+            "panel": getattr(app.state, "panel_overrides", {}),
         }
 
     @app.get("/api/config")
@@ -142,18 +164,7 @@ def create_app(
     @app.post("/api/config")
     async def post_config(payload: dict[str, Any]) -> dict[str, Any]:
         new_cfg = Config.model_validate(payload)
-        save_config(new_cfg)
-        app.state.config = new_cfg
-        app.state.human_language = new_cfg.human_language
-        app.state.commentator_language = new_cfg.commentator_language
-        app.state.voice_input_enabled = new_cfg.voice_input.enabled
-        commentator_cfg = new_cfg.commentator
-        resolver = app.state.commentator_resolver
-        if resolver is not None:
-            commentator_cfg, app.state.launch_notice = resolver(new_cfg)
-        commentator = app.state.commentator
-        if commentator is not None:
-            commentator.update_config(commentator_cfg, new_cfg.commentator_language)
+        apply_config(app, new_cfg)
         return new_cfg.model_dump()
 
     @app.get("/api/secrets")

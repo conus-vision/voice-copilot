@@ -43,7 +43,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
 }
@@ -987,6 +987,14 @@ body.mini .app-footer { display: none; }
   }
 }
 
+.agent-message {
+  display: flex;
+  gap: 8px;
+  margin: 8px 12px 0;
+}
+.agent-message[hidden] { display: none; }
+.agent-message input { flex: 1; min-width: 0; }
+
 .launch-notice {
   margin: 8px 12px 0;
   padding: 8px 12px;
@@ -1088,3 +1096,5 @@ label.row.per-cli-row {
   .per-cli-head { display: none; }
   .per-cli-row { grid-template-columns: 90px 1fr 1fr; }
 }
+
+.volume { width: 84px; accent-color: currentColor; }

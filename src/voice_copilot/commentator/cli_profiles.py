@@ -13,7 +13,9 @@ from dataclasses import dataclass
 class NarrationProfile:
     args: list[str]
     input_mode: str  # "stdin" | "arg" — where the USER content goes
-    model: str
+    # None: the CLI's own default. Pi has no cheap tier of its own to name, as its
+    # models are whatever the user set up.
+    model: str | None
     # What the supervisor uses when the user hasn't picked a model: the
     # capable tier of the same CLI, so "reuse the CLI I launched" still holds.
     strong_model: str | None = None
@@ -36,8 +38,16 @@ NARRATION_PROFILES: dict[str, NarrationProfile] = {
     # file (--system-prompt-file, so the multi-line prompt survives the .cmd
     # layer), drop the injected env/git/CLAUDE.md context, and feed the events
     # via stdin, so it narrates instead of answering the embedded question.
+    # No tools and no MCP servers: it only has to write a sentence, and loading them
+    # took a call from 2.6k to 28k input tokens and from 2 s to 11 s.
     "claude": NarrationProfile(
-        args=["--exclude-dynamic-system-prompt-sections", "-p"],
+        args=[
+            "--exclude-dynamic-system-prompt-sections",
+            "--tools",
+            "",
+            "--strict-mcp-config",
+            "-p",
+        ],
         input_mode="stdin",
         model="claude-haiku-4-5-20251001",
         strong_model="sonnet",
@@ -68,6 +78,43 @@ NARRATION_PROFILES: dict[str, NarrationProfile] = {
         input_mode="stdin",
         model="gpt-5.4-mini",
         strong_model="gpt-5.5",
+    ),
+    # Stripped to a bare model call: nothing saved, no tools, no extensions (ours
+    # included), no project context. Without a model flag it uses the user's default.
+    "pi": NarrationProfile(
+        args=[
+            "-p",
+            "--no-session",
+            "--no-tools",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-context-files",
+            "--no-mcp",
+            "--thinking",
+            "off",
+        ],
+        input_mode="stdin",
+        model=None,
+        system_file_flag="--system-prompt",
+    ),
+    "omp": NarrationProfile(
+        args=[
+            "-p",
+            "--no-session",
+            "--no-tools",
+            "--no-extensions",
+            "--no-skills",
+            "--no-rules",
+            "--no-context-files",
+            "--no-lsp",
+            "--no-title",
+            "--thinking",
+            "off",
+        ],
+        input_mode="stdin",
+        model=None,
+        system_file_flag="--system-prompt",
     ),
     "opencode": NarrationProfile(
         args=["run"],
@@ -113,7 +160,7 @@ def build_narration_command(
     """
     profile = NARRATION_PROFILES[cli]
     chosen_model = model or profile.model
-    argv = [binary, "--model", chosen_model]
+    argv = [binary, *(["--model", chosen_model] if chosen_model else [])]
     prompt = user
     if profile.system_file_flag:
         argv += [profile.system_file_flag, system_file_path or ""]

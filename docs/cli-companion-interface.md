@@ -121,11 +121,14 @@ Defined capability fields in v0.1:
 - `file_events`: CLI emits file edit events
 - `thinking_events`: CLI emits optional thinking summaries or thinking-like
   progress updates
-- `message_delivery`: one of `native`, `queue`, or `manual`
+- `message_delivery`: one of `native`, `step`, `queue`, or `manual`
 
 `message_delivery` has the following semantics:
 
 - `native`: the CLI can inject a user message immediately mid-turn
+- `step`: the CLI delivers a message at the next step boundary of the running
+  turn, between tool calls. A long-running tool delays it, so an urgent message
+  also needs `interrupt`
 - `queue`: the CLI can queue a message for the next turn boundary
 - `manual`: the CLI cannot inject automatically; the companion must fall back
   to manual delivery

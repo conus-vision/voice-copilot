@@ -20,7 +20,7 @@ def test_flag_passes_through() -> None:
 
 
 def test_bare_invocation_passes_through() -> None:
-    assert _normalize_argv(["voice-copilot"]) == ["voice-copilot"]
+    assert _normalize_argv(["voice-copilot"]) == ["voice-copilot", "command"]
 
 
 def test_extra_args_after_name_are_preserved() -> None:
@@ -77,3 +77,10 @@ def test_main_dotenv_does_not_override_shell_exports(monkeypatch, tmp_path) -> N
     _run_main_in(tmp_path, monkeypatch)
 
     assert os.environ[_DOTENV_VAR] == "from-shell"
+
+
+def test_the_chat_words_work_in_a_shell() -> None:
+    assert _normalize_argv(["vc", "off"]) == ["vc", "command", "off"]
+    assert _normalize_argv(["vc", "speed", "1.5"]) == ["vc", "command", "speed", "1.5"]
+    assert _normalize_argv(["vc", "claude"]) == ["vc", "vc", "claude"]
+    assert _normalize_argv(["vc", "setup"]) == ["vc", "setup"]

@@ -55,6 +55,11 @@ def load_summary(language: str, style: str = "api") -> str:
     return _read(_resolve(language, "summary.md", style))
 
 
+def load_ask(language: str, style: str = "api") -> str:
+    """System prompt for a question the user puts to the second model: `vc ask`."""
+    return _read(_resolve(language, "ask.md", style))
+
+
 def load_supervisor(language: str, style: str = "api") -> str:
     """System prompt for the supervisor's checkpoint review."""
     return _read(_resolve(language, "supervisor.md", style))

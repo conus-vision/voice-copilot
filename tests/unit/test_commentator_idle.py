@@ -80,11 +80,11 @@ def test_opening_prompt_asks_for_the_task_first() -> None:
         events=[_tool_event()],
         opening=True,
     )
-    assert "первая реплика" in prompt
+    assert "first line about this request" in prompt
     assert "почини парсер" in prompt
 
     later = build_narration_user(user_query="почини парсер", summary=None, events=[_tool_event()])
-    assert "первая реплика" not in later
+    assert "first line about this request" not in later
 
 
 @pytest.mark.asyncio
@@ -122,6 +122,79 @@ async def test_idle_timer_fires_and_opens_with_the_task() -> None:
 
     assert spoken == "Читаем парсеры."
     # Nothing had been said yet, so the line was asked to name the task first.
-    assert llm.prompts and "первая реплика" in llm.prompts[0]
+    assert llm.prompts and "first line about this request" in llm.prompts[0]
     assert "почини парсер" in llm.prompts[0]
     assert "- searched: extract_user_query" in llm.prompts[0]
+
+
+class _HangingOnceLLM(_FakeLLM):
+    """Never answers the first call, like a model stuck on a slow load."""
+
+    def stream_chat(
+        self,
+        messages: list,
+        *,
+        system: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> AsyncIterator[str]:
+        first = not self.prompts
+        self.prompts.append(messages[0].content)
+
+        async def gen() -> AsyncIterator[str]:
+            if first:
+                await asyncio.Event().wait()
+            yield "Агент ждёт ответа от тестов."
+
+        return gen()
+
+
+async def _spoken(q: asyncio.Queue[Event]) -> str:
+    async with asyncio.timeout(3):
+        while True:
+            event = await q.get()
+            if event.kind is EventKind.COMMENTATOR_UTTERANCE and not event.payload.get("streaming"):
+                return str(event.payload["text"])
+
+
+@pytest.mark.asyncio
+async def test_check_answers_when_nothing_new_happened() -> None:
+    bus = EventBus()
+    llm = _FakeLLM()
+    commentator = Commentator(bus, CommentatorConfig(), "en", llm=llm)  # type: ignore[arg-type]
+
+    async with bus.subscribe() as q:
+        runner = asyncio.create_task(commentator.run())
+        await asyncio.sleep(0.05)
+        await bus.publish(Event(kind=EventKind.USER_CHECK, source="web", payload={}))
+        try:
+            assert await _spoken(q) == "Читаем парсеры."
+        finally:
+            runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
+
+    assert "the user asks what is going on right now" in llm.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_check_gives_up_on_a_stuck_call_and_keeps_its_events() -> None:
+    bus = EventBus()
+    llm = _HangingOnceLLM()
+    cfg = CommentatorConfig(idle_narration_ms=60, debounce_ms=50)
+    commentator = Commentator(bus, cfg, "en", llm=llm)  # type: ignore[arg-type]
+
+    async with bus.subscribe() as q:
+        runner = asyncio.create_task(commentator.run())
+        await asyncio.sleep(0.05)
+        await bus.publish(_tool_event("Read", file_path="stuck.py"))
+        while not llm.prompts:
+            await asyncio.sleep(0.01)
+        await bus.publish(Event(kind=EventKind.USER_CHECK, source="web", payload={}))
+        try:
+            assert await _spoken(q) == "Агент ждёт ответа от тестов."
+        finally:
+            runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
+
+    assert "stuck.py" in llm.prompts[1]
+    assert "the user asks what is going on right now" in llm.prompts[1]

@@ -1,0 +1,18 @@
+{
+  "name": "voice-copilot-dsh",
+  "version": "0.2.0",
+  "description": "A second model narrates what DeepSeek Harness does and reviews it, through the local Voice Copilot companion.",
+  "keywords": ["dsh-plugin", "voice", "narration", "supervisor"],
+  "license": "MIT",
+  "repository": "https://github.com/conus-vision/voice-copilot",
+  "type": "module",
+  "main": "voice-copilot.js",
+  "exports": {
+    ".": "./voice-copilot.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": ["voice-copilot.js", "cordis.patch.yml"],
+  "engines": { "dsh": ">=0.2.1-rc.5" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

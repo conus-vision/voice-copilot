@@ -1,0 +1,12 @@
+{
+  "name": "voice-copilot",
+  "owner": { "name": "Conus Vision", "email": "info@conus.vision" },
+  "metadata": { "description": "Voice Copilot: a second model that narrates and reviews your coding agent." },
+  "plugins": [
+    {
+      "name": "voice-copilot",
+      "source": "./plugins/claude-code",
+      "description": "A second model narrates what the agent does, reviews it, and lets you correct it mid-turn."
+    }
+  ]
+}

@@ -81,8 +81,12 @@ class TTSDriver:
                             self._clear_pending()
                             await self._abort_current()
                         continue
-                    if ev.kind is EventKind.USER_INTERRUPT:
-                        self._clear_pending()
+                    if ev.kind in (EventKind.USER_INTERRUPT, EventKind.NARRATION_STOP):
+                        # `vc off` in one session leaves what the others have to say.
+                        if ev.payload.get("session_id"):
+                            self._clear_pending(self._session_key_of(ev.payload))
+                        else:
+                            self._clear_pending()
                         await self._abort_current()
                         continue
                     if ev.kind is not EventKind.COMMENTATOR_UTTERANCE:
