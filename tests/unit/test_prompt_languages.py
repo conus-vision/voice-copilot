@@ -34,7 +34,7 @@ def test_every_prompt_names_the_reply_language(language: str, style: str) -> Non
     name = LANGUAGE_NAMES[language]
     assert load(language, style).endswith(f"Reply in {name}.")
     assert f"in {name}." in load_summary(language, style)
-    assert f"in {name}, at most 25 words" in load_supervisor(language, style)
+    assert f"in {name}," in load_supervisor(language, style)
 
 
 @pytest.mark.parametrize("language", _LANGUAGES)

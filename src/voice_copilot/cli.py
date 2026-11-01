@@ -308,8 +308,8 @@ def integrate(
 
     Once connected, the CLI reports what it does to a running Voice Copilot
     (`voice-copilot serve`, or any `vc` session) and gets narrated without the
-    proxy. `vc claude` and `vc pi` load their plugin for the session on their
-    own; this command is for running the CLI directly.
+    proxy. For Claude Code, Codex, Pi, oh-my-pi and DeepSeek Harness this installs the plugin
+    `voice-copilot setup` does; this command is for one CLI at a time.
     """
     if cli is None:
         _print_integrations(port)

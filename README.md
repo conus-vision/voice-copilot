@@ -417,8 +417,8 @@ idea with advanced users. Planned work:
   budgets) and corrections delivered to the agent as well as spoken
 - improve the quality and timing of narration and cut its noise
 - make multi-session workflows and session switching stable
-- run the hook integrations of Codex, Gemini CLI, Qwen Code, Copilot CLI and
-  the others against each CLI, and add Oh My Pi, Cline and Amp
+- run the hook integrations of Gemini CLI, Qwen Code, Copilot CLI and the
+  others against each CLI, carry the `vc` words through them, and add Cline and Amp
 - refine the companion interface with CLI authors so it fits real integrations
 - improve advanced configuration, onboarding and developer documentation
 - explore richer host UIs such as VS Code while keeping the core small
