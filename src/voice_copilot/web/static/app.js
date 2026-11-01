@@ -58,8 +58,14 @@
   // ------------------------------------------------------------------ proxy port in the Help tab
 
   let voiceInputEnabled = false;
+  let attachedToPlugin = false;
+  const ATTACHED_SUMMARY = "Started by a CLI plugin: sessions report in by themselves, so there is nothing to launch here. To launch from this tab, run `voice-copilot serve`.";
 
-  fetch("/api/info").then(r => r.json()).then(({ proxy_port, launch_notice, voice_input_enabled }) => {
+  fetch("/api/info").then(r => r.json()).then(({ proxy_port, launch_notice, voice_input_enabled, attached }) => {
+    const agentMessage = qs("#agent-message");
+    if (agentMessage) agentMessage.hidden = !attached;
+    attachedToPlugin = !!attached;
+    if (attachedToPlugin && proxyCliSummary) proxyCliSummary.textContent = ATTACHED_SUMMARY;
     if (proxy_port) {
       document.querySelectorAll(".pport").forEach(el => { el.textContent = proxy_port; });
     }
@@ -86,7 +92,6 @@
     qsa(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
     qsa(".panel").forEach(p => p.classList.toggle("active", p.dataset.panel === name));
     try { localStorage.setItem("vc.tab", name); } catch {}
-    if (name === "plugins") setTimeout(loadPlugins, 0);
   }
   qsa(".tab").forEach(t => t.addEventListener("click", () => activateTab(t.dataset.tab)));
   // Tabs collapsed from eight to four — map anything a returning browser has
@@ -117,7 +122,7 @@
   const pluginReports = {};
 
   function pluginsVisible() {
-    return !!document.querySelector('.panel.active[data-panel="plugins"]');
+    return !!document.querySelector('.panel.active #plugins-fold[open]');
   }
 
   async function loadPlugins() {
@@ -243,6 +248,9 @@
   });
 
   // Keep "connected now" honest while the tab is open.
+  document.getElementById("plugins-fold")?.addEventListener("toggle", () => {
+    if (pluginsVisible()) loadPlugins();
+  });
   setInterval(() => { if (pluginsVisible()) loadPlugins(); }, 5000);
 
   // ------------------------------------------------------------------ ws
@@ -351,6 +359,7 @@
   let paused     = false;
   let muted      = false;
   let playbackRate = 1.2;
+  let volume = 100;
   let currentPlayerUrl = null;
   let currentPlaybackItem = null;
   let tracePaused = false;
@@ -367,6 +376,8 @@
   try {
     const savedRate = Number(localStorage.getItem("vc.playbackRate"));
     if (Number.isFinite(savedRate) && savedRate > 0) playbackRate = savedRate;
+    const savedVolume = localStorage.getItem("vc.volume");
+    if (savedVolume !== null && Number.isFinite(Number(savedVolume))) volume = Number(savedVolume);
   } catch {}
 
   // Sync pause/mute state between main window and mini popup via BroadcastChannel.
@@ -432,6 +443,47 @@
     });
     try { localStorage.setItem("vc.playbackRate", String(playbackRate)); } catch {}
   }
+
+  const volumeInput = qs("#volume");
+
+  function applyVolume() {
+    player.volume = volume / 100;
+    if (volumeInput) volumeInput.value = String(volume);
+    try { localStorage.setItem("vc.volume", String(volume)); } catch {}
+  }
+
+  function reportPanelState() {
+    send({ type: "cmd", cmd: "panel_state", volume, muted });
+  }
+
+  // What `vc speed`, `vc volume` and `vc mute` asked for, now or while the panel was closed.
+  function applyPanelCommand(settings) {
+    if (typeof settings.speed === "number") {
+      playbackRate = settings.speed;
+      applyPlaybackRate();
+      syncPlaybackRateState();
+    }
+    if (typeof settings.volume === "number") {
+      volume = settings.volume;
+      applyVolume();
+    }
+    if (typeof settings.muted === "boolean") {
+      muted = settings.muted;
+      applyMuteButton();
+      bc.postMessage({ type: "state", paused, muted });
+    }
+    reportPanelState();
+  }
+
+  volumeInput?.addEventListener("input", () => {
+    volume = Number(volumeInput.value);
+    applyVolume();
+    reportPanelState();
+  });
+  applyVolume();
+  fetch("/api/info").then((r) => r.json()).then(({ panel }) => {
+    if (panel && Object.keys(panel).length) applyPanelCommand(panel);
+  }).catch(() => {});
 
   function activeNarrationSessionId() {
     return selectedSessionId || undefined;
@@ -643,16 +695,30 @@
     startPlayback();
   }
 
+  function isListedSession(sessionId) {
+    return sessionsCache.some((session) => sessionIdEquals(session.id, sessionId));
+  }
+
   function queueBlobUrl(item) {
     getPlaybackQueue(item.sessionId).push(item);
     if (selectionPausedSessionId) return;
-    if (!currentPlaybackItem && !playing && !paused && sessionIdEquals(item.sessionId, activeNarrationSessionId())) {
+    // A session that isn't listed can't be selected: it has just started, or it has ended
+    // and these are its last words, which is when the outcome and the final verdict come.
+    const audible = !isListedSession(item.sessionId)
+      || sessionIdEquals(item.sessionId, activeNarrationSessionId());
+    if (!currentPlaybackItem && !playing && !paused && audible) {
       playNext(item.sessionId);
     }
   }
   function playNext(sessionId = activeNarrationSessionId()) {
     const item = getPlaybackQueue(sessionId).shift();
     if (!item?.url) {
+      // That session has nothing more to say, but the selected one may have been waiting.
+      const active = activeNarrationSessionId();
+      if (!sessionIdEquals(sessionId, active)) {
+        playNext(active);
+        return;
+      }
       playing = false;
       refreshPlayButton();
       return;
@@ -732,6 +798,11 @@
 
   function handleSessionSelectionPlayback(nextSessionId) {
     const hasCurrentNarration = !!currentPlayerUrl && currentPlaybackItem?.kind === "narration";
+    // Nobody switched away from a session that ended: let it finish its sentence.
+    if (hasCurrentNarration && !isListedSession(currentPlaybackItem.sessionId)) {
+      refreshPlayButton();
+      return;
+    }
     if (hasCurrentNarration && !sessionIdEquals(currentPlaybackItem.sessionId, nextSessionId)) {
       selectionPausedSessionId = currentPlaybackItem.sessionId || null;
       try { player.pause(); } catch {}
@@ -791,6 +862,7 @@
     muted = !muted;
     send({ type: "cmd", cmd: muted ? "mute" : "unmute" });
     applyMuteButton();
+    reportPanelState();
     bc.postMessage({ type: "state", paused, muted });
   }
   muteBtn.addEventListener("click", toggleMute);
@@ -812,6 +884,19 @@
     agentPausedBox.hidden = false;
   }
   agentResumeBtn?.addEventListener("click", () => send({ type: "cmd", cmd: "agent_toggle_pause" }));
+  qs("#btn-check")?.addEventListener("click", () => send({ type: "cmd", cmd: "check_now" }));
+
+  const agentMessageText = qs("#agent-message-text");
+  function sendAgentMessage() {
+    const text = agentMessageText.value.trim();
+    if (!text) return;
+    send({ type: "cmd", cmd: "user_message", text });
+    agentMessageText.value = "";
+  }
+  qs("#btn-agent-message")?.addEventListener("click", sendAgentMessage);
+  agentMessageText?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); sendAgentMessage(); }
+  });
 
   // Hold the agent for as long as a line is being read, so you can follow it
   // instead of racing it. Per-browser preference; the server forgets it when
@@ -909,6 +994,7 @@
             return;
           }
           if (!isMini && isNewHumanQuery(msg)) stopPlaybackForSession(messageSessionId(msg));
+          if (msg.kind === "panel.command") applyPanelCommand(msg.payload || {});
           if (msg.kind === "session.started" && String(msg.source || "").startsWith("companion.")
               && pluginsVisible()) loadPlugins();
           if (msg.kind === "agent.paused") showAgentPaused(msg.payload || {});
@@ -1766,7 +1852,9 @@
     function applyProxyCliStatus(status) {
       const proxyDown = status.proxy_available === false;
       if (proxyCliSummary) {
-        proxyCliSummary.textContent = proxyDown
+        proxyCliSummary.textContent = attachedToPlugin
+          ? ATTACHED_SUMMARY
+          : proxyDown
           ? "The proxy is not running — restart with `voice-copilot serve` to launch terminals from here."
           : !status.supported
             ? "Launching terminals from the panel is not supported on this platform."

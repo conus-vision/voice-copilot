@@ -274,5 +274,10 @@ def default_bindings(hotkeys_cfg: Any, *, voice_input: bool = True) -> list[Bind
             combo=hotkeys_cfg.skip_current,
             press_kind=EventKind.USER_SKIP_REQUESTED,
         ),
+        Binding(
+            name="check_now",
+            combo=hotkeys_cfg.check_now,
+            press_kind=EventKind.USER_CHECK,
+        ),
     ]
     return bindings

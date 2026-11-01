@@ -25,6 +25,7 @@ class HotkeysConfig(BaseModel):
     mute_toggle: str = "alt+m"
     pause_toggle: str = "alt+p"
     skip_current: str = "alt+shift+n"
+    check_now: str = "alt+shift+c"
 
 
 class ServerConfig(BaseModel):
@@ -165,6 +166,9 @@ class CommentatorConfig(BaseModel):
     speak_thinking: bool = True
     speak_file_edits: bool = True
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
+    #: What the models may read. events: tools, commands, their output. edits: the supervisor
+    #: also gets the latest edits. files: it also gets the files the agent changed, whole.
+    file_access: Literal["events", "edits", "files"] = "edits"
     #: Pick the models automatically: the weakest the CLI offers for the
     #: narrator, the strongest for the supervisor. Read from the CLI's own
     #: catalog where there is one (codex), static tiers otherwise. An

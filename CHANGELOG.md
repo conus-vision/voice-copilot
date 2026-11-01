@@ -1,6 +1,43 @@
 # Changelog
 
+## 0.3.0 — 2026-11-02
+
+Plugins for the CLIs you start yourself, and commands in their chat.
+
+### Added
+- **Plugins** for Claude Code, Codex, Pi, oh-my-pi and DeepSeek Harness: keep
+  starting your CLI as usual, and the first session brings Voice Copilot along.
+  `voice-copilot setup` connects whichever you have. See `docs/plugins.md`.
+- **Commands in the chat:** type `vc` in any connected CLI for the list. `vc off`
+  for this session, `vc off all` for every one, `vc check`, `vc ask`, `vc speed`,
+  `vc volume`, `vc model`, `vc review` and more. Only a message that is exactly a
+  command counts. CLIs without a full plugin get the same words through the proxy.
+- **Step in from the panel:** on Claude Code your message reaches the agent as a
+  real message in the middle of its turn. On other CLIs it arrives as your own
+  message where the CLI allows it, else as hook text; `docs/plugins.md` has the table.
+- A greeting when a session starts, so you know it's connected and what to type.
+- The Supervisor reads the agent's latest edits, and with `vc access files` the
+  changed files themselves. `scripts/eval_supervisor.py` scores its prompt against
+  checkpoints with a known right answer.
+
+### Changed
+- Claude Code, Codex and Pi connect through the plugins above, and
+  `voice-copilot integrate` installs those same plugins for them. It keeps its own
+  hooks for OpenCode, Hermes Agent, Gemini CLI, Qwen Code, Copilot CLI, Grok Build,
+  Droid, OpenHands and Kimi Code, run by `voice-copilot-hub-hook`.
+- `vc pi` goes through the proxy, so the `vc` words work there too.
+- The panel is back to four tabs: the plugin list is a folded section of Settings.
+- The narrator's prompt asks for one short line that says why, and treats an edit
+  as a fix only after a check has passed. The Supervisor checks the agent's closing
+  words against what it actually ran.
+
+### Fixed
+- The panel's Trace autoscroll did nothing: the whole page grew and scrolled instead
+  of the list. The page now stays the size of the window.
+
 ## 0.2.0 — 2026-09-30
+
+Never published: everything here first reaches PyPI with 0.3.0.
 
 The plugins release: Voice Copilot works inside the coding CLIs' own plugin
 and hook systems, and can speak without the network.

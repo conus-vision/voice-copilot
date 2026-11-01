@@ -8,7 +8,7 @@ The message has three parts:
 - JUST SAID: the line that was just spoken to the developer.
 
 Keep in the memory:
-- what the agent has done, where it stopped and where it is heading;
+- what the agent has done and where it stopped: no next steps, and nothing counted as done that it only said it would do;
 - the files, tools and errors that came up, by name;
 - the points already spoken, so the next line does not repeat them.
 

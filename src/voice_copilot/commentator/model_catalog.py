@@ -14,11 +14,16 @@ tiers are static by necessity.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+import httpx
 
 from voice_copilot.commentator.cli_profiles import NARRATION_PROFILES
 
@@ -103,6 +108,87 @@ def model_tiers(cli: str | None) -> ModelTiers | None:
     if static is not None:
         return ModelTiers(weakest=static[0], strongest=static[1], source="static")
     profile = NARRATION_PROFILES.get(cli)
-    if profile is not None and profile.strong_model:
+    if profile is not None and profile.model and profile.strong_model:
         return ModelTiers(weakest=profile.model, strongest=profile.strong_model, source="static")
     return None
+
+
+#: For `vc model`. A CLI with no way to list its models takes a name instead.
+_LIST_COMMANDS = {
+    "pi": ("--list-models",),
+    "omp": ("models", "ls", "--json"),
+    "opencode": ("models",),
+}
+_ALIASES = {"claude": ("haiku", "sonnet", "opus")}
+_OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
+_LIST_TIMEOUT_S = 20.0
+
+
+def _parse_listing(cli: str, output: str) -> list[str]:
+    if cli == "omp":
+        return _parse_omp_listing(output)
+    rows = [line.split() for line in output.splitlines() if line.strip()]
+    if cli == "opencode":
+        return [row[0] for row in rows if "/" in row[0]]
+    # A table: the provider, then the model, under a header line.
+    return [f"{row[0]}/{row[1]}" for row in rows[1:] if len(row) >= 2 and "/" not in row[0]]
+
+
+def _parse_omp_listing(output: str) -> list[str]:
+    try:
+        doc = json.loads(output)
+    except ValueError:
+        return []
+    rows = doc.get("models", doc) if isinstance(doc, dict) else doc
+    if not isinstance(rows, list):
+        return []
+    return [
+        f"{row['provider']}/{row['id']}"
+        for row in rows
+        if isinstance(row, dict) and row.get("provider") and row.get("id")
+    ]
+
+
+def _run_listing(cli: str) -> list[str]:
+    binary = shutil.which(cli)
+    if binary is None:
+        return []
+    try:
+        done = subprocess.run(
+            [binary, *_LIST_COMMANDS[cli]],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_LIST_TIMEOUT_S,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "NO_COLOR": "1"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return _parse_listing(cli, done.stdout)
+
+
+async def listed_models(cli: str | None) -> list[str]:
+    """The models this CLI offers, as far as it will say, best known first."""
+    if not cli:
+        return []
+    if cli in _ALIASES:
+        return list(_ALIASES[cli])
+    if cli in _LIST_COMMANDS:
+        return await asyncio.to_thread(_run_listing, cli)
+    tiers = model_tiers(cli)
+    if tiers is None:
+        return []
+    return list(tiers.catalog) if tiers.catalog else [tiers.weakest, tiers.strongest]
+
+
+async def ollama_models() -> list[str]:
+    """What the local Ollama has, if one is running. It needs no key."""
+    try:
+        async with httpx.AsyncClient(timeout=1.0) as client:
+            response = await client.get(_OLLAMA_TAGS)
+        names = [str(m["name"]) for m in response.json().get("models", [])]
+        return [name for name in names if "embed" not in name]  # These can't write a sentence.
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+        return []

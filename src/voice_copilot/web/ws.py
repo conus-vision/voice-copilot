@@ -13,6 +13,9 @@ Protocol:
       { "type":"cmd", "cmd":"play"|"pause"|"mute"|"unmute"|"interrupt" }
       { "type":"cmd", "cmd":"hold_while_narrating", "enabled":true|false }
       { "type":"cmd", "cmd":"agent_toggle_pause" }
+      { "type":"cmd", "cmd":"check_now" }
+      { "type":"cmd", "cmd":"panel_state", "volume":70, "muted":false }
+      { "type":"cmd", "cmd":"user_message", "text":"..." }
       { "type":"cmd", "cmd":"speak_start"|"speak_end" }
       { "type":"cmd", "cmd":"mic_start", "codec":"webm"|"ogg"|"wav" }
       { "type":"cmd", "cmd":"mic_end" }
@@ -103,6 +106,10 @@ async def _handle_cmd(
             )
         )
         return
+    if cmd == "panel_state":
+        reported = {k: data[k] for k in ("volume", "muted") if k in data}
+        await bus.publish(Event(kind=EventKind.PLAYBACK_STATE, source="web", payload=reported))
+        return
     if cmd == "playback_ready":
         ready_payload: dict[str, Any] = {}
         reason = data.get("reason")
@@ -137,6 +144,21 @@ async def _handle_cmd(
         return
     if cmd == "interrupt":
         await bus.publish(Event(kind=EventKind.USER_INTERRUPT, source="web", payload={}))
+        return
+    if cmd == "check_now":
+        await bus.publish(Event(kind=EventKind.USER_CHECK, source="web", payload={}))
+        return
+    if cmd == "user_message":
+        # Typed correction from the panel: same route as speech once transcribed.
+        text = str(data.get("text") or "").strip()
+        if text:
+            await bus.publish(
+                Event(
+                    kind=EventKind.USER_MESSAGE,
+                    source="web",
+                    payload={"text": text},
+                )
+            )
         return
     if cmd == "agent_toggle_pause":
         # The panel's way to release an agent the supervisor (or the user)

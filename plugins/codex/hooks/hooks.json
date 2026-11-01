@@ -1,0 +1,14 @@
+{
+  "description": "Report the session to the local Voice Copilot companion and deliver the user's messages. Replies only when the user sent something or paused the agent.",
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "voice-copilot-hook codex", "timeout": 30 }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "voice-copilot-hook codex", "timeout": 3 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "voice-copilot-hook codex" }] }],
+    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "voice-copilot-hook codex", "timeout": 600 }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "voice-copilot-hook codex" }] }],
+    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "voice-copilot-hook codex" }] }],
+    "SubagentStop": [{ "hooks": [{ "type": "command", "command": "voice-copilot-hook codex" }] }],
+    "Interrupt": [{ "hooks": [{ "type": "command", "command": "voice-copilot-hook codex", "timeout": 3 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "voice-copilot-hook codex" }] }]
+  }
+}

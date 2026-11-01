@@ -24,11 +24,18 @@ import zstandard
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
 
+from voice_copilot.companion.commands import parse
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.events import Event, EventKind
 from voice_copilot.core.user_query import clean_user_query
 from voice_copilot.proxy.anthropic import AnthropicSSEParser
 from voice_copilot.proxy.body_sniffer import extract_user_query
+from voice_copilot.proxy.chat_commands import (
+    ChatCommands,
+    ends_with_the_users_words,
+    is_a_model_call,
+    synthetic_reply,
+)
 from voice_copilot.proxy.ollama_native import OllamaNativeParser
 from voice_copilot.proxy.openai import OpenAISSEParser
 from voice_copilot.proxy.session import SessionRegistry
@@ -223,9 +230,32 @@ def _make_parser_factory(
     return None
 
 
+async def _answer_chat_command(
+    commands: ChatCommands, req: Request, body: bytes, provider: str, path: str
+) -> Response | None:
+    """The reply to a `vc` word, in the model's place, or None if this is for the model."""
+    plain = _sniffable_body(req.headers, body)
+    try:
+        doc = json.loads(plain)
+    except ValueError:
+        return None
+    if not isinstance(doc, dict) or not ends_with_the_users_words(doc):
+        return None
+    query = extract_user_query(plain, provider=provider, path=path)
+    cleaned = clean_user_query(query) if query else None
+    if cleaned and provider == "opencode-zen":
+        # `opencode run "vc off"` keeps the quotes: it quotes any argument with a space in it.
+        cleaned = cleaned.strip('"')
+    command = parse(cleaned) if cleaned else None
+    if command is None:
+        return None
+    return synthetic_reply(provider, path, doc, await commands.answer(command))
+
+
 def create_proxy_app(
     bus: EventBus,
     registry: SessionRegistry | None = None,
+    commands: ChatCommands | None = None,
     *,
     upstreams: Mapping[str, str] | None = None,
 ) -> FastAPI:
@@ -268,6 +298,11 @@ def create_proxy_app(
                 log.info("proxy: refusing websocket upgrade for /%s/%s", provider, path)
                 return Response(status_code=426, content=b"voice-copilot proxy speaks HTTP only")
             body = await req.body()
+            if commands is not None and req.method == "POST" and is_a_model_call(provider, path):
+                reply = await _answer_chat_command(commands, req, body, provider, path)
+                if reply is not None:
+                    return reply
+            narrating = commands is None or not commands.narration_off
             sess = app.state.registry.identify(req.headers, provider=provider)
             kind = _pick_parser_kind(parser_kind, path)
             # Sniff the user's latest message before forwarding. This anchors
@@ -277,7 +312,7 @@ def create_proxy_app(
             query = None
             question = None
             internal = False
-            if req.method == "POST" and body:
+            if req.method == "POST" and body and narrating:
                 try:
                     query = extract_user_query(
                         _sniffable_body(req.headers, body), provider=provider, path=path
@@ -316,7 +351,7 @@ def create_proxy_app(
                 upstream=f"{upstream_base}/{path}",
                 parser_factory=_make_parser_factory(
                     bus,
-                    kind,
+                    kind if narrating else None,
                     sess.id,
                     internal=internal,
                     subagent=_is_subagent_request(req.headers),
@@ -452,6 +487,7 @@ def build_proxy_server(
     port: int,
     registry: SessionRegistry | None = None,
     quiet: bool = False,
+    commands: ChatCommands | None = None,
     upstreams: Mapping[str, str] | None = None,
 ) -> uvicorn.Server:
     """Build (but don't start) the proxy's uvicorn server.
@@ -467,7 +503,7 @@ def build_proxy_server(
     """
     from voice_copilot.web.server import ManagedServer
 
-    app = create_proxy_app(bus, registry=registry, upstreams=upstreams)
+    app = create_proxy_app(bus, registry=registry, commands=commands, upstreams=upstreams)
     # ws="none" keeps uvicorn from answering upgrade requests itself, so a
     # client that asks for a WebSocket (Codex does, for /responses) lands in
     # the normal HTTP route and gets our 426 — which makes it retry over plain

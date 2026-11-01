@@ -23,7 +23,7 @@
     }
   },
   "files": [
-    "../../src/voice_copilot/companion/assets/pi/voice-copilot.ts",
+    "../../plugins/pi/voice-copilot.ts",
     "../../src/voice_copilot/companion/assets/opencode/voice-copilot.ts"
   ]
 }

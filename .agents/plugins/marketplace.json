@@ -1,0 +1,12 @@
+{
+  "name": "voice-copilot",
+  "interface": { "displayName": "Voice Copilot" },
+  "plugins": [
+    {
+      "name": "voice-copilot",
+      "source": { "source": "local", "path": "./plugins/codex" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

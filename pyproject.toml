@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voice-copilot"
-version = "0.2.0"
+version = "0.3.0"
 description = "Voice-first narrator and control layer for LLM coding CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,7 +39,8 @@ dependencies = [
     # Codex compresses its Responses request bodies with zstd; the proxy has to
     # decompress them to read the user's question out of the turn.
     "zstandard>=0.22",
-    "edge-tts>=6.1",
+    # Microsoft's endpoint answers older clients with HTTP 403 (seen with 7.2.8).
+    "edge-tts>=7.3.1",
     "pynput>=1.7",
     "pystray>=0.19",
     "pillow>=10.3",
@@ -80,8 +81,10 @@ dev = [
 
 [project.scripts]
 voice-copilot = "voice_copilot.cli:main"
-# Run by coding CLIs for each hook they fire; see voice_copilot/companion/hook.py.
-voice-copilot-hook = "voice_copilot.companion.hook:main"
+# What the plugins in plugins/ run for each hook; see voice_copilot/companion/hook_forward.py.
+voice-copilot-hook = "voice_copilot.companion.hook_forward:main"
+# What `voice-copilot integrate` installs for other CLIs; see voice_copilot/companion/hook.py.
+voice-copilot-hub-hook = "voice_copilot.companion.hook:main"
 
 [project.urls]
 Homepage = "https://voice-copilot.conus.vision"
@@ -91,11 +94,20 @@ Issues = "https://github.com/conus-vision/voice-copilot/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/voice_copilot"]
 
+# So that `voice-copilot setup` needs no copy of the repository.
+[tool.hatch.build.targets.wheel.force-include]
+"plugins" = "voice_copilot/_bundle/plugins"
+".claude-plugin" = "voice_copilot/_bundle/.claude-plugin"
+".agents" = "voice_copilot/_bundle/.agents"
+
 [tool.hatch.build.targets.sdist]
 # Ship only what is needed to build/install; keep docs, tests and media
 # out of the published source distribution.
 include = [
     "/src/voice_copilot",
+    "/plugins",
+    "/.claude-plugin",
+    "/.agents",
     "/README.md",
     "/LICENSE",
     "/pyproject.toml",

@@ -103,6 +103,78 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     _ = bus
 
 
+class ConfigRejected(Exception):
+    """A provider in this config can't be built. Nothing was saved or changed."""
+
+
+async def apply_config(app: FastAPI, new_cfg: Config) -> None:
+    """Make this config take effect now and save it, whoever changed it."""
+    commentator_cfg = new_cfg.commentator
+    launch_notice = app.state.launch_notice
+    resolver = app.state.commentator_resolver
+    if resolver is not None:
+        commentator_cfg, launch_notice = resolver(new_cfg)
+    # Apply before writing anything: a provider that cannot be built (a
+    # CLI that isn't installed, an option it doesn't take) is reported now
+    # instead of landing on disk, where it would stop the next start.
+    # Off the loop, because building one can wait on the OS keychain or
+    # `gh auth token`, and the proxy shares this loop.
+    commentator = app.state.commentator
+    try:
+        if commentator is not None:
+            await asyncio.to_thread(
+                commentator.update_config, commentator_cfg, new_cfg.commentator_language
+            )
+        else:
+            await asyncio.to_thread(
+                provider_registry.build,
+                "llm",
+                commentator_cfg.provider.name,
+                dict(commentator_cfg.provider.options),
+            )
+    except Exception as e:
+        raise ConfigRejected(f"commentator provider {commentator_cfg.provider.name!r}: {e}") from e
+    old_cfg: Config = app.state.config
+    # The voice and speech input run from the next line on, without a
+    # restart; one that cannot be built is refused like the commentator.
+    tts_driver = app.state.tts_driver
+    new_tts = None
+    if tts_driver is not None and new_cfg.tts != old_cfg.tts:
+        try:
+            new_tts = await asyncio.to_thread(
+                provider_registry.build, "tts", new_cfg.tts.name, dict(new_cfg.tts.options)
+            )
+        except Exception as e:
+            raise ConfigRejected(f"voice {new_cfg.tts.name!r}: {e}") from e
+    stt_provider = app.state.stt_provider
+    if not new_cfg.voice_input.enabled:
+        stt_provider = None
+    elif stt_provider is None or new_cfg.stt != old_cfg.stt:
+        try:
+            stt_provider = await asyncio.to_thread(
+                provider_registry.build, "stt", new_cfg.stt.name, dict(new_cfg.stt.options)
+            )
+        except Exception as e:
+            raise ConfigRejected(f"speech input {new_cfg.stt.name!r}: {e}") from e
+    save_config(new_cfg)
+    app.state.config = new_cfg
+    app.state.human_language = new_cfg.human_language
+    app.state.commentator_language = new_cfg.commentator_language
+    app.state.voice_input_enabled = new_cfg.voice_input.enabled
+    app.state.stt_provider = stt_provider
+    app.state.launch_notice = launch_notice
+    if tts_driver is not None:
+        if new_tts is not None:
+            tts_driver.set_provider(new_tts)
+        tts_driver.set_language(new_cfg.commentator_language)
+    hotkeys = app.state.hotkeys
+    if hotkeys is not None and (
+        new_cfg.hotkeys != old_cfg.hotkeys
+        or new_cfg.voice_input.enabled != old_cfg.voice_input.enabled
+    ):
+        hotkeys.apply_config(new_cfg.hotkeys, voice_input=new_cfg.voice_input.enabled)
+
+
 def create_app(
     bus: EventBus,
     config: Config,
@@ -141,6 +213,8 @@ def create_app(
     app.state.hotkeys = None
     app.state.dialog = None  # set by `vc`: lets the panel hold the agent live
     app.state.launch_notice = None  # set by `vc` to surface launch status in the panel
+    app.state.attached = False  # set by `companion`: the panel can message the agent
+    app.state.app = app  # lets cli.py add routes once it has built what they need
     # set by `vc`: (Config) -> (effective CommentatorConfig, launch notice). Re-applies
     # the launch-time auto/api + per-CLI resolution so a panel save can't drop the
     # running `auto` provider back to the saved API one.
@@ -168,7 +242,10 @@ def create_app(
             "proxy_host": "127.0.0.1",
             "launch_notice": getattr(app.state, "launch_notice", None),
             "voice_input_enabled": bool(app.state.voice_input_enabled),
+            "attached": bool(app.state.attached),
             "version": app.version,
+            # What `vc speed` and the like asked for while the panel was closed.
+            "panel": getattr(app.state, "panel_overrides", {}),
         }
 
     @app.get("/api/config")
@@ -182,72 +259,10 @@ def create_app(
             new_cfg = Config.model_validate(payload)
         except ValidationError as e:
             raise HTTPException(422, str(e)) from e
-        commentator_cfg = new_cfg.commentator
-        launch_notice = app.state.launch_notice
-        resolver = app.state.commentator_resolver
-        if resolver is not None:
-            commentator_cfg, launch_notice = resolver(new_cfg)
-        # Apply before writing anything: a provider that cannot be built (a
-        # CLI that isn't installed, an option it doesn't take) is reported now
-        # instead of landing on disk, where it would stop the next start.
-        # Off the loop, because building one can wait on the OS keychain or
-        # `gh auth token`, and the proxy shares this loop.
-        commentator = app.state.commentator
         try:
-            if commentator is not None:
-                await asyncio.to_thread(
-                    commentator.update_config, commentator_cfg, new_cfg.commentator_language
-                )
-            else:
-                await asyncio.to_thread(
-                    provider_registry.build,
-                    "llm",
-                    commentator_cfg.provider.name,
-                    dict(commentator_cfg.provider.options),
-                )
-        except Exception as e:
-            raise HTTPException(
-                400, f"commentator provider {commentator_cfg.provider.name!r}: {e}"
-            ) from e
-        old_cfg: Config = app.state.config
-        # The voice and speech input run from the next line on, without a
-        # restart; one that cannot be built is refused like the commentator.
-        tts_driver = app.state.tts_driver
-        new_tts = None
-        if tts_driver is not None and new_cfg.tts != old_cfg.tts:
-            try:
-                new_tts = await asyncio.to_thread(
-                    provider_registry.build, "tts", new_cfg.tts.name, dict(new_cfg.tts.options)
-                )
-            except Exception as e:
-                raise HTTPException(400, f"voice {new_cfg.tts.name!r}: {e}") from e
-        stt_provider = app.state.stt_provider
-        if not new_cfg.voice_input.enabled:
-            stt_provider = None
-        elif stt_provider is None or new_cfg.stt != old_cfg.stt:
-            try:
-                stt_provider = await asyncio.to_thread(
-                    provider_registry.build, "stt", new_cfg.stt.name, dict(new_cfg.stt.options)
-                )
-            except Exception as e:
-                raise HTTPException(400, f"speech input {new_cfg.stt.name!r}: {e}") from e
-        save_config(new_cfg)
-        app.state.config = new_cfg
-        app.state.human_language = new_cfg.human_language
-        app.state.commentator_language = new_cfg.commentator_language
-        app.state.voice_input_enabled = new_cfg.voice_input.enabled
-        app.state.stt_provider = stt_provider
-        app.state.launch_notice = launch_notice
-        if tts_driver is not None:
-            if new_tts is not None:
-                tts_driver.set_provider(new_tts)
-            tts_driver.set_language(new_cfg.commentator_language)
-        hotkeys = app.state.hotkeys
-        if hotkeys is not None and (
-            new_cfg.hotkeys != old_cfg.hotkeys
-            or new_cfg.voice_input.enabled != old_cfg.voice_input.enabled
-        ):
-            hotkeys.apply_config(new_cfg.hotkeys, voice_input=new_cfg.voice_input.enabled)
+            await apply_config(app, new_cfg)
+        except ConfigRejected as e:
+            raise HTTPException(400, str(e)) from e
         return new_cfg.model_dump()
 
     # Keychain calls run in a worker thread: macOS may hold one until the user

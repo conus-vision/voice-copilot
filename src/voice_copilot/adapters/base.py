@@ -5,7 +5,7 @@ An adapter spawns and talks to a target LLM coding CLI. Its job:
   * accept user messages (text) from the dialog manager and inject them
   * support suspend/resume so the user can speak without the agent racing ahead
 
-Adapters declare one of three `QuickAsideCapability` values so the dialog
+Adapters declare one of the `QuickAsideCapability` values so the dialog
 manager knows how urgently a user message can be delivered.
 """
 
@@ -41,6 +41,8 @@ async def read_stream_line(stream: asyncio.StreamReader, who: str) -> bytes | No
 class QuickAsideCapability(StrEnum):
     NATIVE = "native"
     """CLI has a built-in side-question channel (inject immediately mid-turn)."""
+    STEP = "step"
+    """Reaches the model at the next step boundary, between tool calls, mid-turn."""
     QUEUE = "queue"
     """No side channel, but stdin stays open — message lands on next turn boundary."""
     MANUAL = "manual"
@@ -104,6 +106,9 @@ class CLIAdapter(ABC):
             return False
         self._paused = False
         return True
+
+    def notify(self, sid: str | None, text: str) -> None:  # noqa: B027
+        """Show this in the CLI, if there is a way to. The proxy has none between turns."""
 
     @property
     def is_paused(self) -> bool:

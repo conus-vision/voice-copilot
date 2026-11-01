@@ -10,32 +10,34 @@ The plugin also carries the controls back. Pause holds the agent at its next
 tool call, a Supervisor STOP refuses its tool calls until you take over, and a
 message you say by voice reaches the model while it works.
 
+Claude Code, Codex, Pi, oh-my-pi and DeepSeek Harness have full plugins, with the `vc` commands
+in their chat: `voice-copilot setup` connects them, and
+[plugins.md](plugins.md) covers them. This page is about the others.
+
+The hooks here don't answer `vc` words: a message like `vc off` goes to the agent as text. Use the
+panel to control a CLI connected this way, or `vc <cli>` before its hooks are installed, which goes
+through the proxy and takes those words.
+
 ## Quick start
 
-For one session there is nothing to install. `vc claude`, `vc pi` and the
-Launch tab in the panel load the plugin for that session.
-
-For every session, connect the CLI once and keep the panel running:
+Connect the CLI once and keep the panel running:
 
 ```bash
-voice-copilot integrate claude      # or pi, opencode, hermes, codex, gemini, ...
+voice-copilot integrate gemini      # or opencode, hermes, qwen, copilot, grok, droid, openhands, kimi
 voice-copilot serve                 # the panel on http://127.0.0.1:8765
-claude                              # use the CLI as usual, in any terminal
+gemini                              # use the CLI as usual, in any terminal
 ```
 
-The panel's Plugins tab has the same Install button for each CLI, and shows
-"connected now" after the first prompt. `voice-copilot integrate` with no
+The Plugins section of the panel's Settings tab has the same Install button for each CLI, and
+shows "connected now" after the first prompt. `voice-copilot integrate` with no
 argument lists every integration and whether it is installed.
 
 ## What each CLI gives
 
 | CLI | How it connects | Narration | Pause | Stop | Voice | Tested |
 | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | plugin with HTTP hooks | prompt, answer, tools, permission prompts | yes | yes | yes | yes |
-| Pi | TypeScript extension | prompt, answer and thinking as they stream, tools | yes | yes | yes | yes |
 | OpenCode | TypeScript plugin | prompt, answer and reasoning as they stream, tools, permission prompts | yes | yes | yes | yes |
 | Hermes Agent | Python plugin | prompt, tools, answer, approval prompts | yes | yes | yes | yes |
-| Codex CLI | hooks in `~/.codex/hooks.json` | prompt, tools, answer | yes | yes | yes | docs |
 | Gemini CLI | hooks in `~/.gemini/settings.json` | prompt, tools, answer | yes | yes | yes | docs |
 | Qwen Code | hooks in `~/.qwen/settings.json` | prompt, answer as it streams, tools, permission prompts | yes | yes | yes | docs |
 | Copilot CLI | `~/.copilot/hooks/voice-copilot.json` | prompt, tools, permission prompts | yes | yes | yes | docs |
@@ -49,9 +51,9 @@ narration, pause, stop and a voice message. "Docs" means it follows the CLI's
 published hook reference but has not been run here yet; please report what you
 see.
 
-Hooks carry no reasoning, so for Claude Code `vc claude` keeps the proxy as
-well: the proxy narrates the thinking and the plugin adds permission prompts.
-Pi's extension reports everything, so `vc pi` skips the proxy.
+Hooks carry no reasoning, so `vc claude` keeps the proxy as well: the proxy
+narrates the thinking, and a plugin loaded for that one session adds permission
+prompts.
 
 Copilot CLI, Droid, Gemini CLI, Grok Build, Hermes Agent, Kimi, OpenHands and
 Qwen Code send their model traffic past the proxy on a plain launch: to their
@@ -62,35 +64,11 @@ the proxy misses for each of them.
 
 ## Setting up each CLI
 
-Every CLI below can also be connected with its Install button in the panel's
-Plugins tab. `voice-copilot integrate <cli> --print` shows the steps to do it
+Every CLI below can also be connected with its Install button in the Plugins
+section of the panel's Settings tab. `voice-copilot integrate <cli> --print` shows the steps to do it
 by hand, and `--uninstall` removes what an install added. JSON settings files
 get a one-time backup next to them (`settings.json.voice-copilot.bak`), and
-only entries that run `voice-copilot-hook` are added or removed.
-
-### Claude Code
-
-- One session: `vc claude`, or Launch in the panel.
-- Every session: `voice-copilot integrate claude`. It writes a local plugin
-  marketplace next to the Voice Copilot config and runs `claude plugin
-  marketplace add` and `claude plugin install voice-copilot@voice-copilot`.
-- By hand, inside Claude Code: `/plugin marketplace add <folder>` and
-  `/plugin install voice-copilot@voice-copilot`, where the folder is the one
-  `voice-copilot integrate claude --print` prints.
-- The installed plugin posts to `127.0.0.1:8765`, the default port of
-  `voice-copilot serve`. Use `--port` when you run the panel elsewhere.
-- Remove it with `voice-copilot integrate claude --uninstall` or
-  `/plugin uninstall voice-copilot@voice-copilot`.
-
-Claude Code waits for the MessageDisplay hook before it draws a line of the
-answer. Voice Copilot answers at once, and the plugin caps the wait at five
-seconds, so a stuck panel can never freeze the terminal.
-
-### Pi
-
-- One session: `vc pi`, Launch in the panel, or `pi -e <path to voice-copilot.ts>`.
-- Every session: `voice-copilot integrate pi` copies the extension to
-  `~/.pi/agent/extensions/` (or `$PI_CODING_AGENT_DIR/extensions/`).
+only entries that run `voice-copilot-hub-hook` are added or removed.
 
 ### OpenCode
 
@@ -112,14 +90,6 @@ seconds, so a stuck panel can never freeze the terminal.
 
 Hermes 0.19 passes no streamed text or reasoning to plugins, so the answer is
 spoken when it is complete.
-
-### Codex CLI
-
-- `voice-copilot integrate codex` adds hooks to `~/.codex/hooks.json`.
-- Codex runs a hook only after you trust it: open Codex and approve the new
-  hooks in `/hooks`.
-- Codex passes no text to hooks until the turn ends, so `vc codex` still
-  narrates the answer through the proxy while it streams.
 
 ### Gemini CLI, Qwen Code, Droid, OpenHands
 
@@ -143,13 +113,10 @@ installs it. Kimi Code stops waiting for a hook after 10 minutes, so a pause
 lets go then. It takes no context from a tool hook, so a voice message reaches
 the agent when its turn ends. Tested end to end with Kimi Code 2.1.1.
 
-### DeepSeek Harness, Oh My Pi and others
+### Others
 
-DeepSeek Harness runs Claude-format hooks through its `dsh-hooks-claude-code`
-bridge, so the Claude entries from `voice-copilot integrate codex --print`
-(same format) can be used there by hand. Oh My Pi, Cline, Amp, Cursor CLI,
-Crush, Continue and Aider have no integration yet; they are narrated through
-the proxy as before.
+Cline, Amp, Cursor CLI and the rest of the launcher have no integration here: `vc <cli>` narrates
+them through the proxy, with the same `vc` words.
 
 ## How the controls work
 
@@ -165,7 +132,7 @@ plugin:
   pressing resume, lifts it.
 - A voice message goes to the agent at the next tool call it makes (Claude
   Code, Qwen, Gemini, Copilot), at the end of its turn if no tool call comes,
-  or at once for plugins that can steer a running turn (Pi, OpenCode, Hermes).
+  or at once for plugins that can steer a running turn (OpenCode, Hermes).
 
 Under `vc`, the terminal wrapper already owns pause and your voice messages
 (it suspends the process and types into the terminal), so the plugin only adds
@@ -188,10 +155,10 @@ yourself.
 | `VOICE_COPILOT_URL` | Where plugins and the forwarder post, default `http://127.0.0.1:8765/api/companion/v1` |
 | `VOICE_COPILOT_LAUNCH` | The id of the launch, so reports reach the instance that started the CLI |
 | `VOICE_COPILOT_MODE` | `narrate`, or `control` when the proxy already narrates this CLI |
-| `VOICE_COPILOT_HOOKS=off` | Silences the forwarder and the Pi, OpenCode and Hermes plugins without removing them |
+| `VOICE_COPILOT_HOOKS=off` | Silences the forwarder and the OpenCode and Hermes plugins without removing them |
 | `VOICE_COPILOT_TOKEN` | The panel token, if you set one (see Security); the forwarder and the plugins send it |
 
-The hook entries run `voice-copilot-hook`, a small forwarder installed with
+The hook entries run `voice-copilot-hub-hook`, a small forwarder installed with
 Voice Copilot. It exits at once without output when Voice Copilot is not
 running, so the CLI works as if the hook were not there. When the command is
 not on your `PATH` (a checkout run with `uv run`), `integrate` writes the full
@@ -212,15 +179,14 @@ The panel exposes the RFC 0001 companion interface over HTTP at
 | `POST /hooks/{claude,gemini,copilot}` | A hook payload in that CLI's own format; the reply is in the same format |
 | `GET /status` | Sessions currently reporting |
 
-The Pi, OpenCode and Hermes plugins in `src/voice_copilot/companion/assets/`
+The OpenCode and Hermes plugins in `src/voice_copilot/companion/assets/`
 are complete examples of the first four.
 
 ## Troubleshooting
 
-- The Plugins tab never shows "connected now": check that the panel runs on
+- The Plugins section never shows "connected now": check that the panel runs on
   the port the plugin posts to (`curl http://127.0.0.1:8765/api/companion/v1/status`),
   and that the CLI was restarted after the install.
-- Codex ignores the hooks: approve them in `/hooks`.
 - The same terminal is narrated twice: a CLI routed through the proxy by hand
   (a base-URL variable you set yourself) and also connected through its
   plugin reports everything twice. Use one of the two.
@@ -241,4 +207,4 @@ requests from other devices must carry its token; calls from this computer,
 the hooks and plugins included, still need none. On a machine shared with
 other people, set `VOICE_COPILOT_TOKEN` in the environment the CLIs start from:
 the panel then asks every caller for it, and the forwarder, the Claude Code
-hooks and the Pi, OpenCode and Hermes plugins send it.
+hooks and the OpenCode and Hermes plugins send it.

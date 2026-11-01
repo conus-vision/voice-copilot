@@ -13,6 +13,14 @@ work at checkpoints, speaks up when the agent drifts, and in Supervisor+ mode
 pauses it until you decide what happens next.
 
 <p align="center">
+  <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/demo.gif" alt="A real session: Codex says its new tests passed, all three failed, and the Supervisor names the line that broke them" width="100%">
+</p>
+
+The loop above is a real session. Codex wrote that its new tests passed. All three
+had failed, along with 83 others, and the Supervisor named the line that broke
+them. The narrator and the Supervisor ran on local models there.
+
+<p align="center">
   <a href="https://www.youtube.com/watch?v=CFDFU5S1Grk">
     <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/poster.jpg" alt="Watch the Voice Copilot demo (60s)" width="100%">
   </a>
@@ -71,42 +79,34 @@ turn while it can still be stopped. The details are in
 
 <a id="quickstart"></a>
 
-## Quickstart (about 3 minutes to the first narration)
+## Quickstart (two commands)
 
-> Goal: hear Voice Copilot narrate a real Claude Code session. You need Python
-> 3.11+ and a coding CLI you already sign in to (Claude Code, Codex, OpenCode,
-> Gemini CLI or Copilot CLI). You don't need an extra API key, because the
-> narrator and the Supervisor reuse that CLI.
+> Goal: hear Voice Copilot narrate a real session. You need Python 3.11+ and a
+> coding CLI you already log in to. With Claude Code or Codex there is no API key
+> to find: the narrator and the Supervisor reuse that CLI's login by default.
 
-**1. Install.** The default install uses cloud speech services and downloads no
-local models:
+**1. Install and connect:**
 
 ```bash
-pipx install voice-copilot          # or: uv tool install voice-copilot
+uv tool install voice-copilot       # or: pipx install voice-copilot
+voice-copilot setup
 ```
 
-**2. Open the panel.** This starts the local server and opens the panel in your
-browser:
+*Expected:* it connects whichever of Claude Code, Codex, Pi, oh-my-pi and DeepSeek
+Harness you have, asks to turn itself on, and plays a test line. The panel is at
+`http://127.0.0.1:8765`. Click once in it if the browser blocks autoplay.
 
-```bash
-voice-copilot serve
-```
+**2. Start your CLI the way you always do**, and give it a task.
 
-You should see `http://127.0.0.1:8765` open on the **Launch** tab, with every
-coding CLI found on your machine in the list.
+*Expected:* it says `Voice Copilot is connected. For the list of commands, type vc`,
+and within a few seconds you **hear** what the agent is doing. The panel's **Trace**
+tab shows every event, line and verdict.
 
-**3. Launch an agent from the panel.** Choose the working folder, then press
-**Launch** next to Claude Code (or Codex, OpenCode, Droid, Cline, Copilot CLI
-and others). The CLI opens in a new terminal that already goes through the
-local proxy, so there are no environment variables to copy. From your own shell,
-`vc claude` does the same thing in the current folder.
+That's the loop: **start your CLI, listen, step in when it matters.**
 
-The panel then shows a live trace, and within a few seconds you hear a short
-spoken summary of what the agent is doing. If the browser blocks autoplay, click
-once anywhere in the panel.
-
-That is the whole loop: launch, listen, and open the trace when you want the
-details.
+**Any other CLI** goes through the local proxy, with the same commands: `vc gemini`,
+`vc opencode`, `vc copilot`, `vc qwen`, `vc aider`. Or run `voice-copilot serve` and
+press **Launch** next to a CLI on the panel's Launch tab, which needs no env vars.
 
 > **Voice input is off in this build** while the push-to-talk → speech-to-text →
 > agent path is reworked. Narration, the launcher and the trace work as usual.
@@ -134,7 +134,7 @@ open the trace.
 Authors of coding CLIs can have their tool expose a clean event stream for
 companions like this one (see the integration RFC below).
 
-> **Status: 0.1.0 alpha, the Supervisor release.** It is aimed at advanced users
+> **Status: 0.3.0 alpha, plugins and chat commands.** It is aimed at advanced users
 > who are comfortable testing CLI workflows and sending feedback. Voice Copilot
 > is made by Volodymyr Moskvin at [Conus Vision](https://conus.vision), and we
 > welcome collaboration: [info@conus.vision](mailto:info@conus.vision).
@@ -160,11 +160,18 @@ companions like this one (see the integration RFC below).
   route set. A CLI is narrated when its model traffic goes through the proxy; a
   CLI that only talks to its vendor's own service still launches, but gives the
   narrator nothing to work with.
-- Plugs into the plugin and hook systems of twelve CLIs (Claude Code, Pi,
-  OpenCode, Hermes Agent, Codex, Gemini CLI, Qwen Code, Copilot CLI, Grok
-  Build, Droid, OpenHands, Kimi Code), so they are narrated without the proxy and
-  answer to pause, stop and voice messages. `voice-copilot integrate` sets one
-  up.
+- Connects to Claude Code, Codex, Pi, oh-my-pi and DeepSeek Harness through
+  plugins, so a CLI you start yourself is narrated with nothing rerouted.
+  `voice-copilot setup` connects them. Nine more (OpenCode, Hermes Agent, Gemini
+  CLI, Qwen Code, Copilot CLI, Grok Build, Droid, OpenHands, Kimi Code) report
+  through their own hooks once `voice-copilot integrate` has set them up.
+- Takes commands in your chat: type `vc` in any connected CLI for the list. Only
+  a message that is exactly a command counts, so a sentence that mentions `vc`
+  still goes to your agent.
+- Lets you step in from the panel: on Claude Code your message reaches the agent
+  as a real message in the middle of its turn. See
+  [docs/plugins.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/plugins.md)
+  for how it arrives on the other CLIs.
 - Offers push-to-talk (`Alt+Space`, off in this build): your question goes
   through speech-to-text and is typed into the running agent, or queued for its
   next turn.
@@ -221,33 +228,6 @@ uvx voice-copilot run claude -p "refactor the auth module"
 
 Codex works the same way: `voice-copilot run codex -p "explain what this repo does"`.
 
-## Narrate a CLI through its own plugin
-
-Most coding CLIs can load a plugin or run hooks, and Voice Copilot ships one
-for twelve of them. The CLI then reports from the inside: your prompt, the
-answer, every tool call with its result, and the moment it waits for your
-permission. Nothing is rerouted, so the CLI keeps its own login and endpoint.
-The plugin also takes the controls back to the CLI: pause holds the agent at
-its next tool call, a Supervisor STOP refuses its tool calls, and a voice
-message reaches the model while it works.
-
-For one session there is nothing to set up: `vc claude`, `vc pi` and the
-Launch tab load the plugin themselves. To narrate a CLI you start on your own,
-connect it once and keep the panel running:
-
-```bash
-voice-copilot integrate claude     # or pi, opencode, hermes, codex, gemini, qwen, ...
-voice-copilot serve
-claude                             # any terminal, as usual
-```
-
-The panel's Plugins tab has the same Install button per CLI and shows which
-ones are connected right now. Claude Code, Pi, OpenCode, Hermes Agent and Kimi
-Code were tested end to end; the hook setups for Codex, Gemini CLI, Qwen Code,
-Copilot CLI, Grok Build, Droid and OpenHands follow each CLI's hook reference.
-Every step, per CLI, is in
-[docs/integrations.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/integrations.md).
-
 ## Narrate _any_ CLI through the proxy
 
 The **Launch** tab does this for you. To wire it up by hand
@@ -303,6 +283,41 @@ proxy does not touch.
 If you already point a CLI at another endpoint (an Anthropic-compatible vendor
 or a company gateway), `vc` keeps it: the proxy forwards to your endpoint
 instead of the default upstream above, and the panel says so.
+
+## Use it as a plugin
+
+Keep starting your CLI the way you always do, and let its plugin bring Voice Copilot along: the
+first session starts it, and you can correct the agent mid-turn from the panel.
+
+```sh
+uv tool install voice-copilot
+voice-copilot setup
+```
+
+`setup` connects Claude Code, Codex, Pi, oh-my-pi and DeepSeek Harness, whichever you have.
+Any other CLI works through `vc <cli>`.
+
+Then type `vc` in the chat for the list of commands: `vc off` for this session, `vc off all` for
+every one, `vc check` to have it look at the agent right now, `vc ask` to ask the second model,
+`vc speed`, `vc volume`, `vc model`, `vc review` and more. The model never sees those, and a
+message that only mentions them goes to it as usual.
+
+[docs/plugins.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/plugins.md)
+covers all of them, how a plugin compares with `vc <cli>`, how your messages reach the agent and
+how to add other CLIs.
+
+Nine more CLIs report through their own hooks or plugin. Connect one and keep the panel running:
+
+```bash
+voice-copilot integrate gemini     # or opencode, hermes, qwen, copilot, grok, droid, openhands, kimi
+voice-copilot serve
+gemini                             # any terminal, as usual
+```
+
+The Plugins section of the panel's Settings tab has the same Install button per CLI. OpenCode,
+Hermes Agent and Kimi Code were tested end to end; the others follow each CLI's hook reference.
+Every step is in
+[docs/integrations.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/integrations.md).
 
 ## Hotkeys
 
@@ -402,8 +417,8 @@ idea with advanced users. Planned work:
   budgets) and corrections delivered to the agent as well as spoken
 - improve the quality and timing of narration and cut its noise
 - make multi-session workflows and session switching stable
-- run the hook integrations of Codex, Gemini CLI, Qwen Code, Copilot CLI and
-  the others against each CLI, and add Oh My Pi, Cline and Amp
+- run the hook integrations of Gemini CLI, Qwen Code, Copilot CLI and the
+  others against each CLI, carry the `vc` words through them, and add Cline and Amp
 - refine the companion interface with CLI authors so it fits real integrations
 - improve advanced configuration, onboarding and developer documentation
 - explore richer host UIs such as VS Code while keeping the core small

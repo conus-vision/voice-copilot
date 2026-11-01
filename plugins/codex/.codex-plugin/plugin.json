@@ -1,0 +1,17 @@
+{
+  "name": "voice-copilot",
+  "version": "0.3.0",
+  "description": "A second model narrates what the agent does, reviews it, and lets you correct it mid-turn. Needs the voice-copilot package.",
+  "author": { "name": "Conus Vision", "email": "info@conus.vision" },
+  "homepage": "https://github.com/conus-vision/voice-copilot",
+  "repository": "https://github.com/conus-vision/voice-copilot",
+  "license": "MIT",
+  "keywords": ["voice", "tts", "narration", "supervisor"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Voice Copilot",
+    "shortDescription": "Narration, a second-opinion supervisor and mid-turn corrections",
+    "developerName": "Conus Vision",
+    "category": "Productivity"
+  }
+}

@@ -33,15 +33,18 @@ from pathlib import Path
 from typing import Any
 
 from voice_copilot import __version__
+from voice_copilot.companion.runtime import NO_HOOKS_ENV
 from voice_copilot.core.config import config_path
 
 DEFAULT_PORT = 8765
 ASSETS = Path(__file__).parent / "assets"
 #: Marks every hook entry we add, so uninstall finds exactly ours.
-MARKER = "voice-copilot-hook"
+MARKER = "voice-copilot-hub-hook"
 CLAUDE_PLUGIN = "voice-copilot"
 CLAUDE_SESSION_PLUGIN = "voice-copilot-session"
 CLAUDE_MARKETPLACE = "voice-copilot"
+#: How Claude Code records the plugin that `voice-copilot setup` installs.
+CLAUDE_INSTALL_ID = "voice-copilot@voice-copilot"
 
 #: Hook timeouts. A paused agent waits at its next tool call.
 GATE_TIMEOUT_S = 3600
@@ -292,94 +295,43 @@ class Integration:
 
 
 @dataclass
-class ClaudeIntegration(Integration):
-    def target(self) -> Path | None:
-        return data_dir() / "claude-marketplace"
+class BundledPlugin(Integration):
+    """A plugin from `plugins/`, connected by `voice-copilot setup`: one way to install it."""
+
+    #: The CLI's executable, which is also the name `setup` knows it by.
+    binary: str = ""
+    #: Where the CLI records this plugin, relative to home; contains `marker` once it's in.
+    record: tuple[str, ...] = ()
+    marker: str = "voice-copilot"
 
     def installed(self) -> bool:
-        record = _claude_config_dir() / "plugins" / "installed_plugins.json"
+        path = _home().joinpath(*self.record)
+        if path.is_dir():
+            return any(path.rglob(f"*{self.marker}*"))
         try:
-            data = json.loads(record.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            return self.marker in path.read_text(encoding="utf-8")
+        except OSError:
             return False
-        plugins = data.get("plugins") if isinstance(data, dict) else None
-        return isinstance(plugins, dict) and f"{CLAUDE_PLUGIN}@{CLAUDE_MARKETPLACE}" in plugins
-
-    def _marketplace(self, port: int) -> Path:
-        root = self.target()
-        assert root is not None
-        write_claude_plugin(root / "plugins" / CLAUDE_PLUGIN, companion_url(port))
-        (root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
-        (root / ".claude-plugin" / "marketplace.json").write_text(
-            json.dumps(
-                {
-                    "name": CLAUDE_MARKETPLACE,
-                    "owner": {"name": "Conus Vision"},
-                    "description": "Voice Copilot plugins",
-                    "plugins": [
-                        {
-                            "name": CLAUDE_PLUGIN,
-                            "source": f"./plugins/{CLAUDE_PLUGIN}",
-                            "description": "Narrates Claude Code sessions by voice",
-                        }
-                    ],
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        return root
 
     def steps(self, *, port: int = DEFAULT_PORT) -> list[str]:
-        root = self.target()
-        return [
-            f"Run `voice-copilot integrate claude --print` once: it writes the plugin to {root}.",
-            f"In Claude Code, run: /plugin marketplace add {root}",
-            f"Then run: /plugin install {CLAUDE_PLUGIN}@{CLAUDE_MARKETPLACE}",
-            f"Keep `voice-copilot serve` running (port {port}) and use `claude` as usual.",
-        ]
-
-    def prepare(self, *, port: int = DEFAULT_PORT) -> None:
-        self._marketplace(port)
+        return ["Run `voice-copilot setup`: it connects every CLI it finds, this one included."]
 
     def install(self, *, port: int = DEFAULT_PORT) -> str:
-        root = self._marketplace(port)
-        claude = shutil.which("claude")
-        if claude is None:
-            raise IntegrationError(
-                f"`claude` is not on PATH. The plugin is ready in {root}; inside Claude Code run "
-                f"`/plugin marketplace add {root}` and then `/plugin install "
-                f"{CLAUDE_PLUGIN}@{CLAUDE_MARKETPLACE}`."
-            )
-        steps = [
-            [claude, "plugin", "marketplace", "add", str(root)],
-            [claude, "plugin", "install", f"{CLAUDE_PLUGIN}@{CLAUDE_MARKETPLACE}"],
-        ]
-        if self.installed():
-            # Same version string, new port: reinstall to refresh the cached copy.
-            steps = [
-                [claude, "plugin", "uninstall", f"{CLAUDE_PLUGIN}@{CLAUDE_MARKETPLACE}"],
-                [claude, "plugin", "marketplace", "remove", CLAUDE_MARKETPLACE],
-                *steps,
-            ]
-        for argv in steps:
-            _run(argv, allow_fail="marketplace" in argv and "remove" in argv)
-        return (
-            f"Installed the {CLAUDE_PLUGIN} plugin for Claude Code (user scope), reporting to "
-            f"port {port}. New Claude Code sessions are narrated while `voice-copilot serve` runs."
-        )
+        from voice_copilot.companion import setup
+
+        target = next(t for t in setup.TARGETS if t.binary == self.binary)
+        if shutil.which(self.binary) is None:
+            raise IntegrationError(f"`{self.binary}` is not on PATH")
+        ok, detail = target.install(setup.bundle_root())
+        if not ok:
+            raise IntegrationError(f"{self.label}: {detail}")
+        return f"{self.label} is connected. Type vc in its chat for the list of commands."
 
     def uninstall(self) -> str:
-        claude = shutil.which("claude")
-        if claude is None:
-            raise IntegrationError("`claude` is not on PATH; run `/plugin uninstall` inside Claude")
-        _run(
-            [claude, "plugin", "uninstall", f"{CLAUDE_PLUGIN}@{CLAUDE_MARKETPLACE}"],
-            allow_fail=True,
+        raise IntegrationError(
+            f"Remove it with {self.label}'s own plugin command. To stop it everywhere without "
+            "removing anything, type `vc off all`."
         )
-        _run([claude, "plugin", "marketplace", "remove", CLAUDE_MARKETPLACE], allow_fail=True)
-        return "Removed the Voice Copilot plugin from Claude Code."
 
 
 def _run(argv: list[str], *, allow_fail: bool = False) -> None:
@@ -664,31 +616,68 @@ _CLAUDE_STYLE_EVENTS = (
 )
 
 _INTEGRATIONS: list[Integration] = [
-    ClaudeIntegration(
+    BundledPlugin(
         id="claude",
         label="Claude Code",
-        method="plugin with HTTP hooks",
+        method="plugin, connected by `voice-copilot setup`",
         gives="your prompts, the visible answer, tool calls with results, permission prompts",
-        controls=("pause", "stop", "voice"),
+        controls=("pause", "stop", "voice", "vc words"),
         verified=True,
         docs_url="https://code.claude.com/docs/en/hooks",
         session_auto=True,
-        notes="Thinking is not passed to hooks; `vc claude` still narrates it through the proxy.",
+        binary="claude",
+        record=(".claude", "plugins", "installed_plugins.json"),
+        marker=CLAUDE_INSTALL_ID,
+        notes="Thinking is not passed to plugins; `vc claude` still narrates it through the proxy.",
     ),
-    FileIntegration(
+    BundledPlugin(
+        id="codex",
+        label="Codex CLI",
+        method="plugin, connected by `voice-copilot setup`",
+        gives="your prompts, tool calls with results, the final answer",
+        controls=("pause", "stop", "voice", "vc words"),
+        verified=True,
+        docs_url="https://github.com/openai/codex/tree/main/codex-rs/hooks",
+        binary="codex",
+        record=(".codex", "config.toml"),
+        marker='[plugins."voice-copilot@voice-copilot"]',
+        after_install=(
+            "Trust its hooks: `voice-copilot setup` offers to, or run /hooks in Codex.",
+        ),
+        notes="Codex streams no text to hooks; `vc codex` narrates the answer through the proxy.",
+    ),
+    BundledPlugin(
         id="pi",
         label="Pi",
-        method="extension",
+        method="plugin, connected by `voice-copilot setup`",
         gives="your prompts, streamed text and thinking, tool calls with results",
-        controls=("pause", "stop", "voice"),
+        controls=("pause", "stop", "voice", "vc words"),
         verified=True,
         docs_url="https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md",
-        session_auto=True,
-        asset="pi/voice-copilot.ts",
-        dest=(".pi", "agent", "extensions", "voice-copilot.ts"),
-        env_dir="PI_CODING_AGENT_DIR",
-        env_dest=("extensions", "voice-copilot.ts"),
-        notes="`vc pi` loads the extension for one session: nothing to install for that.",
+        binary="pi",
+        record=(".pi", "agent", "settings.json"),
+    ),
+    BundledPlugin(
+        id="omp",
+        label="oh-my-pi",
+        method="plugin, connected by `voice-copilot setup`",
+        gives="your prompts, streamed text and thinking, tool calls with results",
+        controls=("pause", "stop", "voice", "vc words"),
+        verified=True,
+        docs_url="https://github.com/can1357/oh-my-pi",
+        binary="omp",
+        record=(".omp", "plugins", "omp-plugins.lock.json"),
+    ),
+    BundledPlugin(
+        id="dsh",
+        label="DeepSeek Harness",
+        method="plugin, connected by `voice-copilot setup`",
+        gives="your prompts, the answer, tool calls with results",
+        controls=("pause", "stop", "voice", "vc words"),
+        verified=True,
+        docs_url="https://github.com/deepseek-ai",
+        binary="dsh",
+        record=(".dsh", "profiles"),
     ),
     FileIntegration(
         id="opencode",
@@ -722,25 +711,6 @@ _INTEGRATIONS: list[Integration] = [
         ),
         notes="Hermes 0.19 passes no streamed text or reasoning to plugins, so the answer is "
         "spoken when it is done.",
-    ),
-    HooksJsonIntegration(
-        id="codex",
-        label="Codex CLI",
-        method="hooks in ~/.codex/hooks.json",
-        gives="your prompts, tool calls with results, the final answer",
-        controls=("pause", "stop", "voice"),
-        verified=False,
-        docs_url="https://github.com/openai/codex/tree/main/codex-rs/hooks",
-        dest=(".codex", "hooks.json"),
-        env_dir="CODEX_HOME",
-        env_dest=("hooks.json",),
-        events=(*_CLAUDE_STYLE_EVENTS, "PermissionRequest"),
-        tool_events=("PreToolUse", "PostToolUse", "PermissionRequest"),
-        after_install=(
-            "Open Codex and approve the new hooks in /hooks: Codex runs a hook only after you "
-            "trust it.",
-        ),
-        notes="Codex streams no text to hooks; `vc codex` narrates the answer through the proxy.",
     ),
     HooksJsonIntegration(
         id="gemini",
@@ -874,9 +844,6 @@ def describe_all(*, port: int = DEFAULT_PORT) -> list[dict[str, Any]]:
 
 # ------------------------------------------------------- one-session launches
 
-#: CLIs whose session plugin reports everything the proxy would (text,
-#: thinking, tools): `vc` narrates them through the plugin and skips the proxy.
-_PLUGIN_NARRATES = frozenset({"pi"})
 #: CLIs whose model traffic skips the proxy on a plain launch: it goes to
 #: their vendor's backend, or needs a provider or auth setting the launcher
 #: cannot guess (see `proxy_note` in the CLI catalog). Once their hooks or
@@ -889,8 +856,6 @@ _HOOKS_NARRATE = frozenset(
 
 def plugin_narrates(cli: str) -> bool:
     """Whether `vc` and Launch narrate `cli` through its own reports, not the proxy."""
-    if cli in _PLUGIN_NARRATES:
-        return True
     integration = _BY_ID.get(cli)
     if cli not in _HOOKS_NARRATE or integration is None:
         return False
@@ -913,7 +878,8 @@ def session_wiring(cli: str, *, port: int, launch_id: str, proxied: bool) -> Ses
     """Arguments and environment for launching `cli` narrated by this instance.
 
     Every launch gets the environment, so hooks installed for good find this
-    instance; Claude Code and Pi also get their plugin for this one session.
+    instance; Claude Code also gets a plugin for this one session, which adds what
+    the proxy can't see. A plugin from `plugins/` stays silent under `vc`.
     """
     if cli not in _BY_ID:
         # A shell or an unknown program: whatever runs inside it is not ours
@@ -926,18 +892,15 @@ def session_wiring(cli: str, *, port: int, launch_id: str, proxied: bool) -> Ses
         "VOICE_COPILOT_LAUNCH": launch_id,
         "VOICE_COPILOT_MODE": mode,
     }
+    if proxied and isinstance(_BY_ID[cli], BundledPlugin):
+        # The proxy narrates this session, so the plugin from `setup` must not as well.
+        env[NO_HOOKS_ENV] = "1"
     if cli == "claude":
         plugin = claude_session_plugin(port, launch_id, mode)
         return SessionWiring(
             ["--plugin-dir", str(plugin)],
             env,
             "Voice Copilot plugin loaded: permission prompts are narrated too.",
-        )
-    if cli == "pi":
-        return SessionWiring(
-            ["-e", str(ASSETS / "pi" / "voice-copilot.ts")],
-            env,
-            "Narrated through the Voice Copilot extension for Pi.",
         )
     if cli in _HOOKS_NARRATE and not proxied:
         kind = "plugin" if cli == "hermes" else "hooks"

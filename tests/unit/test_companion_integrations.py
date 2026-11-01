@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from voice_copilot.companion import integrations
+from voice_copilot.companion import integrations, setup
 
 
 @pytest.fixture
@@ -44,7 +44,7 @@ def test_json_hooks_merge_keeps_the_users_own_hooks(home: Path) -> None:
     ours = before_tool[1]
     assert len(before_tool) == 2
     assert ours["matcher"] == ".*"
-    assert ours["hooks"][0]["command"] == "/usr/bin/voice-copilot-hook gemini"
+    assert ours["hooks"][0]["command"] == "/usr/bin/voice-copilot-hub-hook gemini"
     assert ours["hooks"][0]["timeout"] == integrations.GATE_TIMEOUT_S * 1000
     assert ours["hooks"][0]["name"] == "voice-copilot"
     assert gemini.installed()
@@ -56,16 +56,15 @@ def test_json_hooks_merge_keeps_the_users_own_hooks(home: Path) -> None:
     assert not gemini.installed()
 
 
-def test_codex_hooks_name_the_cli_for_the_claude_dialect(home: Path) -> None:
-    codex = integrations.get("codex")
-    codex.install()
-    data = json.loads((home / ".codex" / "hooks.json").read_text())
+def test_hooks_name_the_cli_for_the_claude_dialect(home: Path) -> None:
+    qwen = integrations.get("qwen")
+    qwen.install()
+    data = json.loads((home / ".qwen" / "settings.json").read_text())
     command = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert command == "/usr/bin/voice-copilot-hook claude --cli codex"
+    assert command == "/usr/bin/voice-copilot-hub-hook claude --cli qwen"
     assert data["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"] == integrations.GATE_TIMEOUT_S
-    assert "matcher" not in data["hooks"]["UserPromptSubmit"][0]
-    codex.uninstall()
-    assert json.loads((home / ".codex" / "hooks.json").read_text()) == {}
+    qwen.uninstall()
+    assert json.loads((home / ".qwen" / "settings.json").read_text()) == {}
 
 
 def test_a_broken_settings_file_is_left_alone(home: Path) -> None:
@@ -83,7 +82,7 @@ def test_copilot_gets_its_own_hooks_file(home: Path) -> None:
     data = json.loads((home / ".copilot" / "hooks" / "voice-copilot.json").read_text())
     assert data["version"] == 1
     pre = data["hooks"]["preToolUse"][0]
-    assert pre["bash"] == "/usr/bin/voice-copilot-hook copilot preToolUse"
+    assert pre["bash"] == "/usr/bin/voice-copilot-hub-hook copilot preToolUse"
     assert pre["timeoutSec"] == integrations.GATE_TIMEOUT_S
     copilot.uninstall()
     assert not copilot.installed()
@@ -111,13 +110,16 @@ def test_kimi_hooks_live_between_markers_in_config_toml(
     assert kimi.target() == home / "elsewhere" / "config.toml"
 
 
-def test_pi_extension_is_copied_where_pi_loads_it(home: Path) -> None:
-    pi = integrations.get("pi")
-    pi.install()
-    target = home / ".pi" / "agent" / "extensions" / "voice-copilot.ts"
-    assert target.read_text() == (integrations.ASSETS / "pi" / "voice-copilot.ts").read_text()
-    assert pi.installed()
-    pi.uninstall()
+def test_opencode_plugin_is_copied_where_opencode_loads_it(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    opencode = integrations.get("opencode")
+    opencode.install()
+    target = home / ".config" / "opencode" / "plugins" / "voice-copilot.ts"
+    assert target.read_text() == (integrations.ASSETS / "opencode" / "voice-copilot.ts").read_text()
+    assert opencode.installed()
+    opencode.uninstall()
     assert not target.exists()
 
 
@@ -153,43 +155,31 @@ def test_claude_plugin_posts_every_event_to_voice_copilot(tmp_path: Path) -> Non
     assert hooks["MessageDisplay"][0]["hooks"][0]["timeout"] <= 5
 
 
-def test_claude_install_without_the_cli_explains_the_manual_route(
-    home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_bundled_plugin_needs_its_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(integrations.shutil, "which", lambda name: None)
-    with pytest.raises(integrations.IntegrationError, match="/plugin marketplace add"):
-        integrations.get("claude").install(port=8765)
-    marketplace = home / "vc-data" / "claude-marketplace"
-    listing = json.loads((marketplace / ".claude-plugin" / "marketplace.json").read_text())
-    assert listing["plugins"][0]["source"] == "./plugins/voice-copilot"
+    with pytest.raises(integrations.IntegrationError, match="not on PATH"):
+        integrations.get("claude").install()
 
 
-def test_claude_install_runs_the_plugin_commands(
-    home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_bundled_plugin_installs_the_way_setup_does(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
     def fake_run(argv: list[str], **kwargs: object) -> object:
         calls.append(argv)
         return type("Done", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    monkeypatch.setattr(integrations.subprocess, "run", fake_run)
-    report = integrations.get("claude").install(port=9000)
+    monkeypatch.setattr(setup.subprocess, "run", fake_run)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(integrations.shutil, "which", lambda name: f"/usr/bin/{name}")
+    report = integrations.get("claude").install()
     assert calls[0][1:4] == ["plugin", "marketplace", "add"]
     assert calls[1][1:] == ["plugin", "install", "voice-copilot@voice-copilot"]
-    assert "port 9000" in report
-    hooks = json.loads(
-        (
-            home
-            / "vc-data"
-            / "claude-marketplace"
-            / "plugins"
-            / "voice-copilot"
-            / "hooks"
-            / "hooks.json"
-        ).read_text()
-    )
-    assert hooks["hooks"]["Stop"][0]["hooks"][0]["url"].startswith("http://127.0.0.1:9000/")
+    assert "connected" in report
+
+
+def test_a_bundled_plugin_is_removed_with_the_clis_own_command() -> None:
+    with pytest.raises(integrations.IntegrationError, match="own plugin command"):
+        integrations.get("codex").uninstall()
 
 
 def test_session_wiring(home: Path) -> None:
@@ -200,13 +190,11 @@ def test_session_wiring(home: Path) -> None:
         "VOICE_COPILOT_URL": "http://127.0.0.1:8800/api/companion/v1",
         "VOICE_COPILOT_LAUNCH": "8800-x",
         "VOICE_COPILOT_MODE": "control",
+        "VOICE_COPILOT_NO_HOOKS": "1",
     }
-    pi = integrations.session_wiring("pi", port=8800, launch_id="8800-y", proxied=False)
-    assert pi.args[0] == "-e" and pi.args[1].endswith("voice-copilot.ts")
-    assert pi.env["VOICE_COPILOT_MODE"] == "narrate"
     other = integrations.session_wiring("codex", port=8800, launch_id="8800-z", proxied=True)
     assert other.args == [] and other.env["VOICE_COPILOT_LAUNCH"] == "8800-z"
-    assert integrations.plugin_narrates("pi") and not integrations.plugin_narrates("claude")
+    assert not integrations.plugin_narrates("pi") and not integrations.plugin_narrates("claude")
 
 
 def test_every_integration_describes_itself() -> None:
@@ -239,10 +227,7 @@ def test_installed_hooks_narrate_clis_the_proxy_cannot_see(home: Path) -> None:
 
 
 def test_clis_the_proxy_does_see_stay_on_it(home: Path) -> None:
-    # Codex reaches the proxy through its config flag; installed hooks only
-    # add control, the proxy keeps narrating the model's stream.
-    integrations.get("codex").install(port=8800)
-    assert integrations.get("codex").installed()
+    # Codex reaches the proxy through its config flag, and the proxy narrates the model's stream.
     assert not integrations.plugin_narrates("codex")
     assert not integrations.plugin_narrates("claude")
     assert not integrations.plugin_narrates("aider")

@@ -60,6 +60,17 @@ def test_unknown_cli_raises() -> None:
         build_narration_command("totally-unknown", "/usr/bin/x", "s", "u")
 
 
+def test_pi_narrates_with_the_users_own_default_model_and_nothing_else() -> None:
+    argv, stdin_text = build_narration_command(
+        "pi", "pi", "be brief", "what happened", system_file_path="sys.txt"
+    )
+    assert "--model" not in argv
+    assert argv[argv.index("--system-prompt") + 1] == "sys.txt"
+    for flag in ("--no-tools", "--no-extensions", "--no-session", "--no-context-files"):
+        assert flag in argv
+    assert stdin_text == "what happened"
+
+
 def test_copilot_narrator_can_never_run_a_shell_or_write_files() -> None:
     # The narrator reads text the agent wrote; an injected instruction must
     # not turn into a command. A deny rule beats the blanket tool approval.

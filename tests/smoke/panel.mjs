@@ -44,9 +44,10 @@ try {
     const shown = await page.$eval(`.panel[data-panel="${tab}"]`, (el) => el.classList.contains("active"));
     if (!shown) problems.push(`tab ${tab} did not show its panel`);
   }
-  await page.click('.tab[data-tab="plugins"]');
+  await page.click('.tab[data-tab="settings"]');
+  await page.$eval("#plugins-fold", (el) => { el.open = true; });
   await page.waitForSelector("#plugins-list .cli-row", { timeout: 10_000 }).catch(() =>
-    problems.push("the Plugins tab listed no integration"),
+    problems.push("the Plugins section listed no integration"),
   );
   const iconFont = await page.evaluate(() => document.fonts.check('24px "Material Symbols Rounded"'));
   if (!iconFont) problems.push("icon font not loaded");

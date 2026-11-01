@@ -111,7 +111,7 @@ def test_integrations_listing() -> None:
     client, _ = _client()
     data = client.get(f"{BASE}/integrations").json()
     ids = [i["id"] for i in data["integrations"]]
-    assert ids[:2] == ["claude", "pi"]
+    assert ids[:2] == ["claude", "codex"]
     claude = data["integrations"][0]
     assert claude["verified"] is True and claude["session_auto"] is True
     assert client.post(f"{BASE}/integrations/nope/install").status_code == 404

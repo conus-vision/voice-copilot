@@ -1,0 +1,4 @@
+{
+  "description": "Report the session to the local Voice Copilot companion and say the user's messages to the agent. The module runs inside Claude Code and talks to 127.0.0.1 only.",
+  "modules": ["./voice-copilot.ts"]
+}

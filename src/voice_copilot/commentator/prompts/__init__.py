@@ -1,7 +1,7 @@
 """System prompts for the commentator: English instructions, any output language.
 
 Each prompt is one English template (``narrator.md``, ``summary.md``,
-``supervisor.md``). The narration language only changes two things:
+``supervisor.md``, ``ask.md``). The narration language only changes two things:
 
 * ``languages/<code>.md`` adds a short note on register plus native example
   lines, so the voice sounds like a person speaking that language rather
@@ -65,7 +65,11 @@ def _language_guide(language: str) -> str:
 
 
 def _render(template: str, language: str, style: str) -> str:
-    text = _read(template)
+    return fill(_read(template), language, style)
+
+
+def fill(text: str, language: str, style: str = "api") -> str:
+    """A template as the model reads it: also for a draft that isn't on this list yet."""
     text = text.replace("{language_guide}", _language_guide(language))
     text = text.replace("{language}", language_name(language))
     # A language without a guide leaves an empty paragraph behind.
@@ -84,6 +88,11 @@ def load(language: str, style: str = "api") -> str:
 def load_summary(language: str, style: str = "api") -> str:
     """System prompt for the summary-update call."""
     return _render("summary.md", language, style)
+
+
+def load_ask(language: str, style: str = "api") -> str:
+    """System prompt for a question the user puts to the second model: `vc ask`."""
+    return _render("ask.md", language, style)
 
 
 def load_supervisor(language: str, style: str = "api") -> str:

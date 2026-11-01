@@ -16,6 +16,7 @@ import typer
 
 from voice_copilot import cli
 from voice_copilot.companion import integrations
+from voice_copilot.companion.commands import WORDS
 from voice_copilot.proxy.cli_catalog import CLI_CATALOG
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -70,6 +71,9 @@ def test_the_docs_show_commands_at_all() -> None:
 def test_documented_command_exists(doc: str, line: str) -> None:
     tokens = shlex.split(line, comments=True)[1:]
     if not tokens or tokens[0].startswith("-"):
+        return
+    # `vc off` and its kind go to a chat, or become `voice-copilot command off` in a shell.
+    if tokens[0] in WORDS:
         return
     # An unknown first word is a CLI name: `voice-copilot claude` runs `vc claude`.
     if tokens[0] in _GROUP.commands:

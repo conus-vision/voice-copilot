@@ -34,7 +34,7 @@ def test_every_prompt_names_the_reply_language(language: str, style: str) -> Non
     name = LANGUAGE_NAMES[language]
     assert load(language, style).endswith(f"Reply in {name}.")
     assert f"in {name}." in load_summary(language, style)
-    assert f"sentences in {name}" in load_supervisor(language, style)
+    assert f"in {name}," in load_supervisor(language, style)
 
 
 @pytest.mark.parametrize("language", _LANGUAGES)
@@ -88,8 +88,8 @@ def test_user_messages_are_english_and_end_on_the_reply_language(style: str) -> 
     memory = "Смотрели парсеры."
     assert f"USER REQUEST:\n{query}" in narration
     assert f"SO FAR:\n{memory}" in narration
-    assert "NEW EVENTS (the agent's actions):" in narration
-    assert narration.endswith("Reply in Russian, one or two sentences:")
+    assert "NEW EVENTS (the agent's actions: the turn is not over):" in narration
+    assert narration.endswith("Reply in Russian:")
     # No square-bracket labels: copilot-cli greps for them.
     assert "[" not in narration
 
@@ -100,7 +100,7 @@ def test_user_messages_are_english_and_end_on_the_reply_language(style: str) -> 
         user_query="fix it", summary=None, history=[], reason="turn ended", language="es"
     )
     assert "GOAL:\nfix it" in verdict
-    assert verdict.endswith("one or two sentences in Spanish):")
+    assert verdict.endswith("one sentence in Spanish):")
 
 
 @pytest.mark.parametrize("language", _LANGUAGES)

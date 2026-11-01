@@ -48,7 +48,7 @@
     },
     "messageDelivery": {
       "type": "string",
-      "enum": ["native", "queue", "manual"]
+      "enum": ["native", "step", "queue", "manual"]
     },
     "subscription": {
       "type": "string",

@@ -63,6 +63,7 @@ class OpenAIProvider(LLMProvider):
         self._api_key = api_key or get_secret("OPENAI_API_KEY")
         self._base_url = base_url
         self._client: Any = None
+        self._request_options: dict[str, Any] = {}
         self._reasoning = is_reasoning_model(model)
         self._reasoning_effort = reasoning_effort or _default_effort(model)
         self._send_effort = True
@@ -143,5 +144,5 @@ class OpenAIProvider(LLMProvider):
             params: dict[str, Any] = {"max_completion_tokens": max(max_tokens, _REASONING_BUDGET)}
             if self._send_effort:
                 params["reasoning_effort"] = self._reasoning_effort
-            return params
-        return {"max_tokens": max_tokens, "temperature": temperature}
+            return {**params, **self._request_options}
+        return {"max_tokens": max_tokens, "temperature": temperature, **self._request_options}
