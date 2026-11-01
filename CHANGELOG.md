@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.0 — 2026-11-01
+
+Plugins and chat commands.
+
+### Added
+- **Plugins** for Claude Code, Codex, Pi, oh-my-pi and DeepSeek Harness: keep
+  starting your CLI as usual, and the first session brings Voice Copilot along.
+  `voice-copilot setup` connects whichever you have. See `docs/plugins.md`.
+- **Commands in the chat:** type `vc` in any connected CLI for the list. `vc off`
+  for this session, `vc off all` for every one, `vc check`, `vc ask`, `vc speed`,
+  `vc volume`, `vc model`, `vc review` and more. Only a message that is exactly a
+  command counts. CLIs without a full plugin get the same words through the proxy.
+- **Step in from the panel:** on Claude Code your message reaches the agent as a
+  real message in the middle of its turn. On other CLIs it arrives as your own
+  message where the CLI allows it, else as hook text; `docs/plugins.md` has the table.
+- A greeting when a session starts, so you know it's connected and what to type.
+
+### Fixed
+- The panel's Trace autoscroll did nothing: the whole page grew and scrolled instead
+  of the list. The page now stays the size of the window.
+
 ## 0.1.0 — 2026-09-02
 
 The Supervisor release.

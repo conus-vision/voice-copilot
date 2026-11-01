@@ -13,6 +13,14 @@ when the agent drifts, and can pause it until you weigh in.** You keep
 control without staring at the output.
 
 <p align="center">
+  <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/demo.gif" alt="A real session: Codex says its new tests passed, all three failed, and the Supervisor names the line that broke them" width="100%">
+</p>
+
+The loop above is a real session. Codex wrote that its new tests passed. All three
+had failed, along with 83 others, and the Supervisor named the line that broke
+them. The narrator and the Supervisor ran on local models there.
+
+<p align="center">
   <a href="https://www.youtube.com/watch?v=CFDFU5S1Grk">
     <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/poster.jpg" alt="Watch the Voice Copilot demo (60s)" width="100%">
   </a>
@@ -68,38 +76,34 @@ about a bad turn while it can still be stopped. Details in
 
 <a id="quickstart"></a>
 
-## Quickstart (~3 minutes to first narration)
+## Quickstart (two commands)
 
-> Goal: hear Voice Copilot narrate a real Claude Code session. You need Python
-> 3.11+ and a coding CLI you already log in to (Claude Code, Codex, …). No
-> extra API key: the narrator and the Supervisor reuse that CLI by default.
+> Goal: hear Voice Copilot narrate a real session. You need Python 3.11+ and a
+> coding CLI you already log in to. With Claude Code or Codex there is no API key
+> to find: the narrator and the Supervisor reuse that CLI's login by default.
 
-**1. Install** (cloud-light defaults, no local models required):
-
-```bash
-pipx install voice-copilot          # or: uv tool install voice-copilot
-```
-
-**2. Open the panel.** This starts the local server and opens it in the
-browser:
+**1. Install and connect:**
 
 ```bash
-voice-copilot serve
+uv tool install voice-copilot       # or: pipx install voice-copilot
+voice-copilot setup
 ```
 
-*Expected:* a tab opens at `http://127.0.0.1:8765` on the **Launch** tab, with
-every coding CLI found on your machine listed.
+*Expected:* it connects whichever of Claude Code, Codex, Pi, oh-my-pi and DeepSeek
+Harness you have, asks to turn itself on, and plays a test line. The panel is at
+`http://127.0.0.1:8765`. Click once in it if the browser blocks autoplay.
 
-**3. Launch an agent from the panel.** Set the working folder, then press
-**Launch** next to Claude Code (or Codex, OpenCode, Droid, Cline, Copilot CLI,
-…). It opens in a new terminal already routed through the local proxy — no
-env vars to copy. The same thing from your own shell: `vc claude`.
+**2. Start your CLI the way you always do**, and give it a task.
 
-*Expected:* the panel shows a live trace, and within a few seconds you **hear**
-a short spoken summary of what the agent is doing. Click once in the panel if
-the browser blocks autoplay.
+*Expected:* it says `Voice Copilot is connected. For the list of commands, type vc`,
+and within a few seconds you **hear** what the agent is doing. The panel's **Trace**
+tab shows every event, line and verdict.
 
-That's the loop: **launch → listen → read the trace when you want detail.**
+That's the loop: **start your CLI, listen, step in when it matters.**
+
+**Any other CLI** goes through the local proxy, with the same commands: `vc gemini`,
+`vc opencode`, `vc copilot`, `vc qwen`, `vc aider`. Or run `voice-copilot serve` and
+press **Launch** next to a CLI on the panel's Launch tab, which needs no env vars.
 
 > **Voice input is temporarily disabled** in this build while the push-to-talk
 > → STT → inject flow is reworked. Narration, the launcher and the trace are
@@ -129,15 +133,16 @@ trace only when an update tells you it matters.
 **CLI authors** who want their tool to expose a clean event stream for
 companion narration (see the integration RFC below).
 
-> **Status: 0.1.0 alpha — the Supervisor release.** Aimed at advanced users
+> **Status: 0.2.0 alpha — plugins and chat commands.** Aimed at advanced users
 > comfortable testing CLI workflows and sharing feedback. Created by Volodymyr
 > Moskvin, [Conus Vision](https://conus.vision). We are open to collaboration —
 > [info@conus.vision](mailto:info@conus.vision).
 
 ## What it does
 
-- Wraps an LLM coding CLI (Claude Code, Codex CLI — more to come) and listens
-  to its event stream in real time.
+- Connects to Claude Code, Codex, Pi, oh-my-pi and DeepSeek Harness through
+  plugins, and to any other CLI through a local proxy, and follows the agent's
+  event stream in real time.
 - A **Supervisor** — the strongest model your CLI can run — reviews the agent
   at checkpoints and warns you out loud when it drifts, loops, touches files
   outside the task or runs something destructive. **Supervisor+** pauses the
@@ -147,6 +152,13 @@ companion narration (see the integration RFC below).
   narrator and the strongest for the Supervisor from the CLI's own catalog.
 - Keeps listening as the primary experience: hear what matters, read the trace
   when useful, and interrupt only when needed.
+- **Commands in your chat:** type `vc` in any connected CLI for the list. Only a
+  message that is exactly a command counts, so a sentence that mentions `vc` still
+  goes to your agent.
+- **Step in from the panel:** on Claude Code your message reaches the agent as a
+  real message in the middle of its turn. See
+  [docs/plugins.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/plugins.md)
+  for how it arrives on the other CLIs.
 - A **browser popup** on localhost exposes Play/Pause/Mute/Speak/Interrupt
   buttons and settings.
 - A **launcher** for ~25 coding CLIs (Claude Code, Codex, OpenClaw, OpenCode,
@@ -236,6 +248,28 @@ OAuth-authenticated CLIs (Claude Code subscription, Codex login flow) work
 out of the box — we only see the bearer token on the wire and forward it.
 The OAuth browser round-trip happens on different domains that we don't
 intercept.
+
+## Use it as a plugin
+
+Keep starting your CLI the way you always do, and let its plugin bring Voice Copilot along: the
+first session starts it, and you can correct the agent mid-turn from the panel.
+
+```sh
+uv tool install voice-copilot
+voice-copilot setup
+```
+
+`setup` connects Claude Code, Codex, Pi, oh-my-pi and DeepSeek Harness, whichever you have.
+Any other CLI works through `vc <cli>`.
+
+Then type `vc` in the chat for the list of commands: `vc off` for this session, `vc off all` for
+every one, `vc check` to have it look at the agent right now, `vc ask` to ask the second model,
+`vc speed`, `vc volume`, `vc model`, `vc review` and more. The model never sees those, and a
+message that only mentions them goes to it as usual.
+
+[docs/plugins.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/plugins.md)
+covers all of them, how a plugin compares with `vc <cli>`, how your messages reach the agent and
+how to add other CLIs.
 
 ## Hotkeys
 
