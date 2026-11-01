@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voice-copilot"
-version = "0.2.0"
+version = "0.3.0"
 description = "Voice-first narrator and control layer for LLM coding CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,6 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
     "Topic :: Software Development",
 ]
@@ -52,11 +53,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Piper voices through sherpa-onnx (ONNX Runtime and espeak-ng, no PyTorch).
 local-tts = [
-    "torch>=2.2",
-    "torchaudio>=2.2",
-    "numpy>=1.26",
-    "soundfile>=0.12",
+    "sherpa-onnx>=1.13",
+    # Its sdist declares no dependencies, so a resolver that reads it (uv's
+    # universal lock) misses the native half; the wheels pin it exactly.
+    "sherpa-onnx-core>=1.13",
 ]
 local-stt = [
     "faster-whisper>=1.0",
@@ -79,7 +81,10 @@ dev = [
 
 [project.scripts]
 voice-copilot = "voice_copilot.cli:main"
+# What the plugins in plugins/ run for each hook; see voice_copilot/companion/hook_forward.py.
 voice-copilot-hook = "voice_copilot.companion.hook_forward:main"
+# What `voice-copilot integrate` installs for other CLIs; see voice_copilot/companion/hook.py.
+voice-copilot-hub-hook = "voice_copilot.companion.hook:main"
 
 [project.urls]
 Homepage = "https://voice-copilot.conus.vision"

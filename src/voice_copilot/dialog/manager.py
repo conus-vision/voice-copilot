@@ -87,13 +87,15 @@ class DialogManager:
 
         if k is EventKind.USER_INTERRUPT:
             # Treat as "pause to talk". The user will push-to-talk next.
-            if await self._adapter.pause():
+            if self._take_over_narration_hold() or await self._adapter.pause():
                 await self._emit_paused("interrupt")
             return
 
         if k is EventKind.USER_PAUSE_TOGGLE:
             if self._adapter.is_paused:
                 if await self._adapter.resume():
+                    # The user let it go: a hold that was in place is over too.
+                    self._take_over_narration_hold()
                     await self._emit_resumed("toggle")
             else:
                 if await self._adapter.pause():
@@ -116,13 +118,20 @@ class DialogManager:
         if k is EventKind.SUPERVISOR_STOP:
             # Supervisor+ judged the agent off track. Pause it and leave it
             # paused: resuming is the user's call, from the panel or the hotkey.
-            if not self._adapter.is_paused and await self._adapter.pause():
+            # A STOP usually lands while the line before it is still playing;
+            # if that line holds the agent, the hold becomes the stop — else
+            # the end of the line would quietly resume an agent we meant to halt.
+            if self._take_over_narration_hold() or (
+                not self._adapter.is_paused and await self._adapter.pause()
+            ):
                 await self._emit_paused("supervisor")
             return
 
         if k is EventKind.TTS_STARTED:
             if not self._cfg.hold_agent_while_narrating:
                 return
+            if not ev.payload.get("listeners", True):
+                return  # no panel open: nobody will report the line played
             # Never fight a pause the user asked for — only resume what we
             # suspended ourselves, and only once the line has been read.
             if not self._adapter.is_paused and await self._adapter.pause():
@@ -133,6 +142,13 @@ class DialogManager:
 
         if k is EventKind.PLAYBACK_READY:
             await self._release_narration_hold()
+            return
+
+        if k is EventKind.TTS_FINISHED:
+            # A line that failed or was cut off never plays, so no playback
+            # report follows; let the agent go now, not at the watchdog.
+            if ev.payload.get("aborted") or ev.payload.get("error"):
+                await self._release_narration_hold()
             return
 
         if k is EventKind.TURN_ENDED:
@@ -169,6 +185,18 @@ class DialogManager:
                 },
             )
         )
+
+    def _take_over_narration_hold(self) -> bool:
+        """Stop treating the current suspension as a narration hold.
+
+        Returns True if one was in place: the agent stays paused, but the end
+        of the line (or the watchdog) no longer resumes it.
+        """
+        if not self._auto_paused_by_narration:
+            return False
+        self._auto_paused_by_narration = False
+        self._cancel_narration_watchdog()
+        return True
 
     def _arm_narration_watchdog(self) -> None:
         """Lift the hold even if the panel never reports playback.

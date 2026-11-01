@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from voice_copilot.core.bus import EventBus
@@ -67,6 +68,31 @@ def decode_tool_input(raw: str | None) -> Any:
         return text
 
 
+#: File headers of a Codex `apply_patch` body; `Move to` names a rename's target.
+_PATCH_FILE_LINE = re.compile(
+    r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$", re.MULTILINE
+)
+
+
+def file_paths_from_tool(tool: str | None, tool_input: Any) -> list[str]:
+    """Every path this tool call writes to (empty if it isn't an edit).
+
+    Codex's `apply_patch` carries no path field: its input is the patch text
+    itself (raw, or under `input`), naming each file in a header line.
+    """
+    single = file_path_from_tool(tool, tool_input)
+    if single:
+        return [single]
+    if not tool or tool.strip().lower().replace("-", "_") != "apply_patch":
+        return []
+    patch = tool_input
+    if isinstance(patch, dict):
+        patch = patch.get("input") or patch.get("patch")
+    if not isinstance(patch, str):
+        return []
+    return list(dict.fromkeys(_PATCH_FILE_LINE.findall(patch)))
+
+
 def file_path_from_tool(tool: str | None, tool_input: Any) -> str | None:
     """Path this tool call writes to, or None if it isn't an edit."""
     if not tool or not isinstance(tool_input, dict):
@@ -100,6 +126,5 @@ async def publish_tool_call(
         EventKind.TOOL_CALL_STARTED,
         {"tool_use_id": tool_use_id, "tool": tool, "input": tool_input},
     )
-    path = file_path_from_tool(tool, tool_input)
-    if path:
+    for path in file_paths_from_tool(tool, tool_input):
         await _emit(EventKind.FILE_EDITED, {"path": path, "via": "tool_call"})

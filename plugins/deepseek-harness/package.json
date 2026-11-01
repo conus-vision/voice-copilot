@@ -1,6 +1,6 @@
 {
   "name": "voice-copilot-dsh",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A second model narrates what DeepSeek Harness does and reviews it, through the local Voice Copilot companion.",
   "keywords": ["dsh-plugin", "voice", "narration", "supervisor"],
   "license": "MIT",

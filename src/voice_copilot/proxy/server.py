@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+import os
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 import uvicorn
@@ -39,6 +42,10 @@ from voice_copilot.proxy.session import SessionRegistry
 
 log = logging.getLogger(__name__)
 
+#: Connecting must be quick; a model stream may go quiet for minutes while it
+#: thinks, so reading has no limit.
+_UPSTREAM_TIMEOUT = httpx.Timeout(connect=15.0, read=None, write=60.0, pool=None)
+
 #: How long a server waits for open connections on shutdown before closing them.
 _GRACEFUL_SHUTDOWN_S = 3
 
@@ -58,6 +65,13 @@ _HOP_BY_HOP = {
     "te",
     "trailer",
 }
+
+#: Request headers that must not reach the upstream as the client sent them.
+#: `accept-encoding`: the proxy decodes the response and strips its
+#: content-encoding, so it may only ask for what httpx can decode; left out,
+#: httpx offers exactly that. Forwarded, a Bun-based client's `br` got brotli
+#: bodies that reached the client undecoded and unlabelled.
+_REQUEST_DROP = _HOP_BY_HOP | {"accept-encoding"}
 
 
 class _SSEParser(Protocol):
@@ -87,6 +101,9 @@ _PROVIDERS: dict[str, tuple[str, Any]] = {
     "groq": ("https://api.groq.com/openai", "openai"),
     "mistral": ("https://api.mistral.ai", "openai"),
     "deepseek": ("https://api.deepseek.com", "openai"),
+    # DeepSeek's Anthropic-compatible endpoint — what DeepSeek Harness speaks
+    # (Messages API, base URL from $DEEPSEEK_BASE_URL).
+    "deepseek-anthropic": ("https://api.deepseek.com/anthropic", "anthropic"),
     "ollama": ("http://127.0.0.1:11434", "ollama"),
     "gemini": ("https://generativelanguage.googleapis.com", None),  # passthrough
     "opencode-zen": ("https://opencode.ai/zen/v1", "opencode_zen"),
@@ -167,6 +184,22 @@ def _is_subagent_request(headers: Any) -> bool:
     return isinstance(name, str) and name not in ("", "/root")
 
 
+def _is_foreign_web_origin(origin: str | None) -> bool:
+    """Whether a request comes from a web page on some other site.
+
+    CLIs send no Origin. A browser tab on any site does, and a text/plain
+    POST needs no CORS preflight: without this, any page the user had open
+    could post a made-up "question" here and take over the narration.
+    Local tools (localhost origins, desktop shells with opaque origins) pass.
+    """
+    if not origin:
+        return False
+    parts = urlsplit(origin.strip())
+    if parts.scheme not in ("http", "https"):
+        return False
+    return parts.hostname not in ("127.0.0.1", "localhost", "::1")
+
+
 def _wants_websocket(req: Request) -> bool:
     """Whether the client is asking to upgrade this request to a WebSocket.
 
@@ -223,10 +256,25 @@ def create_proxy_app(
     bus: EventBus,
     registry: SessionRegistry | None = None,
     commands: ChatCommands | None = None,
+    *,
+    upstreams: Mapping[str, str] | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="voice-copilot proxy")
+    """`upstreams` replaces a route's default host (a user's own base URL)."""
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # One pooled client for every upstream call: a fresh client per
+        # request paid a TCP and TLS handshake on each model call.
+        app.state.http = httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT)
+        try:
+            yield
+        finally:
+            await app.state.http.aclose()
+
+    app = FastAPI(title="voice-copilot proxy", lifespan=lifespan)
     app.state.bus = bus
     app.state.registry = registry or SessionRegistry()
+    app.state.http = None
 
     @app.get("/health")
     async def health() -> dict[str, bool]:
@@ -238,6 +286,9 @@ def create_proxy_app(
         parser_kind: str | None,
     ) -> Callable[[str, Request], Awaitable[Response]]:
         async def route(path: str, req: Request) -> Response:
+            if _is_foreign_web_origin(req.headers.get("origin")):
+                log.warning("proxy: refusing a request from web origin %s", req.headers["origin"])
+                return Response(status_code=403, content=b"voice-copilot proxy: web origin refused")
             if _wants_websocket(req):
                 # Codex prefers a WebSocket for /responses
                 # (`openai-beta: responses_websockets=...`). We are an HTTP
@@ -259,6 +310,7 @@ def create_proxy_app(
             # the only way the commentator knows the question — the proxy
             # otherwise only sees the model's reply stream.
             query = None
+            question = None
             internal = False
             if req.method == "POST" and body and narrating:
                 try:
@@ -270,9 +322,9 @@ def create_proxy_app(
                 # A request whose "user" text is the CLI's own scaffolding is the
                 # CLI talking to itself; everything it streams back is tagged so
                 # the narrator and supervisor ignore it and the Trace folds it.
-                internal = bool(query) and clean_user_query(query or "") is None
+                question = clean_user_query(query) if query else None
+                internal = bool(query) and question is None
                 if query:
-                    sess.last_query = query
                     await bus.publish(
                         Event(
                             kind=EventKind.USER_MESSAGE,
@@ -289,10 +341,13 @@ def create_proxy_app(
                 method=req.method,
                 path=f"/{provider}/{path}" if path else f"/{provider}",
                 request_bytes=len(body),
-                query=query,
+                # What the human asked, without the blocks the CLI adds: the
+                # panel shows it to tell sessions apart.
+                query=question,
             )
             return await _forward(
                 req,
+                client=app.state.http,
                 upstream=f"{upstream_base}/{path}",
                 parser_factory=_make_parser_factory(
                     bus,
@@ -309,7 +364,7 @@ def create_proxy_app(
     for provider, (upstream_base, parser_kind) in _PROVIDERS.items():
         app.add_api_route(
             f"/{provider}/{{path:path}}",
-            _make_route(provider, upstream_base, parser_kind),
+            _make_route(provider, (upstreams or {}).get(provider, upstream_base), parser_kind),
             methods=["GET", "POST", "PUT", "DELETE"],
             name=f"{provider}_proxy",
         )
@@ -323,19 +378,24 @@ async def _forward(
     upstream: str,
     parser_factory: Any,
     prefetched_body: bytes | None = None,
+    client: httpx.AsyncClient | None = None,
 ) -> Response:
     body = prefetched_body if prefetched_body is not None else await req.body()
-    headers = {k: v for k, v in req.headers.items() if k.lower() not in _HOP_BY_HOP}
+    headers = {k: v for k, v in req.headers.items() if k.lower() not in _REQUEST_DROP}
     params = dict(req.query_params)
 
-    client = httpx.AsyncClient(timeout=None)
+    # The app's pooled client; a throwaway one only where no lifespan ran
+    # (a test app driven without startup).
+    own_client = client is None
+    http = client if client is not None else httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT)
     try:
-        upstream_req = client.build_request(
+        upstream_req = http.build_request(
             req.method, upstream, content=body, headers=headers, params=params
         )
-        upstream_resp = await client.send(upstream_req, stream=True)
+        upstream_resp = await http.send(upstream_req, stream=True)
     except Exception as e:
-        await client.aclose()
+        if own_client:
+            await http.aclose()
         log.warning("proxy upstream error: %s", e)
         return Response(status_code=502, content=f"upstream error: {e}".encode())
 
@@ -367,6 +427,10 @@ async def _forward(
     )
 
     async def iter_chunks() -> AsyncIterator[bytes]:
+        # Narration is a side channel: a parser that trips over an unexpected
+        # payload is switched off for this response, and the user's stream
+        # carries on untouched.
+        live_parser = parser
         try:
             # aiter_bytes() yields httpx-decoded (decompressed) bytes, so the
             # parser sees plaintext SSE even when the upstream gzips the
@@ -375,14 +439,23 @@ async def _forward(
             # too. (aiter_raw would hand the parser compressed bytes it can't
             # parse — which silently produced no narration events.)
             async for chunk in upstream_resp.aiter_bytes():
-                if parser is not None:
-                    await parser.feed(chunk)
+                if live_parser is not None:
+                    try:
+                        await live_parser.feed(chunk)
+                    except Exception:
+                        log.exception("proxy: parser failed; narration off for this response")
+                        live_parser = None
                 yield chunk
         finally:
-            if parser is not None:
-                await parser.close()
-            await upstream_resp.aclose()
-            await client.aclose()
+            try:
+                if live_parser is not None:
+                    await live_parser.close()
+            except Exception:
+                log.exception("proxy: parser failed while closing")
+            finally:
+                await upstream_resp.aclose()
+                if own_client:
+                    await http.aclose()
 
     # Body is now decoded, so the upstream's content-encoding/length no longer
     # describe it — dropping them lets the client read the plaintext stream.
@@ -396,6 +469,17 @@ async def _forward(
     )
 
 
+def proxy_bind_host() -> str:
+    """Where the proxy listens: loopback, whatever address the panel binds to.
+
+    The proxy relays requests to model APIs with the caller's credentials and
+    answers anyone who can reach it, a local Ollama included; on a LAN
+    address it would be an open relay. `VOICE_COPILOT_PROXY_HOST` is there for
+    a setup that really wants that.
+    """
+    return os.environ.get("VOICE_COPILOT_PROXY_HOST", "").strip() or "127.0.0.1"
+
+
 def build_proxy_server(
     bus: EventBus,
     *,
@@ -404,6 +488,7 @@ def build_proxy_server(
     registry: SessionRegistry | None = None,
     quiet: bool = False,
     commands: ChatCommands | None = None,
+    upstreams: Mapping[str, str] | None = None,
 ) -> uvicorn.Server:
     """Build (but don't start) the proxy's uvicorn server.
 
@@ -418,7 +503,7 @@ def build_proxy_server(
     """
     from voice_copilot.web.server import ManagedServer
 
-    app = create_proxy_app(bus, registry=registry, commands=commands)
+    app = create_proxy_app(bus, registry=registry, commands=commands, upstreams=upstreams)
     # ws="none" keeps uvicorn from answering upgrade requests itself, so a
     # client that asks for a WebSocket (Codex does, for /responses) lands in
     # the normal HTTP route and gets our 426 — which makes it retry over plain
@@ -470,6 +555,7 @@ def base_urls_for(host: str, port: int) -> dict[str, str]:
         "GROQ_BASE_URL": f"{root}/groq/v1",
         "MISTRAL_BASE_URL": f"{root}/mistral/v1",
         "DEEPSEEK_BASE_URL": f"{root}/deepseek/v1",
+        "DEEPSEEK_ANTHROPIC_BASE_URL": f"{root}/deepseek-anthropic",
         "OLLAMA_BASE_URL": f"{root}/ollama",
         "GEMINI_BASE_URL": f"{root}/gemini",
         "OPENCODE_ZEN_BASE_URL": f"{root}/opencode-zen",

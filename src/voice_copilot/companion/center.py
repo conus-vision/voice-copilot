@@ -24,7 +24,7 @@ from voice_copilot.core.bus import EventBus
 from voice_copilot.core.config import CommentatorCliOverride, Config, ProviderConfig
 from voice_copilot.core.events import Event, EventKind
 from voice_copilot.core.secrets import get_secret
-from voice_copilot.web.server import apply_config
+from voice_copilot.web.server import ConfigRejected, apply_config
 
 log = logging.getLogger(__name__)
 
@@ -226,8 +226,14 @@ class CommandCenter:
         handler = getattr(self, f"_do_{verb}", None)
         if handler is None:
             return {"text": self._say("unknown")}
-        answer: dict[str, Any] = await handler(args, session_id)
+        try:
+            answer: dict[str, Any] = await handler(args, session_id)
+        except ConfigRejected as e:
+            return {"text": self._say("failed", error=e)}
         return answer
+
+    async def _apply(self, cfg: Config) -> None:
+        await apply_config(self._state.app, cfg)
 
     async def watch(self) -> None:
         """Keep up with the panel, and pass on warnings when nobody is there to hear them."""
@@ -391,7 +397,7 @@ class CommandCenter:
             if over is not None:
                 over.supervisor_model = model if third_party else name
             cfg.commentator.supervisor.model = model if third_party else name
-            apply_config(self._state.app, cfg)
+            await self._apply(cfg)
             return {"text": self._say("review_model_set", name=name)}
         if third_party:
             options: dict[str, str | int | float | bool] = {"model": model}
@@ -407,7 +413,7 @@ class CommandCenter:
             over.mode, over.model = "current", name
         else:
             return {"text": self._say("no_cli")}
-        apply_config(self._state.app, cfg)
+        await self._apply(cfg)
         return {"text": self._say("model_set", name=name)}
 
     # ------------------------------------------------- how much it does and sees
@@ -427,7 +433,7 @@ class CommandCenter:
         over = cfg.commentator.per_cli.get(cli) if cli else None
         if over is not None:
             over.supervisor_mode = "default"
-        apply_config(self._state.app, cfg)
+        await self._apply(cfg)
         return {"text": self._say_choice("review_set", args[0])}
 
     async def _do_detail(self, args: list[str], _sid: str | None) -> dict[str, Any]:
@@ -440,7 +446,7 @@ class CommandCenter:
                 "pick": "vc detail",
             }
         cfg.commentator.min_importance = _DETAIL_TO_IMPORTANCE[args[0]]  # type: ignore[assignment]
-        apply_config(self._state.app, cfg)
+        await self._apply(cfg)
         return {"text": self._say("detail_set", value=args[0])}
 
     async def _do_access(self, args: list[str], _sid: str | None) -> dict[str, Any]:
@@ -452,7 +458,7 @@ class CommandCenter:
                 "pick": "vc access",
             }
         cfg.commentator.file_access = args[0]  # type: ignore[assignment]
-        apply_config(self._state.app, cfg)
+        await self._apply(cfg)
         model = self._commentator.models()["supervisor"]
         return {"text": self._say_choice("access_set", args[0], model=model)}
 

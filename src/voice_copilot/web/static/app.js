@@ -14,6 +14,9 @@
 (() => {
   const qs  = (sel) => document.querySelector(sel);
   const qsa = (sel) => document.querySelectorAll(sel);
+  const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+  ));
 
   const isMini =
     new URLSearchParams(location.search).get("mini") === "1" ||
@@ -102,6 +105,153 @@
     const restored = TAB_ALIASES[saved] || saved;
     if (restored && qs(`.panel[data-panel="${restored}"]`)) activateTab(restored);
   } catch {}
+
+
+  // ------------------------------------------------------------------ plugins
+  // CLIs that report through their own plugin or hook system. The list comes
+  // from /api/companion/v1/integrations; "connected now" means the CLI has
+  // reported to this panel in the last few minutes.
+
+  const PLUGIN_ACCENTS = {
+    claude: "#d97757", pi: "#f5b301", opencode: "#cfd3dc", hermes: "#9aa0ad",
+    codex: "#10a37f", gemini: "#4285f4", qwen: "#7c3aed", copilot: "#b3b9c4",
+    grok: "#d0d4de", droid: "#d0d4de", openhands: "#ffb454", kimi: "#6f5cff",
+  };
+  const PLUGIN_CONTROL_LABELS = { pause: "pause", stop: "Supervisor stop", voice: "voice messages" };
+  const PLUGIN_LIVE_WINDOW_S = 600;
+  const pluginReports = {};
+
+  function pluginsVisible() {
+    return !!document.querySelector('.panel.active #plugins-fold[open]');
+  }
+
+  async function loadPlugins() {
+    const list = document.getElementById("plugins-list");
+    const summary = document.getElementById("plugins-summary");
+    if (!list || !summary) return;
+    try {
+      const r = await fetch("/api/companion/v1/integrations");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      renderPlugins(list, summary, data.integrations || [], data.status || {});
+    } catch (e) {
+      summary.textContent = `Could not load plugins: ${e.message || e}`;
+    }
+  }
+
+  function pluginState(item, status) {
+    const now = Date.now() / 1000;
+    const live = (status.sessions || []).some(
+      s => s.cli === item.id && now - s.last_seen < PLUGIN_LIVE_WINDOW_S);
+    if (live) return { state: "live", label: "connected now" };
+    if (item.installed) return { state: "installed", label: "installed" };
+    if ((status.clis_seen || {})[item.id]) return { state: "installed", label: "seen this run" };
+    return { state: "missing", label: item.session_auto ? "loaded by vc" : "not installed" };
+  }
+
+  function pluginStepsHtml(steps) {
+    const items = [];
+    for (const step of steps || []) {
+      // Config snippets arrive as their own multi-line step: attach them to
+      // the instruction before, as a code block.
+      if (step.includes("\n") && items.length) {
+        items[items.length - 1] += `<pre>${escapeHtml(step)}</pre>`;
+      } else {
+        items.push(escapeHtml(step));
+      }
+    }
+    return items.map(html => `<li>${html}</li>`).join("");
+  }
+
+  function renderPlugins(list, summary, items, status) {
+    const open = new Set(
+      [...list.querySelectorAll("details[open]")].map(d => d.dataset.pluginSteps));
+    list.innerHTML = "";
+    let live = 0;
+    let installed = 0;
+    for (const item of items) {
+      const st = pluginState(item, status);
+      if (st.state === "live") live += 1;
+      if (item.installed) installed += 1;
+      const controls = (item.controls || [])
+        .map(c => `<span class="plugin-chip">${escapeHtml(PLUGIN_CONTROL_LABELS[c] || c)}</span>`)
+        .join("");
+      const tested = item.verified
+        ? `<span class="plugin-chip" title="Checked end to end against the real CLI">tested</span>`
+        : `<span class="plugin-chip" title="Built from the CLI's published hook docs">per the CLI's docs</span>`;
+      const report = pluginReports[item.id];
+      const action = item.installed
+        ? `<button type="button" class="ghost" data-plugin-uninstall="${item.id}">Remove</button>`
+        : `<button type="button" class="primary" data-plugin-install="${item.id}">Install</button>`;
+      const row = document.createElement("div");
+      row.className = "cli-row";
+      row.style.setProperty("--cli-accent", PLUGIN_ACCENTS[item.id] || "#7aa2ff");
+      row.innerHTML = `
+        <span class="cli-badge" aria-hidden="true">${escapeHtml(item.id.slice(0, 2).toUpperCase())}</span>
+        <div class="cli-row-main">
+          <div class="cli-row-title">
+            <h3>${escapeHtml(item.label)}</h3>
+            <span class="cli-status" data-state="${st.state}">${escapeHtml(st.label)}</span>
+          </div>
+          <p class="cli-row-desc">${escapeHtml(item.method)}. Narrates ${escapeHtml(item.gives)}.</p>
+          <div class="plugin-chips">${controls}${tested}</div>
+          <p class="plugin-report" data-state="${report ? report.state : ""}" ${report ? "" : "hidden"}>${report ? escapeHtml(report.text) : ""}</p>
+        </div>
+        <div class="cli-row-actions">
+          <button type="button" class="cmd-chip" data-plugin-copy="${escapeHtml(item.command)}" title="Copy the terminal command">
+            <code>${escapeHtml(item.command)}</code>
+            <span class="material-symbols-rounded" aria-hidden="true">content_copy</span>
+          </button>
+          ${action}
+        </div>
+        <details class="cli-advanced" data-plugin-steps="${item.id}" ${open.has(item.id) ? "open" : ""}>
+          <summary><span class="material-symbols-rounded" aria-hidden="true">tune</span>Do it by hand</summary>
+          <ol class="plugin-steps">${pluginStepsHtml(item.steps)}</ol>
+          ${item.notes ? `<p class="plugin-note">${escapeHtml(item.notes)}</p>` : ""}
+          <p class="plugin-note"><a href="${escapeHtml(item.docs_url)}" target="_blank" rel="noreferrer noopener">How ${escapeHtml(item.label)} loads plugins and hooks</a></p>
+        </details>`;
+      list.appendChild(row);
+    }
+    summary.textContent =
+      `${live} connected now · ${installed} installed · ${items.length} CLIs supported`;
+  }
+
+  async function runPluginAction(id, action) {
+    if (action === "uninstall" && !confirm(`Remove the Voice Copilot plugin from ${id}?`)) return;
+    pluginReports[id] = { state: "", text: action === "install" ? "Installing…" : "Removing…" };
+    await loadPlugins();
+    try {
+      const r = await fetch(`/api/companion/v1/integrations/${encodeURIComponent(id)}/${action}`,
+        { method: "POST" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+      pluginReports[id] = { state: "ok", text: data.report || "Done." };
+    } catch (e) {
+      pluginReports[id] = { state: "error", text: String(e.message || e) };
+    }
+    await loadPlugins();
+  }
+
+  document.addEventListener("click", (ev) => {
+    const target = ev.target instanceof Element ? ev.target : null;
+    const install = target?.closest("[data-plugin-install]");
+    if (install) { runPluginAction(install.dataset.pluginInstall, "install"); return; }
+    const remove = target?.closest("[data-plugin-uninstall]");
+    if (remove) { runPluginAction(remove.dataset.pluginUninstall, "uninstall"); return; }
+    const copy = target?.closest("[data-plugin-copy]");
+    if (copy) {
+      navigator.clipboard?.writeText(copy.dataset.pluginCopy).then(() => {
+        copy.classList.add("copied");
+        setTimeout(() => copy.classList.remove("copied"), 1200);
+      }).catch(() => {});
+    }
+  });
+
+  // Keep "connected now" honest while the tab is open.
+  document.getElementById("plugins-fold")?.addEventListener("toggle", () => {
+    if (pluginsVisible()) loadPlugins();
+  });
+  setInterval(() => { if (pluginsVisible()) loadPlugins(); }, 5000);
 
   // ------------------------------------------------------------------ ws
 
@@ -708,13 +858,14 @@
   applyTracePauseButton();
   applyPromptToggle();
 
-  muteBtn.addEventListener("click", () => {
+  function toggleMute() {
     muted = !muted;
     send({ type: "cmd", cmd: muted ? "mute" : "unmute" });
     applyMuteButton();
     reportPanelState();
     bc.postMessage({ type: "state", paused, muted });
-  });
+  }
+  muteBtn.addEventListener("click", toggleMute);
   interrupt.addEventListener("click", () => send({ type: "cmd", cmd: "interrupt" }));
 
   // Supervisor+ (or the interrupt button / alt+p) left the agent suspended;
@@ -751,7 +902,24 @@
   // instead of racing it. Per-browser preference; the server forgets it when
   // the run ends, so we re-send on every (re)connect.
   let holdWhileNarrating = false;
-  try { holdWhileNarrating = localStorage.getItem("vc.holdWhileNarrating") === "1"; } catch {}
+  // Until this browser has a choice of its own, the config's
+  // `dialog.hold_agent_while_narrating` stands: sending a default `false` on
+  // every connect silently overrode it.
+  let holdChosenHere = false;
+  try {
+    const stored = localStorage.getItem("vc.holdWhileNarrating");
+    if (stored !== null) {
+      holdWhileNarrating = stored === "1";
+      holdChosenHere = true;
+    }
+  } catch {}
+  if (!holdChosenHere) {
+    fetch("/api/config").then((r) => r.json()).then((cfg) => {
+      if (holdChosenHere) return;
+      holdWhileNarrating = !!(cfg.dialog && cfg.dialog.hold_agent_while_narrating);
+      applyHoldButton();
+    }).catch(() => {});
+  }
 
   function applyHoldButton() {
     if (!holdBtn) return;
@@ -764,11 +932,13 @@
   }
 
   function syncHoldWhileNarrating() {
+    if (!holdChosenHere) return;
     send({ type: "cmd", cmd: "hold_while_narrating", enabled: holdWhileNarrating });
   }
 
   holdBtn?.addEventListener("click", () => {
     holdWhileNarrating = !holdWhileNarrating;
+    holdChosenHere = true;
     try { localStorage.setItem("vc.holdWhileNarrating", holdWhileNarrating ? "1" : "0"); } catch {}
     applyHoldButton();
     syncHoldWhileNarrating();
@@ -813,6 +983,10 @@
             skipCurrentPlayback();
             return;
           }
+          if (!isMini && msg.kind === "user.mute.toggle") {
+            toggleMute();
+            return;
+          }
           if (!isMini && voiceInputEnabled && msg.kind === "user.speak.requested") {
             const phase = (msg.payload || {}).phase;
             if (phase === "start" && !speaking) { speaking = true; startSpeak(); }
@@ -821,6 +995,8 @@
           }
           if (!isMini && isNewHumanQuery(msg)) stopPlaybackForSession(messageSessionId(msg));
           if (msg.kind === "panel.command") applyPanelCommand(msg.payload || {});
+          if (msg.kind === "session.started" && String(msg.source || "").startsWith("companion.")
+              && pluginsVisible()) loadPlugins();
           if (msg.kind === "agent.paused") showAgentPaused(msg.payload || {});
           if (msg.kind === "agent.resumed") showAgentPaused(null);
           traceAppend(msg);
@@ -985,7 +1161,7 @@
     if (item.cls === "prompt") {
       const details = buildDisclosure(
         item,
-        `<span class="tag">PROMPT</span><span>${item.head}</span>`,
+        `<span class="tag">PROMPT</span><span>${escapeHtml(item.head)}</span>`,
         "prompt-item",
       );
       const body = document.createElement("div");
@@ -1403,6 +1579,7 @@
       ["openai-chatgpt", "openai-chatgpt (Codex on a ChatGPT plan)"],
       ["opencode-zen", "opencode-zen (OpenCode Zen)"],
       ["deepseek", "deepseek"],
+      ["deepseek-anthropic", "deepseek-anthropic (DeepSeek Harness)"],
       ["openrouter", "openrouter"],
       ["groq", "groq"],
       ["mistral", "mistral"],
@@ -1469,7 +1646,12 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify(cfg),
       });
-      return res.ok;
+      if (res.ok) return { ok: true, detail: "" };
+      // The server refuses a provider it cannot build (nothing is saved then);
+      // say why instead of a bare "save failed".
+      let detail = "";
+      try { detail = (await res.json()).detail || ""; } catch {}
+      return { ok: false, detail: typeof detail === "string" ? detail : JSON.stringify(detail) };
     }
 
     const PER_CLI_NAMES = ["claude", "codex", "opencode", "gemini", "copilot"];
@@ -1526,10 +1708,6 @@
       cfg.commentator.per_cli = out;
     }
 
-    const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => (
-      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
-    ));
-
     function cliRowMarkup(profile) {
       const isShell = profile.kind === "shell";
       const routeOptions = PROXY_ROUTE_OPTIONS
@@ -1562,6 +1740,7 @@
             <span class="cli-status" data-cli-status="${profile.id}">checking…</span>
           </div>
           <p class="cli-row-desc">${escapeHtml(profile.description || "")}</p>
+          ${profile.proxy_note ? `<p class="cli-row-note">${escapeHtml(profile.proxy_note)}</p>` : ""}
           <div class="cli-activity" data-cli-activity-row="${profile.id}" hidden>
             <span class="cli-open-dot" data-cli-open-dot="${profile.id}" data-state="none"></span>
             <span data-cli-activity="${profile.id}"></span>
@@ -1776,8 +1955,8 @@
       pendingChange = false;
       saveInFlight = true;
       try {
-        const ok = await saveConfig();
-        showSave(ok ? "saved" : "save failed", ok ? "ok" : "err");
+        const { ok, detail } = await saveConfig();
+        showSave(ok ? "saved" : `save failed${detail ? `: ${detail}` : ""}`, ok ? "ok" : "err");
       } catch {
         showSave("save failed", "err");
       } finally {
@@ -2090,7 +2269,7 @@
     const providerSelect = qs("#commentator-provider");
     const providerHint   = qs("#provider-hint");
     const PROVIDER_HINTS = {
-      "copilot-cli": "Calls `copilot -p '...' -s --allow-all` as subprocess. Model must be gpt-5-mini or gpt-4.1. Requires `copilot login`.",
+      "copilot-cli": "Calls `copilot -s` with the shell and file writes denied, as a subprocess. Model must be gpt-5-mini or gpt-4.1. Requires `copilot login`.",
       "github-copilot": "Requires GITHUB_COPILOT_TOKEN in API keys tab (or run `gh auth login`).",
       "openai-compat": "Set Base URL to your local Ollama/LM Studio endpoint. Use a non-reasoning model (llama3.1, qwen2.5, mistral).",
     };

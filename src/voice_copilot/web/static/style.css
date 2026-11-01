@@ -19,6 +19,17 @@
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+/* Icon font: a Material Symbols subset shipped with the package, so the panel
+   loads offline and never calls a third-party CDN. After adding an icon, run
+   `python scripts/fetch_icon_font.py` to rebuild the subset. */
+@font-face {
+  font-family: 'Material Symbols Rounded';
+  font-style: normal;
+  font-weight: 500 600;
+  font-display: block;
+  src: url('fonts/material-symbols-rounded.woff2') format('woff2');
+}
+
 .material-symbols-rounded {
   font-family: 'Material Symbols Rounded';
   font-weight: normal;
@@ -726,6 +737,12 @@ code.pport, span.pport { color: var(--warn); font-family: ui-monospace, monospac
   font-size: 12px;
 }
 
+.cli-row-note {
+  margin: 3px 0 0;
+  color: var(--warn);
+  font-size: 12px;
+}
+
 .cli-row-actions {
   display: flex;
   align-items: center;
@@ -1098,3 +1115,36 @@ label.row.per-cli-row {
 }
 
 .volume { width: 84px; accent-color: currentColor; }
+/* ---------- plugins ---------- */
+
+.plugins-intro { max-width: 760px; }
+.plugins-intro .hint { max-width: none; }
+.plugin-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.plugin-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}
+.cli-status[data-state="live"] { color: var(--ok); border-color: var(--ok); }
+.plugin-steps { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+.plugin-steps li { margin: 4px 0; }
+.plugin-steps pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--panel-hi);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text);
+}
+.plugin-note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.plugin-report { font-size: 12px; margin: 6px 0 0; color: var(--muted); }
+.plugin-report[data-state="error"] { color: var(--err, #ff6b6b); }
+.plugin-report[data-state="ok"] { color: var(--ok); }

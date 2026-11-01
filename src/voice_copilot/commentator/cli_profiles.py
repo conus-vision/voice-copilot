@@ -29,23 +29,37 @@ class NarrationProfile:
 
 NARRATION_PROFILES: dict[str, NarrationProfile] = {
     # copilot reads the prompt from stdin (interactive); -p triggers agent mode.
+    # Shell and file writes are denied: see copilot_cli.NARRATOR_TOOL_FLAGS.
     "copilot": NarrationProfile(
-        args=["--allow-all", "--no-auto-update", "-s"],
+        args=[
+            "--allow-all-tools",
+            "--deny-tool",
+            "shell",
+            "--deny-tool",
+            "write",
+            "--no-auto-update",
+            "-s",
+        ],
         input_mode="stdin",
         model="gpt-5-mini",
     ),
     # claude -p is the full agent. Pass the narrator instructions via a temp
-    # file (--system-prompt-file, so the multi-line prompt survives the .cmd
-    # layer), drop the injected env/git/CLAUDE.md context, and feed the events
-    # via stdin, so it narrates instead of answering the embedded question.
-    # No tools and no MCP servers: it only has to write a sentence, and loading them
-    # took a call from 2.6k to 28k input tokens and from 2 s to 11 s.
+    # file (--system-prompt-file replaces the default system prompt, so the
+    # multi-line prompt survives the .cmd layer), drop the injected env/git/CLAUDE.md
+    # context, and feed the events via stdin, so it narrates instead of answering the
+    # embedded question. No tools and no MCP servers: it only has to write a sentence,
+    # loading them took a call from 2.6k to 28k input tokens and from 2 s to 11 s, and
+    # it leaves nothing for injected text to invoke. `--no-session-persistence` keeps
+    # hundreds of narration runs out of `claude --resume`.
     "claude": NarrationProfile(
         args=[
-            "--exclude-dynamic-system-prompt-sections",
+            "--disallowedTools",
+            "*",
             "--tools",
             "",
             "--strict-mcp-config",
+            "--no-session-persistence",
+            "--exclude-dynamic-system-prompt-sections",
             "-p",
         ],
         input_mode="stdin",

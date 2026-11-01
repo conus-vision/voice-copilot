@@ -9,6 +9,9 @@ from voice_copilot.core.secrets import get_secret
 from voice_copilot.providers.llm.base import LLMMessage, LLMProvider
 from voice_copilot.providers.registry import register
 
+#: Per request, and per gap between streamed chunks.
+_TIMEOUT_S = 60.0
+
 
 @register("llm", "anthropic")
 class AnthropicProvider(LLMProvider):
@@ -25,7 +28,9 @@ class AnthropicProvider(LLMProvider):
         if self._client is None:
             from anthropic import AsyncAnthropic
 
-            self._client = AsyncAnthropic(api_key=self._api_key)
+            # The SDK default is 10 minutes; one stalled narration would hold
+            # every line after it for that long.
+            self._client = AsyncAnthropic(api_key=self._api_key, timeout=_TIMEOUT_S)
         return self._client
 
     async def stream_chat(

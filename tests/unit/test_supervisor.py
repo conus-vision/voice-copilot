@@ -359,7 +359,7 @@ async def test_the_supervisor_is_told_what_it_already_said() -> None:
     await c._supervise(batch, "turn ended")
     await c._supervise(batch, "turn ended")
     assert "ALREADY_TOLD_THE_USER" not in seen[0]
-    assert "[ALREADY_TOLD_THE_USER]\nTests were not run." in seen[1]
+    assert "ALREADY TOLD THE USER:\nTests were not run." in seen[1]
 
 
 class _Gated(_ScriptedLLM):
@@ -386,11 +386,12 @@ async def test_the_end_of_the_turn_is_reviewed_even_if_a_review_is_running() -> 
     llm = _Gated("OK")
     c = _commentator("watch", llm)
     c._review_if_due(_Batch(events=[_tool(), _tool(), _tool()], session_key="s"))
-    await asyncio.sleep(0)
-    assert len(llm.reasons) == 1
+    async with asyncio.timeout(2):  # the provider is fetched off the event loop
+        while not llm.reasons:
+            await asyncio.sleep(0.01)
 
     c._review_if_due(_Batch(events=[_turn_end(True)], session_key="s"))
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.05)
     assert len(llm.reasons) == 1  # never two at once
 
     llm.release.set()
@@ -516,7 +517,7 @@ def test_a_long_edit_is_cut_and_only_the_latest_are_kept() -> None:
 
 
 def test_edits_reach_the_review_in_both_styles() -> None:
-    for style, label in (("api", "[RECENT_EDITS]"), ("cli", "Recent edits:")):
+    for style, label in (("api", "RECENT EDITS:"), ("cli", "RECENT EDITS:")):
         text = build_supervisor_user(
             user_query="q", summary=None, history=[], reason="r", style=style, edits=["a.py: + x"]
         )
@@ -729,3 +730,43 @@ async def test_a_check_is_a_checkpoint_and_repeats_what_the_user_asked_to_hear(
     assert verdict["repeat"] is False
     assert "stuck on the same test" in spoken[-1]
     assert "the user asks what is going on" not in sup.prompts[0]
+
+
+# --- the supervisor does not depend on the narrator ------------------------
+
+
+class _BrokenNarrator:
+    prompt_style = "api"
+
+    def __init__(self, *, raise_error: bool) -> None:
+        self.raise_error = raise_error
+
+    def stream_chat(self, messages, *, system=None, max_tokens=None, temperature=None):  # type: ignore[no-untyped-def]
+        async def gen() -> AsyncIterator[str]:
+            if self.raise_error:
+                raise RuntimeError("auto commentator: codex narrated nothing")
+            if False:  # pragma: no cover - makes this an async generator
+                yield ""
+
+        return gen()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raise_error", [True, False], ids=["narrator-error", "narrator-empty"])
+async def test_a_failed_narration_still_reaches_the_supervisor(raise_error: bool) -> None:
+    # The review used to be started only after a successful narration, so a
+    # narrator on a model the plan rejects silently disabled Supervisor+ too.
+    supervisor = _ScriptedLLM("STOP\nThe agent deleted the migrations folder.")
+    cfg = CommentatorConfig(supervisor=SupervisorConfig(mode="guard"))
+    c = Commentator(EventBus(), cfg, "en", llm=_BrokenNarrator(raise_error=raise_error))  # type: ignore[arg-type]
+    c._supervisor = lambda: supervisor  # type: ignore[method-assign, assignment, return-value]
+
+    async with c._bus.subscribe() as q:
+        await c._drain_and_narrate(_Batch(events=[_turn_end(True)], session_key="s"))
+        await asyncio.gather(*c._supervisor_tasks)
+        kinds = []
+        while not q.empty():
+            kinds.append(q.get_nowait().kind)
+
+    assert EventKind.SUPERVISOR_VERDICT in kinds
+    assert EventKind.SUPERVISOR_STOP in kinds

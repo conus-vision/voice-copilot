@@ -1,6 +1,6 @@
 {
   "name": "voice-copilot-pi",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A second model narrates what Pi does and reviews it, through the local Voice Copilot companion.",
   "keywords": ["pi-package", "voice", "narration", "supervisor"],
   "license": "MIT",

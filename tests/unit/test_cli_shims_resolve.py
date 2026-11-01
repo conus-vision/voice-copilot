@@ -104,3 +104,83 @@ def test_raises_when_binary_not_found(cfg, monkeypatch) -> None:
     )
     with pytest.raises(RuntimeError, match="could not resolve"):
         resolve_cli_for_vc("claude", cfg, port=8766)
+
+
+def test_vc_runs_in_the_shells_directory_not_the_panels(cfg, monkeypatch, tmp_path) -> None:
+    panel_folder = tmp_path / "projA"
+    shell_folder = tmp_path / "projB"
+    panel_folder.mkdir()
+    shell_folder.mkdir()
+    cfg.proxy_cli.working_directory = str(panel_folder)  # picked in the Launch tab
+    monkeypatch.chdir(shell_folder)
+    monkeypatch.setattr(
+        "voice_copilot.proxy.cli_shims._resolve_binary_path",
+        lambda command, override, shim_dir: f"/usr/bin/{command}",
+    )
+    resolved = resolve_cli_for_vc("claude", cfg, port=8766)
+    assert resolved is not None
+    assert resolved.working_directory == shell_folder.resolve()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("https://api.z.ai/api/anthropic", "https://api.z.ai/api/anthropic"),
+        ("https://api.z.ai/api/anthropic/", "https://api.z.ai/api/anthropic"),
+        ("http://127.0.0.1:8766/anthropic", None),  # already a voice-copilot route
+        ("not a url", None),
+        ("", None),
+    ],
+)
+def test_user_upstream_for_the_anthropic_route(value: str, expected: str | None) -> None:
+    from voice_copilot.proxy.cli_shims import _user_upstream
+
+    assert _user_upstream(value, proxy_url="http://127.0.0.1:1/anthropic") == expected
+
+
+def test_user_upstream_drops_v1_for_routes_that_add_it() -> None:
+    from voice_copilot.proxy.cli_shims import _user_upstream
+
+    got = _user_upstream("https://openrouter.ai/api/v1", proxy_url="http://127.0.0.1:1/openai/v1")
+    assert got == "https://openrouter.ai/api"
+
+
+def test_vc_keeps_a_base_url_the_user_already_set(cfg, monkeypatch) -> None:
+    # Claude Code pointed at an Anthropic-compatible vendor: overwriting the
+    # variable sent that vendor's token to api.anthropic.com.
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic")
+    monkeypatch.setattr(
+        "voice_copilot.proxy.cli_shims._resolve_binary_path",
+        lambda command, override, shim_dir: f"/usr/bin/{command}",
+    )
+    resolved = resolve_cli_for_vc("claude", cfg, port=8766)
+    assert resolved is not None
+    assert resolved.upstream == "https://api.z.ai/api/anthropic"
+    assert resolved.upstream_env == "ANTHROPIC_BASE_URL"
+    # The CLI itself still talks to the proxy.
+    assert resolved.env_overrides["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8766/anthropic"
+
+
+def test_a_cli_that_ignores_the_variable_gets_no_upstream_from_it(cfg, monkeypatch) -> None:
+    # codex takes its endpoint from a config flag, not OPENAI_BASE_URL.
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    monkeypatch.setattr(
+        "voice_copilot.proxy.cli_shims._resolve_binary_path",
+        lambda command, override, shim_dir: f"/usr/bin/{command}",
+    )
+    resolved = resolve_cli_for_vc("codex", cfg, port=8766)
+    assert resolved is not None
+    assert resolved.upstream is None
+
+
+def test_dsh_keeps_a_deepseek_base_url_the_user_already_set(cfg, monkeypatch) -> None:
+    # dsh's launch args are a subcommand (`web`), not the endpoint: its own
+    # $DEEPSEEK_BASE_URL still names the upstream.
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://deepseek.internal.example/anthropic")
+    monkeypatch.setattr(
+        "voice_copilot.proxy.cli_shims._resolve_binary_path",
+        lambda command, override, shim_dir: f"/usr/bin/{command}",
+    )
+    resolved = resolve_cli_for_vc("dsh", cfg, port=8766)
+    assert resolved is not None
+    assert resolved.upstream == "https://deepseek.internal.example/anthropic"

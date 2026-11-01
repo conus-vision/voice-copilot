@@ -1,10 +1,16 @@
 """Session registry — maps proxy clients to stable session IDs.
 
 One "session" = one running CLI (Claude Code, Codex, aider, ...) talking to
-our reverse-proxy. We key on `(user-agent, auth-prefix)` so:
-  * the same CLI with the same credentials keeps a stable id across requests;
-  * two different CLIs (or the same CLI launched twice with different keys)
-    show up as two sessions.
+our reverse-proxy. Most CLIs put their own session id on every model request
+(`X-Claude-Code-Session-Id`, Codex's `session-id`, OpenCode's `x-session-id`);
+a request that carries one is keyed on it, so two copies of the same CLI with
+the same credentials are still two sessions. The key is the one the companion
+hub gives the same session when the CLI's plugin reports it, so proxy and
+plugin describe one session under one id.
+
+A request without such an id falls back to `(user-agent, auth-prefix)`: the
+same CLI with the same credentials keeps one id across requests, two different
+CLIs (or the same CLI with different keys) show up as two sessions.
 
 The registry is in-memory, cheap, and shared with commentator + /api/sessions.
 """
@@ -12,6 +18,7 @@ The registry is in-memory, cheap, and shared with commentator + /api/sessions.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import threading
@@ -20,6 +27,22 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
+
+#: A proxy session nothing was heard from for this long is dropped from the
+#: list when a new one appears. Keyed by the CLI's session id, a CLI makes a
+#: new one on every `/clear`; one that comes back gets its old id again.
+IDLE_FORGET_S = 1800.0
+
+#: Headers that carry the CLI's own session id, most specific first.
+_SESSION_HEADERS = (
+    "x-claude-code-session-id",  # Claude Code
+    "session-id",  # Codex
+    "session_id",  # older Codex; Pi with OpenAI-style providers
+    "x-session-id",  # OpenCode, Crush; Pi with OpenRouter-style providers
+    "x-session-affinity",  # OpenCode, Crush, Pi
+    "x-task-id",  # Cline
+    "x-opencode-session",  # OpenCode Zen
+)
 
 # Pull a short, human-friendly label out of a User-Agent.
 # Matches `claude-cli/1.2.3`, `codex/0.5`, `aider 0.74`, `python-httpx/0.27`.
@@ -40,6 +63,10 @@ class Session:
     last_method: str | None = None
     last_path: str | None = None
     last_request_bytes: int | None = None
+    #: The proxy has seen this session's model traffic.
+    proxied: bool = False
+    #: A plugin or hook reports this session; the companion hub ends it.
+    external: bool = False
 
     def touch(self) -> None:
         self.last_seen = time.time()
@@ -74,6 +101,9 @@ class Session:
             "last_method": self.last_method,
             "last_path": self.last_path,
             "last_request_bytes": self.last_request_bytes,
+            "via": "+".join(
+                name for name, on in (("proxy", self.proxied), ("plugin", self.external)) if on
+            ),
         }
 
 
@@ -93,26 +123,29 @@ class SessionRegistry:
         provider: str,
     ) -> Session:
         """Return the (existing or new) Session for this request."""
-        ua = headers.get("user-agent") or headers.get("User-Agent") or ""
-        auth = (
-            headers.get("authorization")
-            or headers.get("Authorization")
-            or headers.get("x-api-key")
-            or headers.get("X-Api-Key")
-            or ""
-        )
-        key_src = f"{provider}|{ua}|{auth[:16]}"
-        sid = hashlib.sha1(key_src.encode("utf-8")).hexdigest()[:12]
+        lowered = {name.lower(): value for name, value in headers.items()}
+        ua = lowered.get("user-agent", "")
+        cli_id = _cli_id_from_ua(ua)
+        native_id = client_session_id(lowered)
+        if native_id:
+            sid = session_key(cli_id or provider, native_id)
+        else:
+            auth = lowered.get("authorization") or lowered.get("x-api-key") or ""
+            key_src = f"{provider}|{ua}|{auth[:16]}"
+            sid = hashlib.sha1(key_src.encode("utf-8")).hexdigest()[:12]
 
+        created = False
         with self._lock:
             sess = self._sessions.get(sid)
             if sess is None:
+                created = True
+                self._forget_idle()
                 sess = Session(
                     id=sid,
                     label=_label_from_ua(ua, provider),
                     user_agent=ua,
                     provider=provider,
-                    cli_id=_cli_id_from_ua(ua),
+                    cli_id=cli_id,
                     first_seen=time.time(),
                     last_seen=time.time(),
                 )
@@ -120,22 +153,43 @@ class SessionRegistry:
                 if self._active_id is None:
                     self._active_id = sid
                 log.info("proxy: new session %s (%s, provider=%s)", sid, sess.label, provider)
-                self._notify()
+            elif not sess.proxied:
+                # A plugin reported this session first; its model traffic now
+                # comes through here too.
+                sess.user_agent = sess.user_agent or ua
+                log.info("proxy: session %s is also proxied", sid)
+            sess.proxied = True
             sess.touch()
+        # Outside the lock: a listener that reads the registry back (all(),
+        # get_active_id()) would otherwise deadlock on the non-reentrant lock.
+        if created:
+            self._notify()
         return sess
 
-    def ensure_external(self, sid: str, *, label: str, cli_id: str | None) -> Session:
-        """The Session for a CLI that reports itself (plugin hooks) with its own id."""
+    def register_external(
+        self,
+        sid: str,
+        *,
+        label: str,
+        cli_id: str | None,
+        provider: str = "hooks",
+    ) -> Session:
+        """Return the session a plugin or hook reports under `sid`, creating it once.
+
+        Proxy sessions are keyed by who is calling; a CLI that reports its own
+        events through the companion API names its session itself.
+        """
+        created = False
         with self._lock:
             sess = self._sessions.get(sid)
-            created = sess is None
             if sess is None:
+                created = True
                 now = time.time()
                 sess = Session(
                     id=sid,
                     label=label,
                     user_agent="",
-                    provider="hooks",
+                    provider=provider,
                     cli_id=cli_id,
                     first_seen=now,
                     last_seen=now,
@@ -143,21 +197,57 @@ class SessionRegistry:
                 self._sessions[sid] = sess
                 if self._active_id is None:
                     self._active_id = sid
+                log.info("companion: new session %s (%s)", sid, label)
+            sess.external = True
             sess.touch()
         if created:
-            log.info("hooks: new session %s (%s)", sid, label)
             self._notify()
         return sess
 
-    def forget(self, sid: str) -> None:
-        """Drop a session that ended; the most recently seen one takes over as active."""
+    def observe_query(self, sid: str, query: str) -> None:
+        """A user prompt arrived in `sid`: remember it and make the session active.
+
+        Same rule as a proxied request that carries a question: whichever
+        terminal the user just typed into is the one worth narrating.
+        """
         with self._lock:
-            removed = self._sessions.pop(sid, None)
+            sess = self._sessions.get(sid)
+            if sess is None:
+                return
+            sess.last_seen = time.time()
+            sess.last_query = query
+            changed = self._active_id != sid
+            self._active_id = sid
+        if changed:
+            log.info("companion: auto-selected active session %s from a user prompt", sid)
+        self._notify()
+
+    def remove(self, sid: str) -> None:
+        """Forget a session that ended; the active one falls back to the newest left."""
+        with self._lock:
+            if self._sessions.pop(sid, None) is None:
+                return
             if self._active_id == sid:
-                rest = sorted(self._sessions.values(), key=lambda s: s.last_seen, reverse=True)
-                self._active_id = rest[0].id if rest else None
-        if removed is not None:
-            self._notify()
+                newest = max(self._sessions.values(), key=lambda s: s.last_seen, default=None)
+                self._active_id = newest.id if newest else None
+        self._notify()
+
+    def proxied(self, sid: str) -> bool:
+        """Whether the proxy carries this session's model traffic."""
+        with self._lock:
+            sess = self._sessions.get(sid)
+            return sess is not None and sess.proxied
+
+    def _forget_idle(self) -> None:
+        # Caller holds the lock. Plugin sessions end through the companion hub.
+        cutoff = time.time() - IDLE_FORGET_S
+        for sid in [
+            sid
+            for sid, sess in self._sessions.items()
+            if sess.last_seen < cutoff and not sess.external and sid != self._active_id
+        ]:
+            del self._sessions[sid]
+            log.info("proxy: forgetting idle session %s", sid)
 
     # ------------------------------------------------------------------ active
 
@@ -192,13 +282,17 @@ class SessionRegistry:
             sess = self._sessions.get(sid)
             if sess is None:
                 return
+            # Every request of a turn repeats the question. Only a new one
+            # means the user just typed there; otherwise two agents working
+            # at once would take the narration from each other on every call.
+            asked = bool(query) and query != sess.last_query
             sess.observe_request(
                 method=method,
                 path=path,
                 request_bytes=request_bytes,
                 query=query,
             )
-            if query and self._active_id != sid:
+            if asked and self._active_id != sid:
                 self._active_id = sid
                 active_changed = True
         if active_changed:
@@ -218,6 +312,38 @@ class SessionRegistry:
                 log.exception("session registry listener failed")
 
 
+def session_key(cli: str, native_id: str) -> str:
+    """The registry id of a CLI session known by the CLI's own id.
+
+    Hashed, not truncated: time-ordered ids (UUIDv7, Pi's) share their first
+    digits across sessions started within the same minute.
+    """
+    return f"{cli}-{hashlib.sha1(native_id.encode('utf-8')).hexdigest()[:8]}"
+
+
+def client_session_id(headers: Mapping[str, str]) -> str | None:
+    """The session id a CLI sends with every model request, if it sends one.
+
+    `headers` has lower-case names. Codex's turn metadata names the session
+    even on a sub-agent's requests, whose `session-id` may differ.
+    """
+    raw = headers.get("x-codex-turn-metadata")
+    if raw:
+        try:
+            meta = json.loads(raw)
+        except ValueError:
+            meta = None
+        if isinstance(meta, dict):
+            value = meta.get("session_id")
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:200]
+    for name in _SESSION_HEADERS:
+        value = headers.get(name, "").strip()
+        if value:
+            return value[:200]
+    return None
+
+
 def _label_from_ua(ua: str, provider: str) -> str:
     if not ua:
         return f"{provider}-client"
@@ -229,7 +355,7 @@ def _label_from_ua(ua: str, provider: str) -> str:
 
 def _cli_id_from_ua(ua: str) -> str | None:
     lowered = ua.lower()
-    for cli_id in ("claude", "codex", "copilot", "aider", "opencode", "kimi"):
+    for cli_id in ("claude", "codex", "copilot", "aider", "opencode", "kimi", "qwen", "gemini"):
         if cli_id in lowered:
             return cli_id
     if "github cli" in lowered or "gh " in lowered:

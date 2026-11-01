@@ -76,11 +76,14 @@ class AnthropicSSEParser:
 
     @staticmethod
     def _split_event(buf: bytes) -> tuple[bytes | None, bytes]:
-        for sep in (b"\n\n", b"\r\n\r\n"):
-            idx = buf.find(sep)
-            if idx != -1:
-                return buf[:idx], buf[idx + len(sep) :]
-        return None, buf
+        # The earliest separator wins: taking the first *kind* found merged an
+        # LF-terminated event into a CRLF one before it, and both were lost.
+        found = [(buf.find(sep), sep) for sep in (b"\n\n", b"\r\n\r\n")]
+        hits = [(idx, sep) for idx, sep in found if idx != -1]
+        if not hits:
+            return None, buf
+        idx, sep = min(hits)
+        return buf[:idx], buf[idx + len(sep) :]
 
     async def _handle_event_bytes(self, raw: bytes) -> None:
         data_parts: list[str] = []

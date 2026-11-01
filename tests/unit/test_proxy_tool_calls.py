@@ -209,3 +209,24 @@ def test_decode_tool_input_keeps_a_truncated_blob() -> None:
     assert decode_tool_input('{"file_path":"a.py"') == '{"file_path":"a.py"'
     assert decode_tool_input("") is None
     assert decode_tool_input(None) is None
+
+
+def test_codex_apply_patch_names_every_edited_file() -> None:
+    # Codex's apply_patch input is the patch itself, not a path field.
+    from voice_copilot.proxy.tool_events import file_paths_from_tool
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: src/app.py\n@@\n-a\n+b\n"
+        "*** Add File: tests/test_app.py\n+x\n"
+        "*** Update File: old/name.py\n*** Move to: new/name.py\n"
+        "*** End Patch\n"
+    )
+    assert file_paths_from_tool("apply_patch", patch) == [
+        "src/app.py",
+        "tests/test_app.py",
+        "old/name.py",
+        "new/name.py",
+    ]
+    assert file_paths_from_tool("apply_patch", {"input": patch})[0] == "src/app.py"
+    assert file_paths_from_tool("shell", patch) == []

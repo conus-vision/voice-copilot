@@ -30,8 +30,8 @@ and DeepSeek Harness. The plugins ship inside the package, so it needs no copy o
 repository. It asks before trusting Codex's hooks, which Codex otherwise wants done by hand
 through `/hooks`, and before turning Voice Copilot on. Then it plays a test line.
 
-Any other CLI, OpenCode included, works through the proxy with the same commands:
-`vc opencode`.
+Any other CLI works through the proxy with the same commands: `vc opencode`. Nine of them can
+also report through their own hooks: see [integrations.md](integrations.md).
 
 To connect one by hand, from a checkout of this repository:
 
@@ -179,7 +179,6 @@ A plugin that runs inside the CLI says your words as a user message:
 | Pi | A steer | A new prompt |
 | oh-my-pi | An aside, which leaves the running tools alone | A new prompt |
 | DeepSeek Harness | `agent.steer()` | `agent.followup()` |
-| OpenCode | `client.session.promptAsync`, read at its next step | The same call, which starts a turn |
 
 The plugin asks the companion for your messages before each tool call and every second or
 two. Claude Code's IDE extension always keeps a debug log, so there each request adds two lines
@@ -285,11 +284,9 @@ changes). The plugin reports tools, text and thinking, and can hold or refuse a 
 Answers to `vc` words go to stderr, and to the transcript for `/vc`. dsh has no narration profile, because each
 `dsh --profile headless` run saves a session, so pick a provider in the Commentator tab.
 
-**OpenCode** (tested on 1.19.3). Use `vc opencode`: through the proxy the commands are answered
-cleanly. There is also `plugins/opencode/voice-copilot.ts`, which `setup` doesn't install: copy it
-to `~/.config/opencode/plugins/`. It can deliver your messages as real ones and hold a tool call,
-but a plugin can stop a prompt only by throwing, so every `vc` word shows as a failed prompt
-before the answer appears, as a toast or on stderr under `opencode run`.
+**OpenCode.** Use `vc opencode`: through the proxy the commands are answered cleanly.
+`voice-copilot integrate opencode` adds a plugin that reports from the inside and can hold a tool
+call. A plugin can stop a prompt only by throwing, so it leaves `vc` words alone.
 
 **oh-my-pi** (tested on 18.15.0, which needs Bun 1.4.4). It runs Pi's plugin, the same file,
 which allows for what the fork changed. `vc` words work in its terminal and RPC modes but not

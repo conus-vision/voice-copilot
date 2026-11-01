@@ -55,6 +55,26 @@ def resolve_supervisor(cmt: CommentatorConfig, *, cli: str | None) -> Supervisor
     return sup
 
 
+def resolve_for_launch(
+    cmt: CommentatorConfig, *, cli: str | None, binary: str | None
+) -> tuple[CommentatorConfig, str]:
+    """(effective commentator config, panel status) for a launched CLI.
+
+    Returns a copy with the effective provider and supervisor: the saved
+    config keeps the user's API choice, and the runtime `auto` provider
+    (which carries an absolute binary path) never round-trips into it.
+    """
+    effective = resolve_commentator_provider(cmt, cli=cli, binary=binary)
+    commentator_cfg = cmt.model_copy(deep=True)
+    commentator_cfg.provider = effective
+    commentator_cfg.supervisor = resolve_supervisor(cmt, cli=cli)
+    status = commentator_status_text(effective, cli)
+    sup_status = supervisor_status_text(commentator_cfg.supervisor)
+    if sup_status:
+        status = f"{status}  •  {sup_status}"
+    return commentator_cfg, status
+
+
 def supervisor_status_text(sup: SupervisorConfig) -> str | None:
     if sup.mode == "off":
         return None

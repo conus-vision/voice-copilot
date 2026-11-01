@@ -23,6 +23,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from voice_copilot.commentator.prompts import language_name
 from voice_copilot.core.events import Event, EventKind
 
 _MAX_TEXT = 1500
@@ -228,68 +229,52 @@ def build_narration_user(
     events: list[Event],
     style: str = "api",
     opening: bool = False,
+    language: str = "en",
 ) -> str:
     """Build the user message for the narration call.
 
-    style="api"  — uses [BRACKET] section headers (works with system/user split).
-    style="cli"  — uses plain inline headers (avoids triggering file-search in
-                   copilot-cli, which interprets [SECTION] as grep targets).
-    opening      — nothing has been said about this question yet, so the line
-                   has to set the scene: name the task, then the work so far.
+    The section labels are plain words with a colon in both styles: square
+    brackets made copilot-cli treat "[SECTION]" as something to grep for.
+    The closing line names the reply language once more, right where the
+    model starts writing; English events and file names otherwise pull small
+    models into English.
+
+    opening — nothing has been said about this question yet, so the line
+              has to set the scene: name the task, then the work so far.
     """
-    formatted = _format_events(events) if events else "(empty)"
+    del style  # both styles read the same message; see prompts/__init__.py
+    formatted = _format_events(events) if events else "(none)"
     hint = _events_hint(events) if events else "the agent's actions: the turn is not over"
     query_text = ""
     if user_query:
         # Everything after the first paragraph is the CLI's own instructions.
         q = _extract_question(user_query)
         query_text = _trim(q, _MAX_QUERY) if q else _trim(user_query, _MAX_QUERY)
-
-    closing = (
-        "Your line: the outcome. If the request asks a question or an explanation, "
-        "say the answer itself in a sentence:"
-    )
-    if style == "cli":
-        # No bracket labels — plain prose headers.
+    name = language_name(language)
+    if opening:
         task = (
             "This is the first line about this request: name the task in a few words, "
-            "then what has been done. Your line:"
-            if opening
-            else closing
-            if _turn_is_over(events)
-            else "Your line:"
+            f"then what has been done. Reply in {name}. Your line:"
         )
-        parts = [
-            f"The user asked: {query_text or '(unknown)'}",
-            "",
-            f"Already said: {_trim(summary, _MAX_SUMMARY) if summary else '(nothing)'}",
-            "",
-            f"New events ({hint}):",
-            formatted,
-            "",
-            task,
-        ]
-    else:
+    elif _turn_is_over(events):
         task = (
-            f"[NEW_EVENTS] holds {hint}. This is the first line about this request: name the "
-            "task from [USER_QUERY] in a few words, then what has been done. Your line:"
-            if opening
-            else f"[NEW_EVENTS] holds {hint}. {closing}"
-            if _turn_is_over(events)
-            else f"[NEW_EVENTS] holds {hint}. Your line, about [NEW_EVENTS] only:"
+            "Your line: the outcome. If the request asks a question or an explanation, "
+            f"say the answer itself in a sentence. Reply in {name}:"
         )
-        parts = [
-            "[USER_QUERY]",
-            query_text or "(unknown yet)",
-            "",
-            "[ALREADY_DONE_AND_SAID]",
-            _trim(summary, _MAX_SUMMARY) if summary else "(nothing yet)",
-            "",
-            "[NEW_EVENTS]",
-            formatted,
-            "",
-            task,
-        ]
+    else:
+        task = f"Your line, about NEW EVENTS only. Reply in {name}:"
+    parts = [
+        "USER REQUEST:",
+        query_text or "(not known yet)",
+        "",
+        "SO FAR:",
+        _trim(summary, _MAX_SUMMARY) if summary else "(nothing yet)",
+        "",
+        f"NEW EVENTS ({hint}):",
+        formatted,
+        "",
+        task,
+    ]
     return "\n".join(parts)
 
 
@@ -304,6 +289,7 @@ def build_supervisor_user(
     progress: str | None = None,
     edits: list[str] | None = None,
     files: list[str] | None = None,
+    language: str = "en",
 ) -> str:
     """Build the user message for a supervisor checkpoint.
 
@@ -314,40 +300,27 @@ def build_supervisor_user(
     going in circles is hard to see from the last few events alone. `edits` is what
     the agent actually changed, which may not be what it says it changed.
     """
+    del style  # both styles read the same message; see prompts/__init__.py
     question = _extract_question(user_query) if user_query else None
-    goal = _trim(question or user_query or "", 600) or "(unknown)"
+    goal = _trim(question or user_query or "", 600) or "(not known)"
     memo = summary or "(nothing yet)"
     transcript = "\n".join(history[-80:]) or "(no events yet)"
     changes = "\n".join(edits) if edits else ""
     whole = "\n\n".join(files) if files else ""
-    if style == "cli":
-        told = f"Already told the user: {already_said}\n\n" if already_said else ""
-        counts = f"Progress: {progress}\n\n" if progress else ""
-        code = f"Recent edits:\n{changes}\n\n" if changes else ""
-        code += f"The files as they stand now:\n{whole}\n\n" if whole else ""
-        return (
-            f"The user's goal: {goal}\n\n"
-            f"Summary so far: {memo}\n\n"
-            f"{counts}"
-            f"{told}"
-            f"Why you are asked now: {reason}\n\n"
-            f"Recent events:\n{transcript}\n\n"
-            f"{code}"
-            "Verdict (first line OK / WARN / STOP, then one sentence):"
-        )
-    told = f"[ALREADY_TOLD_THE_USER]\n{already_said}\n\n" if already_said else ""
-    counts = f"[PROGRESS]\n{progress}\n\n" if progress else ""
-    code = f"[RECENT_EDITS]\n{changes}\n\n" if changes else ""
-    code += f"[FILES_AS_THEY_STAND]\n{whole}\n\n" if whole else ""
+    told = f"ALREADY TOLD THE USER:\n{already_said}\n\n" if already_said else ""
+    counts = f"PROGRESS:\n{progress}\n\n" if progress else ""
+    code = f"RECENT EDITS:\n{changes}\n\n" if changes else ""
+    code += f"FILES AS THEY STAND:\n{whole}\n\n" if whole else ""
     return (
-        f"[GOAL]\n{goal}\n\n"
-        f"[SUMMARY_SO_FAR]\n{memo}\n\n"
+        f"GOAL:\n{goal}\n\n"
+        f"SUMMARY SO FAR:\n{memo}\n\n"
         f"{counts}"
         f"{told}"
-        f"[CHECKPOINT_REASON]\n{reason}\n\n"
-        f"[RECENT_EVENTS]\n{transcript}\n\n"
+        f"CHECKPOINT REASON:\n{reason}\n\n"
+        f"RECENT EVENTS:\n{transcript}\n\n"
         f"{code}"
-        "Verdict (first line OK / WARN / STOP, then one sentence):"
+        f"Verdict (line 1: OK, WARN or STOP; for WARN and STOP, then one sentence "
+        f"in {language_name(language)}):"
     )
 
 
@@ -357,35 +330,25 @@ def build_summary_user(
     events: list[Event],
     narration: str,
     style: str = "api",
+    language: str = "en",
 ) -> str:
     """User message for the summary-update call."""
-    formatted = _format_events(events) if events else "(empty)"
+    del style  # both styles read the same message; see prompts/__init__.py
+    formatted = _format_events(events) if events else "(none)"
     narr_text = _trim(narration, _MAX_NARRATION_ECHO) if narration else "(nothing)"
     prev_text = _trim(prev_summary, _MAX_SUMMARY) if prev_summary else "(empty)"
-
-    if style == "cli":
-        parts = [
-            f"Previous summary: {prev_text}",
-            "",
-            f"Just happened:\n{formatted}",
-            "",
-            f"Just said to the user: {narr_text}",
-            "",
-            "New summary (2-3 sentences of prose, no markdown):",
-        ]
-    else:
-        parts = [
-            "[PREVIOUS_SUMMARY]",
-            prev_text,
-            "",
-            "[JUST_HAPPENED]",
-            formatted,
-            "",
-            "[JUST_NARRATED_TO_USER]",
-            narr_text,
-            "",
-            "New summary (2-3 sentences of prose, no markdown):",
-        ]
+    parts = [
+        "PREVIOUS MEMORY:",
+        prev_text,
+        "",
+        "JUST HAPPENED:",
+        formatted,
+        "",
+        "JUST SAID:",
+        narr_text,
+        "",
+        f"New memory in {language_name(language)}, two or three sentences:",
+    ]
     return "\n".join(parts)
 
 
@@ -574,7 +537,23 @@ def _format_one(ev: Event) -> str:
             return "sub-agent finished (main task continues)"
         return "turn ended"
     if k is EventKind.AGENT_AWAITING_INPUT:
-        return "agent awaiting user input"
+        # What it waits for is the part worth saying: "permission to run Bash:
+        # rm -rf build" tells the user whether to walk back to the keyboard.
+        detail = p.get("message") or ""
+        tool = p.get("tool")
+        if tool:
+            _, label = _bucket_and_label(
+                Event(
+                    kind=EventKind.TOOL_CALL_STARTED,
+                    payload={"tool": tool, "input": p.get("input")},
+                )
+            )
+            detail = f"permission to use {tool}" + (f": {label}" if label else "")
+        return (
+            f"agent awaiting user input: {_trim(detail, 200)}"
+            if detail
+            else "agent awaiting user input"
+        )
 
     if k is EventKind.USER_CHECK:
         quiet = f"{p['quiet_s']} s" if p.get("quiet_s") is not None else "an unknown time"

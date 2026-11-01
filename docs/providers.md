@@ -10,10 +10,42 @@ import to the package `__init__.py`.
 | Name          | Install              | Format | Notes                                    |
 | ---           | ---                  | ---    | ---                                      |
 | `edge-tts`    | default              | mp3    | Free Microsoft Azure voice. Needs Internet. |
-| `silero`      | `[local-tts]`        | wav    | Local, PyTorch. ~100 MB model on first run. |
-| `piper`       | `[local-tts]`        | wav    | Local ONNX, very fast on CPU.            |
+| `piper`       | `[local-tts]`        | wav    | Runs on your computer through sherpa-onnx (no PyTorch). The first line in a language downloads its voice once, about 65 MB. See below. |
+| `silero`      | none                 | wav    | Not implemented yet (the name is reserved; selecting it reports so). |
 | `openai`      | default              | mp3    | `OPENAI_API_KEY`. `gpt-4o-mini-tts`.     |
 | `elevenlabs`  | `[elevenlabs]`       | mp3    | `ELEVENLABS_API_KEY`.                    |
+
+### Piper voices
+
+Each narration language has a default voice from the
+[sherpa-onnx model release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models):
+
+| Language | Voice | Sample rate |
+| --- | --- | --- |
+| English | `en_US-lessac-medium` | 22 kHz |
+| Spanish | `es_ES-davefx-medium` | 22 kHz |
+| French | `fr_FR-siwis-medium` | 22 kHz |
+| Ukrainian | `uk_UA-lada-x_low` | 16 kHz |
+| Russian | `ru_RU-irina-medium` | 22 kHz |
+
+Each was checked by transcribing its speech back with Whisper. The
+`uk_UA-ukrainian_tts-medium` voice in the same release does not work here: it
+reads letters, and sherpa-onnx feeds it phonemes. Options go in `tts.options`:
+
+```yaml
+tts:
+  name: piper
+  options:
+    voices: {en: en_US-amy-medium}  # any vits-piper-* name from the release
+    voice: /path/to/vits-piper-folder  # or one unpacked folder for every language
+    speaker: 0        # voices with several speakers
+    speed: 1.0
+    threads: 2
+    download: true    # false: only use folders already in voices/
+```
+
+Voices keep the license of their training data; the model card in each
+folder names it.
 
 ## STT
 
@@ -21,7 +53,7 @@ import to the package `__init__.py`.
 | ---                  | ---            | ---                                               |
 | `openai-whisper-api` | default        | `OPENAI_API_KEY`. Default — free-tier OK.         |
 | `faster-whisper`     | `[local-stt]`  | Local CTranslate2 build. Works fully offline.     |
-| `deepgram`           | `[deepgram]`   | `DEEPGRAM_API_KEY`. Cheapest cloud option.        |
+| `deepgram`           | `[deepgram]`   | Not implemented yet (the name is reserved; selecting it reports so). |
 
 ## Commentator LLM
 
@@ -104,8 +136,18 @@ hear what it's doing. A Gemini parser can land as a separate change.
 
 ### Sessions
 
-Each distinct `(user-agent, authorization-prefix)` tuple becomes one
-**session**. The popup shows a dropdown in the header letting you pick
-which session to narrate; events from non-active sessions stay silent (they
-still appear in the feed — we don't drop them, just skip TTS). Sessions
-live in memory for the lifetime of the proxy process.
+A client that sends a session id with each request gets one session per
+id: Claude Code (`X-Claude-Code-Session-Id`), Codex (`session-id` and the
+`session_id` in its turn metadata, so sub-agents join their parent), OpenCode
+and Crush (`x-session-id`), Cline (`X-Task-ID`). Two terminals running the
+same CLI with the same key are two sessions. When the CLI's plugin reports
+the same session (see `integrations.md`), both use one id: the proxy narrates,
+and the plugin carries pause, stop and voice messages to that terminal.
+
+Any other client gets one session per `(user-agent, authorization-prefix)`
+pair.
+
+The panel header has a dropdown to pick which session to narrate. Events
+from the others still appear in the feed but are not spoken. Sessions live
+in memory. One that has been quiet for 30 minutes is dropped when a new one
+appears, and gets its old id back if it returns.

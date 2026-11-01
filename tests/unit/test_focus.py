@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from voice_copilot.focus import FocusRouter, is_last_focused, record_focus
@@ -45,16 +47,33 @@ async def test_tick_sets_current_focus_from_panel(monkeypatch, isolated_state) -
     assert router.current_focus is True
 
 
-def test_should_narrate_uses_current_focus_when_checked() -> None:
+#: A pid that is certainly alive and is not this process: another instance.
+OTHER_LIVE_PID = os.getppid()
+
+
+def test_should_narrate_uses_current_focus_when_checked(monkeypatch) -> None:
+    monkeypatch.setattr("voice_copilot.focus.terminal_focus_detectable", lambda: True)
     router = FocusRouter(narrate_only_when_focused=True)
     assert router._should_narrate() is False
     router._current = True
     assert router._should_narrate() is True
 
 
+def test_checked_falls_back_to_sticky_where_terminal_focus_is_invisible(
+    monkeypatch, isolated_state
+) -> None:
+    # macOS/Linux can't see the terminal's focus. Requiring the panel's focus
+    # instead muted narration whenever the user worked in the terminal.
+    monkeypatch.setattr("voice_copilot.focus.terminal_focus_detectable", lambda: False)
+    router = FocusRouter(narrate_only_when_focused=True)
+    assert router._should_narrate() is True  # nobody else claims it
+    record_focus(pid=OTHER_LIVE_PID)
+    assert router._should_narrate() is False  # another live instance was focused last
+
+
 def test_should_narrate_uses_sticky_state_when_unchecked(isolated_state) -> None:
     router = FocusRouter(narrate_only_when_focused=False)
-    record_focus(pid=424_242)  # some other instance holds the claim
+    record_focus(pid=OTHER_LIVE_PID)  # some other instance holds the claim
     assert router._should_narrate() is False
     record_focus()  # now this one does
     assert router._should_narrate() is True
@@ -65,5 +84,11 @@ def test_unchecked_with_no_claim_on_record_narrates(isolated_state) -> None:
     # silent until some window gets focus would read as "TTS is broken".
     router = FocusRouter(narrate_only_when_focused=False)
     assert router._should_narrate() is True
-    record_focus(pid=999_999)  # another instance claims it
+    record_focus(pid=OTHER_LIVE_PID)  # another instance claims it
     assert router._should_narrate() is False
+
+
+def test_a_claim_left_by_an_exited_instance_is_ignored(isolated_state) -> None:
+    router = FocusRouter(narrate_only_when_focused=False)
+    record_focus(pid=2**22 + 12_345)  # above any pid_max: no such process
+    assert router._should_narrate() is True

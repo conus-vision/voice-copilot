@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Voice Copilot - 0.2.0 alpha</title>
-  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded&icon_names=content_copy,delete,folder_open,front_hand,help,hourglass_top,mic,open_in_new,pause,pause_circle,play_arrow,play_circle,skip_next,tune,volume_off,volume_up&display=block" rel="stylesheet" />
+  <title>Voice Copilot - 0.3.0 alpha</title>
+  <link rel="preload" href="/static/fonts/material-symbols-rounded.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="/static/style.css" />
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
 </head>
 <body class="app">
   <header class="topbar">
@@ -93,8 +94,7 @@
           <label>Voice
             <select name="tts.name">
               <option value="edge-tts">edge-tts (free, cloud)</option>
-              <option value="silero">silero (local)</option>
-              <option value="piper">piper (local)</option>
+              <option value="piper">piper (local, offline)</option>
               <option value="openai">openai-tts (API key)</option>
               <option value="elevenlabs">elevenlabs (API key)</option>
             </select>
@@ -225,6 +225,17 @@
           </label>
         </details>
 
+        <details class="fold" id="plugins-fold">
+          <summary>Plugins</summary>
+          <p class="hint">
+            <code>voice-copilot setup</code> connects Claude Code, Codex, Pi, oh-my-pi and DeepSeek
+            Harness. For the others, Install adds hooks, so the CLI tells Voice Copilot what it does
+            from the inside, with nothing rerouted through the proxy. Keep this panel running and
+            use the CLI as usual.
+          </p>
+          <p class="hint plugins-summary" id="plugins-summary">Loading plugins…</p>
+          <div class="cli-list" id="plugins-list"></div>
+        </details>
         <details class="fold">
           <summary>API keys</summary>
           <p class="hint">Only needed for paid voices or an API commentator. Values stay in your OS keyring — the browser only learns which names are set.</p>
@@ -247,7 +258,6 @@
     </section>
 
     <div class="save-indicator" id="save-indicator" aria-hidden="true"></div>
-
     <!-- Help: quick start, manual wiring, project info -->
     <section class="panel docs" data-panel="help">
 
@@ -262,6 +272,8 @@
       <div class="doc-card">
         <div class="doc-card-title">Commands in the chat<br><span class="dim-sm">In any CLI, as the whole message. The model never sees them.</span></div>
         <p class="about-copy">Type <code>vc</code> for the list. <code>vc off</code> stops this session and <code>vc off all</code> every session; <code>vc check</code> has it look at the agent now; <code>vc ask</code> asks the second model; <code>vc speed</code>, <code>vc volume</code>, <code>vc model</code>, <code>vc review</code>, <code>vc detail</code>, <code>vc access</code>, <code>vc pause</code>, <code>vc go</code> and <code>vc settings</code> do what they say. The same words work in a terminal.</p>
+        <div class="doc-card-title">Plugins<br><span class="dim-sm">No proxy, and the controls reach the CLI</span></div>
+        <p class="about-copy">Claude Code, Pi, OpenCode, Hermes Agent and eight more CLIs can report through their own plugin or hooks. <code>vc claude</code>, <code>vc pi</code> and Launch load the plugin for one session. For CLIs you start yourself, press Install in the <strong>Plugins</strong> tab (or run <code>voice-copilot integrate &lt;cli&gt;</code>) and keep this panel running. Pause, Supervisor stop and voice messages then reach the agent too.</p>
       </div>
 
       <div class="doc-card">
@@ -322,7 +334,7 @@ copilot login
 <span class="dim"># 2. Settings → Commentator → API, provider "copilot-cli"
 #    Model: gpt-5-mini | gpt-4.1 | gpt-4.1-mini | gpt-4o | o3-mini
 #
-# Each narration = one `copilot -p "…" -s --allow-all` call (~1-2 s).</span></pre>
+# Each narration = one `copilot -s` call, shell and file writes denied (~1-2 s).</span></pre>
         <p class="hint">The <strong>github-copilot</strong> provider talks to the Copilot API directly instead — it needs <code>GITHUB_COPILOT_TOKEN</code> in API keys, or an existing <code>gh auth login</code>.</p>
       </div>
 
@@ -357,7 +369,7 @@ copilot login
       <h3 class="section-title">About</h3>
       <div class="about-hero">
         <h2>Voice Copilot</h2>
-        <p class="about-version">Version 0.2.0 alpha</p>
+        <p class="about-version">Version 0.3.0 alpha</p>
         <p class="about-copy">Voice Copilot is a listening-first companion for coding agents. A parallel commentator LLM analyzes what a coding agent is doing so you can mainly listen, optionally read the trace, and intervene at the right moment with less cognitive load. It is not prompt dictation or raw playback of model output. We are open to collaboration and to growing the project together.</p>
         <p class="about-copy" data-voice-note>Voice input (push-to-talk questions back into the agent) is temporarily switched off in this build while that flow is reworked — narration and the launcher are unaffected.</p>
       </div>
@@ -382,7 +394,7 @@ copilot login
   <footer class="app-footer">
     <div class="app-footer__content">
       <span>Voice Copilot</span>
-      <span>Version 0.2.0 alpha</span>
+      <span>Version 0.3.0 alpha</span>
       <span>Author: Volodymyr Moskvin</span>
       <span>Website: <a class="app-footer__link" href="https://voice-copilot.conus.vision/" target="_blank" rel="noreferrer noopener">voice-copilot.conus.vision</a></span>
       <span>Conus Vision - <a class="app-footer__link" href="https://conus.vision" target="_blank" rel="noreferrer noopener">https://conus.vision</a></span>

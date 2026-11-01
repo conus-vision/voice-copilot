@@ -21,14 +21,20 @@ orchestrate follow-up turns by re-spawning with thread resumption.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
-import os
 import shutil
 from typing import Any
 
-from voice_copilot.adapters.base import CLIAdapter, QuickAsideCapability
+from voice_copilot.adapters.base import (
+    STREAM_LINE_LIMIT,
+    CLIAdapter,
+    QuickAsideCapability,
+    read_stream_line,
+)
 from voice_copilot.core.bus import EventBus
+from voice_copilot.core.child_env import child_env
 from voice_copilot.core.events import Event, EventKind
 
 log = logging.getLogger(__name__)
@@ -68,7 +74,9 @@ class CodexAdapter(CLIAdapter):
         self._pending: list[str] = []
 
     async def start(self, initial_prompt: str | None = None) -> None:
-        if shutil.which(self._binary) is None:
+        # The path which() found: on Windows an npm install is a `codex.cmd`.
+        binary = shutil.which(self._binary)
+        if binary is None:
             raise RuntimeError(
                 f"`{self._binary}` not found in PATH. "
                 f"Install Codex CLI: https://github.com/openai/codex"
@@ -76,15 +84,16 @@ class CodexAdapter(CLIAdapter):
         if not initial_prompt:
             raise RuntimeError("codex exec needs an initial prompt; pass `-p '…'`.")
 
-        argv = [self._binary, "exec", "--json", *self._extra_args, initial_prompt]
+        argv = [binary, "exec", "--json", *self._extra_args, initial_prompt]
         log.info("spawning %s", " ".join(argv))
-        merged_env = {**os.environ, **self._env} if self._env else None
+        merged_env = child_env(self._env)
         self._proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=merged_env,
+            limit=STREAM_LINE_LIMIT,
         )
         self._reader_task = asyncio.create_task(self._read_stdout(), name="codex.stdout")
         self._stderr_task = asyncio.create_task(self._read_stderr(), name="codex.stderr")
@@ -100,9 +109,8 @@ class CodexAdapter(CLIAdapter):
         log.info("codex user message queued (%d pending)", len(self._pending))
 
     async def stop(self) -> None:
-        for t in (self._reader_task, self._stderr_task):
-            if t is not None:
-                t.cancel()
+        # Readers keep draining until the process is gone: a child blocked on
+        # a full stdout pipe never exits, and wait() never returns.
         if self._proc is not None:
             try:
                 if self._proc.stdin is not None and not self._proc.stdin.is_closing():
@@ -113,7 +121,11 @@ class CodexAdapter(CLIAdapter):
                 await asyncio.wait_for(self._proc.wait(), timeout=5.0)
             except TimeoutError:
                 self._proc.kill()
-                await self._proc.wait()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._proc.wait(), timeout=5.0)
+        for t in (self._reader_task, self._stderr_task):
+            if t is not None:
+                t.cancel()
         await self._emit(EventKind.SESSION_ENDED, {"thread_id": self._thread_id})
 
     # ------------------------------------------------------------------ readers
@@ -121,12 +133,14 @@ class CodexAdapter(CLIAdapter):
     async def _read_stdout(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
         while True:
-            line = await self._proc.stdout.readline()
+            line = await read_stream_line(self._proc.stdout, "codex")
+            if line is None:
+                continue
             if not line:
                 break
             try:
                 msg = json.loads(line.decode("utf-8"))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 log.warning("non-json codex stdout: %r", line[:200])
                 continue
             try:
@@ -137,7 +151,9 @@ class CodexAdapter(CLIAdapter):
     async def _read_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
         while True:
-            line = await self._proc.stderr.readline()
+            line = await read_stream_line(self._proc.stderr, "codex stderr")
+            if line is None:
+                continue
             if not line:
                 break
             log.info("codex stderr: %s", line.decode("utf-8", errors="replace").rstrip())

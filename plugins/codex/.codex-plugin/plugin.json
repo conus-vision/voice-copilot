@@ -1,6 +1,6 @@
 {
   "name": "voice-copilot",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A second model narrates what the agent does, reviews it, and lets you correct it mid-turn. Needs the voice-copilot package.",
   "author": { "name": "Conus Vision", "email": "info@conus.vision" },
   "homepage": "https://github.com/conus-vision/voice-copilot",

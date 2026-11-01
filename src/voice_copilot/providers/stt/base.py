@@ -37,9 +37,12 @@ class STTProvider(ABC):
 
 
 class NotInstalled(STTProvider):
-    def __init__(self, *, name: str, extra: str) -> None:
+    """`planned=True`: registered, but no engine yet (see the TTS twin)."""
+
+    def __init__(self, *, name: str, extra: str, planned: bool = False) -> None:
         self.name = name
         self._extra = extra
+        self._planned = planned
 
     async def transcribe(
         self,
@@ -49,6 +52,11 @@ class NotInstalled(STTProvider):
         language: str | None = None,
         sample_rate: int = 48_000,
     ) -> STTResult:
+        if self._planned:
+            raise RuntimeError(
+                f"STT provider {self.name!r} is not implemented yet. "
+                "Use openai-whisper-api or faster-whisper."
+            )
         raise RuntimeError(
             f"STT provider {self.name!r} needs extra dependencies. "
             f"Install with: pipx install 'voice-copilot[{self._extra}]'"

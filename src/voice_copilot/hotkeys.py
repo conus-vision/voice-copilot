@@ -79,6 +79,22 @@ def _parse_combo(combo: str) -> tuple[frozenset[str], Any]:
     return frozenset(mods), key
 
 
+#: macOS key codes of the letter and digit keys, as pynput's own table has
+#: them (US positions; the keypad digits too). Option turns a letter into
+#: another character (Option+P types "π", Option+N is a dead key), so on
+#: macOS `alt+p` only matches when the key code names the key.
+_MAC_KEY_CODES: dict[int, str] = {
+    0x00: "a", 0x0B: "b", 0x08: "c", 0x02: "d", 0x0E: "e", 0x03: "f", 0x05: "g",
+    0x04: "h", 0x22: "i", 0x26: "j", 0x28: "k", 0x25: "l", 0x2E: "m", 0x2D: "n",
+    0x1F: "o", 0x23: "p", 0x0C: "q", 0x0F: "r", 0x01: "s", 0x11: "t", 0x20: "u",
+    0x09: "v", 0x0D: "w", 0x07: "x", 0x10: "y", 0x06: "z",
+    0x1D: "0", 0x12: "1", 0x13: "2", 0x14: "3", 0x15: "4",
+    0x17: "5", 0x16: "6", 0x1A: "7", 0x1C: "8", 0x19: "9",
+    0x52: "0", 0x53: "1", 0x54: "2", 0x55: "3", 0x56: "4",
+    0x57: "5", 0x58: "6", 0x59: "7", 0x5B: "8", 0x5C: "9",
+}  # fmt: skip
+
+
 def _canonical_key(k: Any) -> Any:
     """Normalise a pynput key event into our internal representation."""
     name = getattr(k, "name", None)
@@ -91,8 +107,14 @@ def _canonical_key(k: Any) -> Any:
             return "shift"
         if name.startswith("cmd"):
             return "cmd"
-    if isinstance(k, keyboard.KeyCode) and k.char:
-        return k.char.lower()
+    if isinstance(k, keyboard.KeyCode):
+        char = k.char
+        if char and char.isascii():
+            return char.lower()
+        if sys.platform == "darwin" and k.vk in _MAC_KEY_CODES:
+            return _MAC_KEY_CODES[k.vk]
+        if char:
+            return char.lower()
     return k  # a keyboard.Key enum value (space, enter, …)
 
 
@@ -120,18 +142,33 @@ class HotkeyService:
         self._bus = bus
         self._loop = loop
         self._is_focused = is_focused
-        self._bindings: list[tuple[Binding, frozenset[str], Any]] = []
+        self._bindings = self._parse(bindings)
+
+        self._pressed: set[Any] = set()
+        self._active: set[str] = set()
+        self._listener: keyboard.Listener | None = None
+
+    @staticmethod
+    def _parse(bindings: list[Binding]) -> list[tuple[Binding, frozenset[str], Any]]:
+        parsed = []
         for b in bindings:
             try:
                 mods, key = _parse_combo(b.combo)
             except ValueError as e:
                 log.warning("skipping hotkey %s: %s", b.name, e)
                 continue
-            self._bindings.append((b, mods, key))
+            parsed.append((b, mods, key))
+        return parsed
 
-        self._pressed: set[Any] = set()
-        self._active: set[str] = set()
-        self._listener: keyboard.Listener | None = None
+    @property
+    def combos(self) -> dict[str, str]:
+        return {b.name: b.combo for b, _, _ in self._bindings}
+
+    def apply_config(self, hotkeys_cfg: Any, *, voice_input: bool) -> None:
+        """Rebind from saved settings; the listener thread picks it up at the next key."""
+        self._bindings = self._parse(default_bindings(hotkeys_cfg, voice_input=voice_input))
+        self._active.clear()
+        log.info("hotkeys rebound: %s", list(self.combos.values()))
 
     def _pressed_mods(self) -> frozenset[str]:
         return frozenset(m for m in ("alt", "ctrl", "shift", "cmd") if m in self._pressed)
@@ -225,9 +262,7 @@ def default_bindings(hotkeys_cfg: Any, *, voice_input: bool = True) -> list[Bind
         Binding(
             name="mute_toggle",
             combo=hotkeys_cfg.mute_toggle,
-            # No dedicated kind yet — ride on USER_MESSAGE-less channel via payload.
-            press_kind=EventKind.USER_MESSAGE,
-            press_payload={"control": "mute_toggle"},
+            press_kind=EventKind.USER_MUTE_TOGGLE,
         ),
         Binding(
             name="pause_toggle",

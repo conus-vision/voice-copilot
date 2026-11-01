@@ -1,3 +1,5 @@
+import itertools
+
 import pytest
 
 from voice_copilot.commentator.cli_profiles import (
@@ -27,6 +29,10 @@ def test_claude_passes_system_via_file_and_user_via_stdin() -> None:
     assert argv[i + 1] == "/tmp/sys.txt"
     assert "--exclude-dynamic-system-prompt-sections" in argv
     assert "-p" in argv
+    # tool-free and leaves no session behind
+    i = argv.index("--disallowedTools")
+    assert argv[i + 1] == "*"
+    assert "--no-session-persistence" in argv
     # user events go to stdin (stdin mode); neither system text nor user text is in argv
     assert stdin_text == "USER EVENTS"
     assert "USER EVENTS" not in argv
@@ -63,3 +69,15 @@ def test_pi_narrates_with_the_users_own_default_model_and_nothing_else() -> None
     for flag in ("--no-tools", "--no-extensions", "--no-session", "--no-context-files"):
         assert flag in argv
     assert stdin_text == "what happened"
+
+
+def test_copilot_narrator_can_never_run_a_shell_or_write_files() -> None:
+    # The narrator reads text the agent wrote; an injected instruction must
+    # not turn into a command. A deny rule beats the blanket tool approval.
+    from voice_copilot.providers.llm.copilot_cli import _BASE_FLAGS
+
+    for args in (NARRATION_PROFILES["copilot"].args, _BASE_FLAGS):
+        assert "--allow-all" not in args and "--yolo" not in args
+        pairs = list(itertools.pairwise(args))
+        assert ("--deny-tool", "shell") in pairs
+        assert ("--deny-tool", "write") in pairs

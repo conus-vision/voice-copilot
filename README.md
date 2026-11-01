@@ -2,15 +2,15 @@
   <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/logo.png" width="440" alt="Voice Copilot">
 </p>
 
-> **Listen to Control** — a cheap model narrates your coding agent, a strong one supervises it, and you step in the moment it matters.
+> **Listen to Control.** Hear what your coding agent is doing, and get warned when it goes off track.
 
-Coding agents now run for minutes at a time: reading files, editing code,
-calling tools. You either babysit the terminal the whole time, or you look away
-and miss the moment it goes in the wrong direction. **Voice Copilot narrates
-what the agent is doing in short spoken updates, and a Supervisor — the
-strongest model your CLI can run — reviews the work at checkpoints, warns you
-when the agent drifts, and can pause it until you weigh in.** You keep
-control without staring at the output.
+Coding agents now work for minutes at a time: they read files, edit code and
+call tools. You can watch the terminal the whole time, or you can look away and
+find out about a wrong turn after it happened. Voice Copilot lets you look away
+and still hear about it in time. A cheap model tells you, in a sentence or two,
+what the agent is doing right now. A stronger model, the Supervisor, reviews the
+work at checkpoints, speaks up when the agent drifts, and in Supervisor+ mode
+pauses it until you decide what happens next.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/demo.gif" alt="A real session: Codex says its new tests passed, all three failed, and the Supervisor names the line that broke them" width="100%">
@@ -36,42 +36,45 @@ them. The narrator and the Supervisor ran on local models there.
 
 ## Why this exists
 
-Autonomous coding agents changed the loop. A single prompt can trigger minutes
-of work, and the useful signal — what it understood, what it changed, what risk
-it noticed — is buried in a fast-scrolling wall of text. Reading every line
-defeats the point of delegating; ignoring the terminal means you only find out
-about a bad turn after it happened.
+One prompt can now start minutes of autonomous work. The part you care about
+(what the agent understood, what it changed, which risks it noticed) is buried in text
+that scrolls faster than you can read. Reading all of it defeats the point of
+delegating, and ignoring it means you learn about a bad turn after the damage is
+done.
 
-Existing tools do not close this gap. Plain text-to-speech reads logs verbatim,
-which is noise, not signal. Voice-coding tools dictate prompts *into* the agent
-but tell you nothing about what it is *doing*. Voice Copilot sits in the
-opposite seat: it is a **listening-first companion** that watches the agent on
-your behalf, compresses the stream into short updates you can follow with your
-eyes off the screen, and keeps a path to interrupt by voice when you need to
+Plain text-to-speech reads logs word for word, which is noise. Voice-coding
+tools help you dictate prompts to the agent but tell you nothing about what it
+does next. Voice Copilot works in the other direction: it listens to the agent
+on your behalf, turns the stream into short spoken updates you can follow with
+your eyes off the screen, and gives you a way to interrupt when you want to
 steer.
 
 ## How it works
 
-Two models watch the agent's event stream, with opposite budgets:
+Two models watch the agent's event stream, and they have opposite budgets.
 
-- A cheap **narrator** (the weakest model your CLI offers, or Haiku 4.5 via
-  API) speaks every few seconds: what the agent is doing right now, in one or
-  two sentences. Parallel summarization — **not** verbatim playback of the
-  model's hidden thinking.
-- A strong **Supervisor** (the most capable model your CLI can run) looks
-  only at checkpoints — the end of a turn, a run of tool calls, a failure
-  that repeats — with the goal, a running summary and the recent transcript
-  in front of it. It says `OK`, or it tells you what is wrong. In
-  **Supervisor+** mode it also pauses the agent and waits for you.
+The narrator is cheap: the weakest model your CLI offers, or Haiku 4.5 through
+the API. Every few seconds it says what the agent is doing, in one or two
+sentences. It summarizes what happened; it does not read the model's hidden
+thinking aloud.
+
+The Supervisor is the most capable model your CLI can run, and it only looks at
+checkpoints: the end of a turn, a run of tool calls, a failure that repeats. It
+gets the goal, a running summary and the recent transcript, then answers `OK`
+or says what is wrong. In Supervisor+ mode it also pauses the agent and waits
+for you.
 
 ```
  coding agent  ──►  event stream  ──►  narrator (cheap)     ──►  spoken update        ──►  you
  (Claude/Codex)     (json / proxy)     supervisor (strong)  ──►  warning · agent paused     (listen · resume · interrupt)
 ```
 
-Both reuse the CLI you launched — its login, its models, no extra keys. The
-result is a small fraction of one agent turn spent on oversight, and you hear
-about a bad turn while it can still be stopped. Details in
+With Claude Code, Codex, OpenCode, Gemini CLI and Copilot CLI, both models run
+through the CLI you launched, with its login and its models, so you need no
+extra API key. Other CLIs need an API provider, which you choose in the
+Commentator tab.
+Oversight costs a small fraction of one agent turn, and you hear about a bad
+turn while it can still be stopped. The details are in
 [docs/supervisor.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/supervisor.md).
 
 <a id="quickstart"></a>
@@ -105,116 +108,132 @@ That's the loop: **start your CLI, listen, step in when it matters.**
 `vc opencode`, `vc copilot`, `vc qwen`, `vc aider`. Or run `voice-copilot serve` and
 press **Launch** next to a CLI on the panel's Launch tab, which needs no env vars.
 
-> **Voice input is temporarily disabled** in this build while the push-to-talk
-> → STT → inject flow is reworked. Narration, the launcher and the trace are
-> unaffected. Re-enable it with `voice_input: {enabled: true}` in
-> `~/.voice-copilot/config.yaml`.
+> **Voice input is off in this build** while the push-to-talk → speech-to-text →
+> agent path is reworked. Narration, the launcher and the trace work as usual.
+> To turn voice input back on, set `voice_input: {enabled: true}` in the config
+> file (`voice-copilot config` prints its path).
 
 ## Who it's for
 
-**Vibe coders** building by feel, with the agent doing most of the typing.
-Reading a fast wall of diffs and tool calls breaks the flow and the fun. Voice
-Copilot keeps you in the creative loop: you hear what the agent decided and
-changed in plain language, stay aware of the direction, and jump in by voice
-the moment it drifts — no need to parse the terminal to stay in control.
+Vibe coders build by feel and let the agent do most of the typing, and a fast
+wall of diffs and tool calls breaks the flow. Voice Copilot tells you in plain
+language what the agent decided and changed, so you keep track of where it is
+going and can step in the moment it drifts.
 
-**Professional engineers** running long, autonomous agent sessions (Claude
-Code, Codex) on real codebases. The risk isn't typing speed, it's a confident
-wrong turn buried in minutes of output. Voice Copilot surfaces the signal —
-root cause, risk, next step — so you keep situational awareness while doing
-something else, and interrupt early instead of reviewing a large bad diff after
-the fact. Listening also lets you supervise more than one session without
-staring at every token.
+Professional engineers run long autonomous sessions with Claude Code or Codex
+on real codebases, where the risk is a confident wrong turn buried in minutes
+of output. Voice Copilot tells you the root cause, the risk and the next step as
+the work happens, so you can do something else and still interrupt early,
+instead of reviewing a large bad diff afterwards. Listening also lets you follow
+more than one session without watching every token.
 
-**Multitaskers and reviewers** who delegate work and need to know *when* to
-step in, not read everything. Narration is the ambient channel: glance at the
-trace only when an update tells you it matters.
+Multitaskers and reviewers hand work off and need to know when to step in.
+The narration runs in the background; when a line tells you something matters,
+open the trace.
 
-**CLI authors** who want their tool to expose a clean event stream for
-companion narration (see the integration RFC below).
+Authors of coding CLIs can have their tool expose a clean event stream for
+companions like this one (see the integration RFC below).
 
-> **Status: 0.2.0 alpha — plugins and chat commands.** Aimed at advanced users
-> comfortable testing CLI workflows and sharing feedback. Created by Volodymyr
-> Moskvin, [Conus Vision](https://conus.vision). We are open to collaboration —
-> [info@conus.vision](mailto:info@conus.vision).
+> **Status: 0.3.0 alpha, plugins and chat commands.** It is aimed at advanced users
+> who are comfortable testing CLI workflows and sending feedback. Voice Copilot
+> is made by Volodymyr Moskvin at [Conus Vision](https://conus.vision), and we
+> welcome collaboration: [info@conus.vision](mailto:info@conus.vision).
 
 ## What it does
 
+- Follows a coding CLI in real time: through the local proxy for the CLIs in
+  the launcher, or through stream-JSON for Claude Code and Codex.
+- Has a Supervisor, the strongest model your CLI can run, review the agent at
+  checkpoints and warn you out loud when it drifts, goes in circles, touches
+  files outside the task or runs something destructive. Supervisor+ also pauses
+  the agent on a hard stop and shows a Resume banner in the panel.
+- Uses a small narrator model to sum up decisions, file edits and reasoning in
+  short spoken lines. One setting picks the CLI's weakest model for the
+  narrator and its strongest for the Supervisor, from the CLI's own catalog.
+- Treats listening as the main experience: you hear what matters, read the
+  trace when it helps, and interrupt only when you need to.
+- Runs a local panel in the browser with play, pause, mute, skip and interrupt
+  buttons, the live trace and all settings.
+- Launches about 25 coding CLIs with one click each (Claude Code, Codex,
+  OpenClaw, OpenCode, Hermes, Droid, Pi, Cline, Copilot CLI, Oh My Pi, DeepSeek
+  Harness, Qwen, Gemini, Aider and more), plus a plain Terminal with every proxy
+  route set. A CLI is narrated when its model traffic goes through the proxy; a
+  CLI that only talks to its vendor's own service still launches, but gives the
+  narrator nothing to work with.
 - Connects to Claude Code, Codex, Pi, oh-my-pi and DeepSeek Harness through
-  plugins, and to any other CLI through a local proxy, and follows the agent's
-  event stream in real time.
-- A **Supervisor** — the strongest model your CLI can run — reviews the agent
-  at checkpoints and warns you out loud when it drifts, loops, touches files
-  outside the task or runs something destructive. **Supervisor+** pauses the
-  agent on a hard stop and shows a *Resume* banner in the panel.
-- A small **narrator LLM** summarises decisions, file edits and reasoning in
-  short human-voice lines. One checkbox picks the weakest model for the
-  narrator and the strongest for the Supervisor from the CLI's own catalog.
-- Keeps listening as the primary experience: hear what matters, read the trace
-  when useful, and interrupt only when needed.
-- **Commands in your chat:** type `vc` in any connected CLI for the list. Only a
-  message that is exactly a command counts, so a sentence that mentions `vc` still
-  goes to your agent.
-- **Step in from the panel:** on Claude Code your message reaches the agent as a
-  real message in the middle of its turn. See
+  plugins, so a CLI you start yourself is narrated with nothing rerouted.
+  `voice-copilot setup` connects them. Nine more (OpenCode, Hermes Agent, Gemini
+  CLI, Qwen Code, Copilot CLI, Grok Build, Droid, OpenHands, Kimi Code) report
+  through their own hooks once `voice-copilot integrate` has set them up.
+- Takes commands in your chat: type `vc` in any connected CLI for the list. Only
+  a message that is exactly a command counts, so a sentence that mentions `vc`
+  still goes to your agent.
+- Lets you step in from the panel: on Claude Code your message reaches the agent
+  as a real message in the middle of its turn. See
   [docs/plugins.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/plugins.md)
   for how it arrives on the other CLIs.
-- A **browser popup** on localhost exposes Play/Pause/Mute/Speak/Interrupt
-  buttons and settings.
-- A **launcher** for ~25 coding CLIs (Claude Code, Codex, OpenClaw, OpenCode,
-  Hermes, Droid, Pi, Cline, Copilot CLI, Oh My Pi, DeepSeek Harness, Qwen,
-  Gemini, Aider, …) plus a plain proxied **Terminal** — one click each.
-- **Push-to-talk** (default `Alt+Space`, *temporarily disabled*): your question
-  goes to STT → then into the running agent as a native side-question, a queued
-  next message, or to the clipboard (depending on CLI capability).
-- **Pause the CLI** while you talk (`Alt+P` or auto-on-speak): the subprocess
-  is suspended via `psutil`, no races with the agent.
-- Works in English, Spanish, French, Ukrainian and Russian.
-- Plug-in providers for TTS, STT and commentator LLM — run fully local or use
-  cloud APIs.
+- Offers push-to-talk (`Alt+Space`, off in this build): your question goes
+  through speech-to-text and is typed into the running agent, or queued for its
+  next turn.
+- Pauses the agent (`Alt+P`, or automatically while you speak) by suspending
+  its process with `psutil`, so it cannot race ahead while you talk. Only the
+  agent's own process is suspended; processes it started keep running.
+- Narrates in English, Spanish, French, Ukrainian and Russian.
+- Loads speech output, speech input and the narrator model as plug-ins. Each
+  can run on your computer: the narrator on a local model (Ollama or another
+  OpenAI-compatible server), speech output with Piper voices, speech input
+  with faster-whisper.
 
 ## What Voice Copilot is not
 
-- Not a prompt dictation app or voice keyboard
-- Not a replacement for Claude Code, Codex, Gemini CLI, or other coding agents
-- Not just text-to-speech for raw terminal logs
-- Not direct verbatim reading of the model's hidden thinking or full answer
-- Not another chat UI you need to stare at all day
+It is not a dictation app or a voice keyboard, and it does not replace Claude
+Code, Codex, Gemini CLI or any other coding agent. It does not read raw terminal
+logs, the model's hidden thinking or its full answers aloud. It is also not one
+more chat window that you have to watch all day.
 
 ## Install options
 
-The Quickstart above uses the cloud-light default. To run models locally
-instead, install the matching extra:
+The Quickstart uses the light default. Extras add optional backends:
 
 ```bash
-# light default: cloud STT/TTS
+# light default: cloud TTS and STT
 pipx install voice-copilot
 
-# + local TTS (Silero / Piper)
+# + local TTS (Piper voices through sherpa-onnx)
 pipx install "voice-copilot[local-tts]"
 
 # + local STT (faster-whisper)
 pipx install "voice-copilot[local-stt]"
 
-# everything local
+# + ElevenLabs TTS
+pipx install "voice-copilot[elevenlabs]"
+
+# every extra
 pipx install "voice-copilot[all]"
 ```
+
+With `local-tts`, pick `piper` as the voice in Settings. The extra adds about
+45 MB and no PyTorch. The first line in each language downloads its voice once
+(about 65 MB, from the sherpa-onnx releases on GitHub) into `voices/` next to
+the config file; after that speech output needs no network. A short line takes
+a fraction of a second on a laptop CPU. Silero and Deepgram are reserved names
+without an engine yet, and selecting them says so.
 
 Or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv tool install voice-copilot
-uvx voice-copilot run claude -- -p "refactor the auth module"
+uvx voice-copilot run claude -p "refactor the auth module"
 ```
 
 Codex works the same way: `voice-copilot run codex -p "explain what this repo does"`.
 
-## Narrate _any_ CLI via proxy mode
+## Narrate _any_ CLI through the proxy
 
-The **Launch** tab does this for you. If you would rather wire it up by hand —
-`voice-copilot run <target>` only knows `claude` and `codex`, so for everything
-else (aider, opencode, Cline, GitHub Copilot CLI that hits OpenAI/Anthropic)
-run the proxy as a standalone service and point your CLI's `BASE_URL` at it:
+The **Launch** tab does this for you. To wire it up by hand
+(`voice-copilot run <target>` only knows `claude` and `codex`), run the proxy as
+a standalone service and point your CLI's base URL at it. That covers aider and
+any other CLI that reads its endpoint from a base-URL variable:
 
 ```bash
 voice-copilot proxy
@@ -227,9 +246,18 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8766/anthropic \
   aider --model anthropic/claude-sonnet-5
 ```
 
-The popup shows one entry per connected client (seen via distinct
-`Authorization` + `User-Agent`). Pick from the dropdown in the header to
-choose which one to narrate — the others keep running silently.
+Not every CLI reads that variable. Crush reads `OPENAI_API_ENDPOINT`, Goose
+needs `GOOSE_PROVIDER=openai`, Cline takes the URL through `cline auth`, and
+Copilot CLI routes only bring-your-own-key models, through
+`COPILOT_PROVIDER_BASE_URL`. Amp, Auggie and Droid's hosted models go to their
+vendor whatever you set. The Launch tab says this for each CLI. Where a CLI has
+hooks, `voice-copilot integrate <cli>` narrates it without the proxy.
+
+The panel lists each client that connects. Claude Code, Codex, OpenCode, Crush
+and Cline send a session id with every request, so two terminals running the
+same CLI show up as two entries; other clients are told apart by User-Agent
+and API key. Pick one in the header dropdown to narrate it; the others keep
+running silently.
 
 Supported upstream providers:
 
@@ -237,17 +265,24 @@ Supported upstream providers:
 | ---        | ---                      | ---                                        |
 | Anthropic  | `ANTHROPIC_BASE_URL`     | `api.anthropic.com`                        |
 | OpenAI     | `OPENAI_BASE_URL`        | `api.openai.com`                           |
+| ChatGPT plan (Codex) | `openai_base_url` config value (`-c openai_base_url=…`) | `chatgpt.com/backend-api/codex` |
 | OpenRouter | `OPENROUTER_BASE_URL`    | `openrouter.ai/api`                        |
 | Groq       | `GROQ_BASE_URL`          | `api.groq.com/openai`                      |
 | Mistral    | `MISTRAL_BASE_URL`       | `api.mistral.ai`                           |
 | DeepSeek   | `DEEPSEEK_BASE_URL`      | `api.deepseek.com`                         |
+| DeepSeek, Anthropic format (DeepSeek Harness) | `DEEPSEEK_ANTHROPIC_BASE_URL` (DeepSeek Harness reads it as `DEEPSEEK_BASE_URL`) | `api.deepseek.com/anthropic` |
 | Ollama     | `OLLAMA_BASE_URL`        | `127.0.0.1:11434` (local)                  |
-| Gemini     | `GEMINI_BASE_URL`        | `generativelanguage.googleapis.com` (passthrough) |
+| Gemini     | `GEMINI_BASE_URL` (Gemini CLI reads `GOOGLE_GEMINI_BASE_URL`) | `generativelanguage.googleapis.com` (passed through, not narrated yet) |
+| OpenCode Zen | `OPENCODE_CONFIG_CONTENT` (the launcher writes it) | `opencode.ai/zen/v1`             |
 
-OAuth-authenticated CLIs (Claude Code subscription, Codex login flow) work
-out of the box — we only see the bearer token on the wire and forward it.
-The OAuth browser round-trip happens on different domains that we don't
-intercept.
+CLIs that sign in with OAuth (a Claude Code subscription, the Codex login flow)
+work as they are: the proxy only sees the bearer token on the wire and forwards
+it. The OAuth round trip in the browser happens on other domains, which the
+proxy does not touch.
+
+If you already point a CLI at another endpoint (an Anthropic-compatible vendor
+or a company gateway), `vc` keeps it: the proxy forwards to your endpoint
+instead of the default upstream above, and the panel says so.
 
 ## Use it as a plugin
 
@@ -271,80 +306,127 @@ message that only mentions them goes to it as usual.
 covers all of them, how a plugin compares with `vc <cli>`, how your messages reach the agent and
 how to add other CLIs.
 
+Nine more CLIs report through their own hooks or plugin. Connect one and keep the panel running:
+
+```bash
+voice-copilot integrate gemini     # or opencode, hermes, qwen, copilot, grok, droid, openhands, kimi
+voice-copilot serve
+gemini                             # any terminal, as usual
+```
+
+The Plugins section of the panel's Settings tab has the same Install button per CLI. OpenCode,
+Hermes Agent and Kimi Code were tested end to end; the others follow each CLI's hook reference.
+Every step is in
+[docs/integrations.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/integrations.md).
+
 ## Hotkeys
 
 | Action                       | Default combo     | Notes                                        |
 | ---                          | ---               | ---                                          |
-| Interrupt (pause & listen)   | `Alt+Shift+Space` | Suspends the CLI process.                    |
+| Interrupt (pause & listen)   | `Alt+Shift+Space` | Suspends the CLI process and stops the line being read. |
 | Pause / resume toggle        | `Alt+P`           | Manual pause of the child CLI.               |
 | Mute TTS                     | `Alt+M`           | Stops narration without affecting the agent. |
 | Skip current narration       | `Alt+Shift+N`     | Drops the line being spoken, keeps the queue. |
-| Push-to-talk                 | `Alt+Space`       | *Off in this build* — see voice input above. |
+| Push-to-talk                 | `Alt+Space`       | Off in this build (see the voice input note above). |
 
-All of them are rebindable under **Settings → Hotkeys**.
+You can rebind all of them under **Settings → Hotkeys**.
 
 ## Providers
 
-Every layer is pluggable. Defaults are cloud-light so `pipx install voice-copilot`
-works out of the box.
+Every layer is pluggable. The defaults use cloud services, so
+`pipx install voice-copilot` works without extra setup.
 
 |          | Default (light)       | Local (extra)              | Premium cloud        | Secret name              |
 | ---      | ---                   | ---                        | ---                  | ---                      |
-| **TTS**  | `edge-tts`            | `silero`, `piper`          | `elevenlabs`, `openai` | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` |
-| **STT**  | `openai-whisper-api`  | `faster-whisper`           | `deepgram`           | `OPENAI_API_KEY`, `DEEPGRAM_API_KEY` |
+| **TTS**  | `edge-tts`            | `piper`                    | `elevenlabs`, `openai` | `ELEVENLABS_API_KEY`, `OPENAI_API_KEY` |
+| **STT**  | `openai-whisper-api`  | `faster-whisper`           | `deepgram` (not implemented yet) | `OPENAI_API_KEY`, `DEEPGRAM_API_KEY` |
 | **LLM**  | `auto` (the launched CLI, no key); API: `anthropic` (Haiku) | `openai-compat` (Ollama)   | `openai`, `github-copilot` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_API_KEY`, `GITHUB_COPILOT_TOKEN` |
 
-Switch via the **Settings** page or by editing `~/.voice-copilot/config.yaml`.
-Every backend, its install extra and default model: [docs/providers.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/providers.md).
+Switch providers in the **Settings** tab or in the config file. Every backend,
+its install extra and its default model are listed in
+[docs/providers.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/providers.md).
 
 ## Configuration
 
-- `~/.voice-copilot/config.yaml` — edited by hand or via the settings page.
-- **Supervisor**: `commentator.supervisor.mode` = `off` / `watch` / `guard`,
-  `commentator.supervisor.model`, `commentator.supervisor.every_n_tools`;
-  `commentator.auto_tier_models: true` picks weakest/strongest models per
-  CLI; `commentator.per_cli.<cli>.supervisor_mode` overrides one CLI. See
-  [docs/supervisor.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/supervisor.md).
-- Secrets live in the **OS keychain** (Credential Manager / Keychain / Secret
-  Service) or in a `.env` next to where you run `voice-copilot` (copy
-  [`.env.example`](https://github.com/conus-vision/voice-copilot/blob/main/.env.example)); shell exports take precedence.
-- No fallbacks between providers: if the configured one fails, the error
-  surfaces in the popup and narration stops. Fail loud, not silently.
+The config file lives in your platform's config folder:
+`~/.config/voice-copilot/config.yaml` on Linux,
+`~/Library/Application Support/voice-copilot/config.yaml` on macOS and
+`%LOCALAPPDATA%\voice-copilot\config.yaml` on Windows. `voice-copilot config`
+prints the exact path, and the launcher profiles sit next to it in
+`proxy-cli.yaml`. You can edit both by hand or in the Settings tab, which
+refuses to save a provider it cannot start. Saved settings apply at once: the
+narrator, the voice, speech input, hotkeys and the debounce. Only the panel's
+host and port need a restart.
+
+The Supervisor is configured with `commentator.supervisor.mode` (`off`, `watch`
+or `guard`), `commentator.supervisor.model` and
+`commentator.supervisor.every_n_tools`. `commentator.auto_tier_models: true`
+picks the weakest and strongest model per CLI, and
+`commentator.per_cli.<cli>.supervisor_mode` overrides the mode for one CLI. See
+[docs/supervisor.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/supervisor.md).
+
+Secrets live in the OS keychain (Credential Manager, Keychain or Secret
+Service) or in a `.env` file next to where you run `voice-copilot` (copy
+[`.env.example`](https://github.com/conus-vision/voice-copilot/blob/main/.env.example)).
+Shell exports take precedence. Values from `.env` are only for Voice Copilot:
+the agent it launches does not see them.
+
+There are no fallbacks between providers. If the configured one fails, the
+error shows up in the panel and narration stops, so a broken setup is never
+silent.
+
+The panel and the proxy listen on `127.0.0.1`. To open the panel from a phone
+or another computer, start it with `VOICE_COPILOT_HOST=0.0.0.0 voice-copilot serve`.
+It prints a link with an access token. Another device needs that link once;
+its browser then keeps the token in a cookie. Your own computer needs no token.
+On a machine you share with other people, set `VOICE_COPILOT_TOKEN` to a
+secret of your choice: every request then has to carry it, the panel opens
+with it, and the hooks and plugins send it from the same variable.
 
 ## Interception strategies
 
-1. **Stream-JSON mode** of the target CLI (Claude Code, Codex) — default when
-   available. Use `voice-copilot run claude` / `run codex`.
-2. **HTTP reverse-proxy** (`voice-copilot proxy`, or `run … --proxy`) —
-   routes provider `BASE_URL`s through us so we can narrate `thinking`
-   blocks even when the underlying TUI hides them. Works with any CLI that
-   respects `*_BASE_URL` env vars. No CA certs, no TLS interception — the
-   client just talks plain HTTP to localhost. When `--proxy` runs alongside
-   a stream-JSON adapter, the adapter suppresses duplicate LLM events so
-   the proxy is the single source of truth.
-3. **PTY fallback** — wraps any binary. Lower fidelity, last resort.
+1. Stream-JSON mode of the target CLI, used by `voice-copilot run claude` and
+   `run codex`.
+2. An HTTP reverse proxy (`voice-copilot proxy`, the launcher, `vc`, or
+   `run … --proxy`). The CLI's base URL points at a local port, so the proxy sees
+   the raw model stream, including `thinking` blocks that the terminal UI may
+   hide. It works with any CLI that reads its endpoint from a base-URL variable
+   or setting. The CLI talks plain HTTP to localhost and the proxy talks HTTPS
+   upstream, so there are no CA certificates to install and no TLS
+   interception. When `--proxy` runs next to a stream-JSON adapter, the adapter
+   drops its own copies of the model events and the proxy is the single
+   source.
+3. The `vc` terminal wrapper runs any program in a real terminal and narrates
+   it through the proxy when the CLI is in the catalog. An unknown CLI runs
+   without narration until you add a proxy profile for it.
+4. The CLI's own plugin or hooks report to the panel at
+   `/api/companion/v1` (see
+   [docs/integrations.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/integrations.md)).
+   This needs no proxy, sees permission prompts and tool results, and is the
+   only strategy that can hold or stop a CLI running in a terminal Voice
+   Copilot did not start.
 
 See [docs/architecture.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/architecture.md).
 
 ## Roadmap
 
-Voice Copilot is in its first alpha. The goal right now is to validate the core
+Voice Copilot is in its first alpha, and the goal right now is to test the core
 idea with advanced users. Planned work:
 
 - grow the Supervisor: richer checkpoints (diff-aware review, cost and time
-  budgets), corrections injected straight into the agent, not only spoken
-- improve narration quality, timing, and signal-to-noise ratio
-- stabilize multi-session workflows and session switching
-- expand structured integrations with more coding CLIs
-- refine the companion interface together with CLI authors so it matches real
-  integration needs
-- improve advanced configuration, onboarding, and developer documentation
-- explore richer host UIs such as VS Code while keeping the core lightweight
+  budgets) and corrections delivered to the agent as well as spoken
+- improve the quality and timing of narration and cut its noise
+- make multi-session workflows and session switching stable
+- run the hook integrations of Codex, Gemini CLI, Qwen Code, Copilot CLI and
+  the others against each CLI, and add Oh My Pi, Cline and Amp
+- refine the companion interface with CLI authors so it fits real integrations
+- improve advanced configuration, onboarding and developer documentation
+- explore richer host UIs such as VS Code while keeping the core small
 
-The core is open-source under MIT to maximize adoption, experimentation, and
-community contributions. The CLI companion integration RFC lives in
-[docs/cli-companion-interface.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/cli-companion-interface.md), with the
-normative schema in
+The core is MIT-licensed so that adopting it and contributing to it stay easy.
+The CLI companion integration RFC is in
+[docs/cli-companion-interface.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/cli-companion-interface.md), and its
+normative schema is in
 [docs/schemas/cli-companion-interface.schema.json](https://github.com/conus-vision/voice-copilot/blob/main/docs/schemas/cli-companion-interface.schema.json).
 
 ## Development
@@ -361,34 +443,42 @@ uv run pytest
 
 ## Troubleshooting
 
-- **No voice output** — open DevTools in the popup, check the audio element
-  is receiving `audio_header`/bytes frames. Most browsers need a user click
-  before autoplay unlocks; click anywhere in the popup once.
-- **Mic denied** — the popup only works over `http://127.0.0.1:<port>` (a
-  localhost-trusted origin). Don't serve it from a LAN IP without HTTPS.
-- **`keyring` says no backend** on headless Linux — `pip install keyrings.alt`
-  or set env vars instead.
-- **Commentator silent** — check `commentator.min_importance` on the settings
-  page; set to `low` to hear everything while debugging.
+- No voice output: most browsers allow autoplay only after one click, so click
+  anywhere in the panel. If that doesn't help, open DevTools in the panel and
+  check that `audio_header` frames and audio bytes arrive over the WebSocket.
+- The narrator stays silent: check `commentator.min_importance` in Settings and
+  set it to `low` to hear everything while you debug. When several `vc`
+  sessions run at once, only one of them narrates: on Windows the one whose
+  terminal or panel has focus, on macOS and Linux the one whose panel had focus
+  last (see `focus.narrate_only_when_focused`).
+- The panel answers `403 unexpected Host header`: it only accepts `localhost`,
+  IP addresses and the host it was started with, which keeps other web pages
+  out. Open it as `http://127.0.0.1:<port>`.
+- The panel says it needs its access link (HTTP 401): it was opened from
+  another device without the token. Open the link `voice-copilot serve`
+  printed at start, the one that ends in `?token=`. The token is kept in
+  `panel-token` next to the config file.
+- Microphone denied: browsers only allow the mic on a trusted origin such as
+  `http://127.0.0.1:<port>`. Don't serve the panel from a LAN IP without HTTPS.
+- `keyring` finds no backend on headless Linux: install `keyrings.alt` into
+  the same environment (`pipx inject voice-copilot keyrings.alt`), or put the
+  keys in environment variables.
 
 ## Get involved
 
-If Voice Copilot is useful to you, here's how to help it grow:
-
-- ⭐ **Star this repo** — it's the clearest signal that the listening-first
-  approach resonates, and it helps other engineers find the project.
-- 🗣️ **Tell us how you use it** — open an issue or email
+- Star the repo. It is the clearest sign that listening to an agent is useful
+  to people, and it helps other engineers find the project.
+- Tell us how you use it: open an issue or write to
   [info@conus.vision](mailto:info@conus.vision). Real workflows shape the roadmap.
-- 🔌 **Building a coding CLI?** Let's design the companion interface together
-  (see the [integration RFC](https://github.com/conus-vision/voice-copilot/blob/main/docs/cli-companion-interface.md)).
+- If you build a coding CLI, let's design the companion interface together (see
+  the [integration RFC](https://github.com/conus-vision/voice-copilot/blob/main/docs/cli-companion-interface.md)).
 
 Contact: [info@conus.vision](mailto:info@conus.vision) · [conus.vision](https://conus.vision)
 
 ## License
 
-This repository is open-source under the MIT license.
-
-That means individuals, teams, companies, and other open-source projects can
-use, modify, fork, and redistribute the core with minimal friction.
+The code is released under the MIT license, so individuals, teams, companies
+and other open-source projects can use, modify, fork and redistribute it with
+little friction.
 
 See [LICENSE](https://github.com/conus-vision/voice-copilot/blob/main/LICENSE) and [LICENSING.md](https://github.com/conus-vision/voice-copilot/blob/main/LICENSING.md).

@@ -353,7 +353,7 @@ class HookAdapter(CLIAdapter):
         if session is None:
             session = _HookSession(cli=cli)
             self._sessions[sid] = session
-        self._registry.ensure_external(sid, label=cli, cli_id=cli)
+        self._registry.register_external(sid, label=cli, cli_id=cli)
         event = payload.get("hook_event_name")
         if event == "UserPromptSubmit":
             prompt = payload.get("prompt")
@@ -533,7 +533,7 @@ class HookAdapter(CLIAdapter):
 
     async def _detach(self, sid: str, source: str) -> None:
         session = self._sessions.pop(sid, None)
-        self._registry.forget(sid)
+        self._registry.remove(sid)
         if session is not None and session.mailbox:
             lost = self._drain(session)
             await self._bus.publish(

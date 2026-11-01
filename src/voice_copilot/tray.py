@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import webbrowser
+from collections.abc import Callable
 from typing import Any
 
 _UNAVAILABLE: str | None = None
@@ -32,9 +33,20 @@ def _icon_image() -> Any:
 
 
 class TrayService:
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        on_quit: Callable[[], None] | None = None,
+        url: str | None = None,
+    ) -> None:
         self._host = host
         self._port = port
+        #: The panel link, with the token when the panel needs one here.
+        self._url = url
+        #: Called from the tray's thread when the user picks Quit.
+        self._on_quit = on_quit
         self._icon: Any = None
         self._thread: threading.Thread | None = None
 
@@ -46,13 +58,17 @@ class TrayService:
         if not self.available:
             log.info("tray icon unavailable (%s); skipping", _UNAVAILABLE)
             return
-        url = f"http://{self._host}:{self._port}/"
+        url = self._url or f"http://{self._host}:{self._port}/"
 
         def on_open(icon: Any, item: Any) -> None:
             webbrowser.open(url)
 
         def on_quit(icon: Any, item: Any) -> None:
             icon.stop()
+            # Removing the icon alone left the app running with no way back
+            # to it; Quit means quit.
+            if self._on_quit is not None:
+                self._on_quit()
 
         menu = pystray.Menu(
             pystray.MenuItem("Open popup", on_open, default=True),

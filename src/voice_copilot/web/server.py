@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import mimetypes
 import webbrowser
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,11 +23,17 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
 from voice_copilot import __version__
 from voice_copilot.audio.hub import AudioHub
+from voice_copilot.commentator.cli_profiles import NARRATION_PROFILES
+from voice_copilot.commentator.provider_select import resolve_for_launch
+from voice_copilot.companion import integrations
+from voice_copilot.companion.hub import CompanionHub
+from voice_copilot.companion.routes import build_router as build_companion_router
 from voice_copilot.core.bus import EventBus
-from voice_copilot.core.config import Config, load_config, save_config
+from voice_copilot.core.config import CommentatorConfig, Config, load_config, save_config
 from voice_copilot.core.secrets import (
     KNOWN_SECRETS,
     delete_secret,
@@ -45,9 +52,21 @@ from voice_copilot.proxy.cli_shims import (
     restore_cli_shim,
 )
 from voice_copilot.proxy.session import SessionRegistry
+from voice_copilot.web.access import PanelAccess
+from voice_copilot.web.guard import LocalOriginGuard
 from voice_copilot.web.ws import register_ws
 
 STATIC_DIR = Path(__file__).parent / "static"
+#: Types of the panel's own files. Python reads MIME types from the system,
+#: and the Windows registry has no .woff2 and on some machines maps .js to
+#: text/plain.
+_STATIC_TYPES = {
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".woff2": "font/woff2",
+}
 
 
 class ManagedServer(uvicorn.Server):
@@ -84,20 +103,76 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     _ = bus
 
 
-def apply_config(app: FastAPI, new_cfg: Config) -> None:
-    """Save this config and make it take effect now, whoever changed it."""
+class ConfigRejected(Exception):
+    """A provider in this config can't be built. Nothing was saved or changed."""
+
+
+async def apply_config(app: FastAPI, new_cfg: Config) -> None:
+    """Make this config take effect now and save it, whoever changed it."""
+    commentator_cfg = new_cfg.commentator
+    launch_notice = app.state.launch_notice
+    resolver = app.state.commentator_resolver
+    if resolver is not None:
+        commentator_cfg, launch_notice = resolver(new_cfg)
+    # Apply before writing anything: a provider that cannot be built (a
+    # CLI that isn't installed, an option it doesn't take) is reported now
+    # instead of landing on disk, where it would stop the next start.
+    # Off the loop, because building one can wait on the OS keychain or
+    # `gh auth token`, and the proxy shares this loop.
+    commentator = app.state.commentator
+    try:
+        if commentator is not None:
+            await asyncio.to_thread(
+                commentator.update_config, commentator_cfg, new_cfg.commentator_language
+            )
+        else:
+            await asyncio.to_thread(
+                provider_registry.build,
+                "llm",
+                commentator_cfg.provider.name,
+                dict(commentator_cfg.provider.options),
+            )
+    except Exception as e:
+        raise ConfigRejected(f"commentator provider {commentator_cfg.provider.name!r}: {e}") from e
+    old_cfg: Config = app.state.config
+    # The voice and speech input run from the next line on, without a
+    # restart; one that cannot be built is refused like the commentator.
+    tts_driver = app.state.tts_driver
+    new_tts = None
+    if tts_driver is not None and new_cfg.tts != old_cfg.tts:
+        try:
+            new_tts = await asyncio.to_thread(
+                provider_registry.build, "tts", new_cfg.tts.name, dict(new_cfg.tts.options)
+            )
+        except Exception as e:
+            raise ConfigRejected(f"voice {new_cfg.tts.name!r}: {e}") from e
+    stt_provider = app.state.stt_provider
+    if not new_cfg.voice_input.enabled:
+        stt_provider = None
+    elif stt_provider is None or new_cfg.stt != old_cfg.stt:
+        try:
+            stt_provider = await asyncio.to_thread(
+                provider_registry.build, "stt", new_cfg.stt.name, dict(new_cfg.stt.options)
+            )
+        except Exception as e:
+            raise ConfigRejected(f"speech input {new_cfg.stt.name!r}: {e}") from e
     save_config(new_cfg)
     app.state.config = new_cfg
     app.state.human_language = new_cfg.human_language
     app.state.commentator_language = new_cfg.commentator_language
     app.state.voice_input_enabled = new_cfg.voice_input.enabled
-    commentator_cfg = new_cfg.commentator
-    resolver = app.state.commentator_resolver
-    if resolver is not None:
-        commentator_cfg, app.state.launch_notice = resolver(new_cfg)
-    commentator = app.state.commentator
-    if commentator is not None:
-        commentator.update_config(commentator_cfg, new_cfg.commentator_language)
+    app.state.stt_provider = stt_provider
+    app.state.launch_notice = launch_notice
+    if tts_driver is not None:
+        if new_tts is not None:
+            tts_driver.set_provider(new_tts)
+        tts_driver.set_language(new_cfg.commentator_language)
+    hotkeys = app.state.hotkeys
+    if hotkeys is not None and (
+        new_cfg.hotkeys != old_cfg.hotkeys
+        or new_cfg.voice_input.enabled != old_cfg.voice_input.enabled
+    ):
+        hotkeys.apply_config(new_cfg.hotkeys, voice_input=new_cfg.voice_input.enabled)
 
 
 def create_app(
@@ -108,8 +183,18 @@ def create_app(
     stt_provider: STTProvider | None = None,
     sessions: SessionRegistry | None = None,
     proxy_port: int | None = None,
+    bind_host: str | None = None,
+    companion: CompanionHub | None = None,
+    panel_port: int | None = None,
+    access: PanelAccess | None = None,
 ) -> FastAPI:
     app = FastAPI(title="voice-copilot", version=__version__, lifespan=_lifespan)
+    # Every page open in the browser can reach loopback: refuse forged
+    # cross-site requests, WebSocket hijacking and DNS rebinding (see guard.py).
+    # Other devices need the panel's token (see access.py).
+    app.add_middleware(
+        LocalOriginGuard, bind_host=bind_host, access=access if access else PanelAccess()
+    )
     app.state.bus = bus
     app.state.config = config
     app.state.audio_hub = audio_hub or AudioHub()
@@ -119,7 +204,13 @@ def create_app(
     app.state.voice_input_enabled = config.voice_input.enabled
     app.state.sessions = sessions
     app.state.proxy_port = proxy_port
+    app.state.panel_port = panel_port
+    # Plugins and hooks of coding CLIs report here (see companion/).
+    app.state.companion = companion or CompanionHub(bus, sessions, port=panel_port)
     app.state.commentator = None  # set by cli.py after Commentator is created
+    # Set by cli.py: saved settings swap their voice and hotkeys live.
+    app.state.tts_driver = None
+    app.state.hotkeys = None
     app.state.dialog = None  # set by `vc`: lets the panel hold the agent live
     app.state.launch_notice = None  # set by `vc` to surface launch status in the panel
     app.state.attached = False  # set by `companion`: the panel can message the agent
@@ -142,6 +233,7 @@ def create_app(
         return proxy_port
 
     register_ws(app)
+    app.include_router(build_companion_router())
 
     @app.get("/api/info")
     async def get_info() -> dict[str, Any]:
@@ -163,14 +255,24 @@ def create_app(
 
     @app.post("/api/config")
     async def post_config(payload: dict[str, Any]) -> dict[str, Any]:
-        new_cfg = Config.model_validate(payload)
-        apply_config(app, new_cfg)
+        try:
+            new_cfg = Config.model_validate(payload)
+        except ValidationError as e:
+            raise HTTPException(422, str(e)) from e
+        try:
+            await apply_config(app, new_cfg)
+        except ConfigRejected as e:
+            raise HTTPException(400, str(e)) from e
         return new_cfg.model_dump()
+
+    # Keychain calls run in a worker thread: macOS may hold one until the user
+    # answers an access prompt, and the proxy's streams share this event loop.
 
     @app.get("/api/secrets")
     async def get_secrets() -> dict[str, Any]:
         """Return which known secrets are set. Values never leave the server."""
-        return {"known": list(KNOWN_SECRETS), "present": list_known_present()}
+        present = await asyncio.to_thread(list_known_present)
+        return {"known": list(KNOWN_SECRETS), "present": present}
 
     @app.post("/api/secrets")
     async def post_secret(payload: dict[str, Any]) -> dict[str, Any]:
@@ -178,17 +280,19 @@ def create_app(
         value = payload.get("value")
         if not name:
             raise HTTPException(400, "missing secret name")
+        if name not in KNOWN_SECRETS:
+            raise HTTPException(400, f"unknown secret {name!r}; known: {', '.join(KNOWN_SECRETS)}")
         if not isinstance(value, str) or not value:
             raise HTTPException(400, "missing secret value")
         try:
-            set_secret(name, value)
+            await asyncio.to_thread(set_secret, name, value)
         except Exception as e:
             raise HTTPException(500, f"keyring write failed: {e}") from e
         return {"ok": True, "name": name}
 
     @app.delete("/api/secrets/{name}")
     async def delete_secret_ep(name: str) -> dict[str, Any]:
-        delete_secret(name)
+        await asyncio.to_thread(delete_secret, name)
         return {"ok": True, "name": name}
 
     @app.post("/api/providers/test")
@@ -202,7 +306,9 @@ def create_app(
             raise HTTPException(400, "missing provider name")
         provider_kind = cast(Literal["llm", "tts", "stt"], kind)
         try:
-            provider = provider_registry.build(provider_kind, name, dict(options))
+            provider = await asyncio.to_thread(
+                provider_registry.build, provider_kind, name, dict(options)
+            )
         except Exception as e:
             return {"ok": False, "where": "build", "error": str(e)}
 
@@ -379,20 +485,61 @@ def create_app(
         except RuntimeError as e:
             raise HTTPException(400, str(e)) from e
 
+    def narrate_with_launched_cli(profile_id: str, binary: str) -> None:
+        """A panel launch narrates the way `vc` does: through the launched CLI.
+
+        Without this the panel kept the saved API provider, so the
+        Quickstart's "no extra API key" launch failed on a missing key.
+        Only for CLIs that can narrate (have a profile); the rest keep the
+        configured provider. The resolver makes later settings saves
+        re-apply the same choice.
+        """
+        commentator = app.state.commentator
+        if commentator is None or profile_id not in NARRATION_PROFILES:
+            return
+
+        def resolve(cfg: Config) -> tuple[CommentatorConfig, str]:
+            return resolve_for_launch(cfg.commentator, cli=profile_id, binary=binary)
+
+        commentator_cfg, notice = resolve(app.state.config)
+        commentator.update_config(commentator_cfg, app.state.config.commentator_language)
+        app.state.commentator_resolver = resolve
+        app.state.launch_notice = notice
+
     @app.post("/api/proxy/cli-shims/{profile_id}/launch")
-    async def post_cli_launch(profile_id: str) -> dict[str, Any]:
+    async def post_cli_launch(profile_id: str, request: Request) -> dict[str, Any]:
         try:
             proxy_port = _require_proxy_port()
-            return launch_cli_profile(
+            # The CLI's own plugin, when it has one, reports to this panel for
+            # the session; Pi's reports everything, so it skips the proxy.
+            plugin_narrates = integrations.plugin_narrates(profile_id)
+            hub: CompanionHub = app.state.companion
+            launch = hub.new_launch(profile_id, proxied=not plugin_narrates)
+            wiring = integrations.session_wiring(
+                profile_id,
+                port=app.state.panel_port or request.url.port or integrations.DEFAULT_PORT,
+                launch_id=launch.id,
+                proxied=not plugin_narrates,
+            )
+            result = launch_cli_profile(
                 profile_id,
                 app.state.config,
                 host="127.0.0.1",
                 port=proxy_port,
+                use_proxy=not plugin_narrates,
+                extra_env=wiring.env,
+                extra_args=wiring.args,
             )
+            if wiring.note:
+                result["note"] = wiring.note
         except KeyError as e:
             raise HTTPException(404, str(e)) from e
         except RuntimeError as e:
             raise HTTPException(400, str(e)) from e
+        binary = result.get("binary_path")
+        if isinstance(binary, str) and binary:
+            narrate_with_launched_cli(profile_id, binary)
+        return result
 
     @app.get("/")
     async def root() -> FileResponse:
@@ -409,6 +556,8 @@ def create_app(
         # string. Kept as a route so window.open() URLs stay stable.
         return FileResponse(STATIC_DIR / "index.html")
 
+    for ext, media_type in _STATIC_TYPES.items():
+        mimetypes.add_type(media_type, ext)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app
 
@@ -417,13 +566,14 @@ async def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = 
     """Entry used by `voice-copilot run` — creates a fresh bus + loads config."""
     bus = EventBus()
     config = load_config()
-    app = create_app(bus, config)
+    access = PanelAccess()
+    app = create_app(bus, config, bind_host=host, access=access)
 
     server_config = uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
     server = ManagedServer(server_config)
 
     if open_browser:
-        url = f"http://{host}:{port}/"
+        url = access.browser_url(host, port)
         asyncio.get_event_loop().call_later(0.5, lambda: webbrowser.open(url))
 
     await server.serve()

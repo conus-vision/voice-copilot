@@ -24,7 +24,7 @@ async def test_unsupported_cli_raises(monkeypatch) -> None:
 async def test_yields_cli_output(monkeypatch) -> None:
     captured = {}
 
-    def fake_run_cli(cmd, *, stdin_text=None, timeout=60.0):
+    async def fake_run_cli(cmd, *, stdin_text=None, timeout=60.0):
         captured["cmd"] = cmd
         captured["stdin"] = stdin_text
         return ("we are reading the file", "")

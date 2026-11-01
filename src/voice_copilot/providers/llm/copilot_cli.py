@@ -16,7 +16,6 @@ end-of-input so copilot processes one message and exits.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import shutil
 from collections.abc import AsyncIterator, Sequence
@@ -27,8 +26,15 @@ from voice_copilot.providers.registry import register
 
 log = logging.getLogger(__name__)
 
+#: The narrator reads text the coding agent wrote, so a prompt injection in a
+#: file or a tool result must not become a command. Tools stay pre-approved
+#: (a permission prompt would hang a non-interactive call), but the shell and
+#: file writes are denied outright; a deny rule beats an allow rule. No
+#: --allow-all either: that also approved every URL, a way to send data out.
+NARRATOR_TOOL_FLAGS = ["--allow-all-tools", "--deny-tool", "shell", "--deny-tool", "write"]
+
 _BASE_FLAGS = [
-    "--allow-all",  # skip tool-permission prompts
+    *NARRATOR_TOOL_FLAGS,
     "--no-auto-update",  # don't check for updates mid-narration
     "-s",  # silent: model response only
 ]
@@ -85,12 +91,8 @@ class CopilotCLIProvider(LLMProvider):
         cmd = _make_cmd(self._bin, self._model)
         log.debug("copilot-cli: cmd=%s", cmd[:4])
 
-        loop = asyncio.get_running_loop()
         try:
-            stdout, stderr = await loop.run_in_executor(
-                None,
-                lambda: run_cli(cmd, stdin_text=prompt, timeout=60.0),
-            )
+            stdout, stderr = await run_cli(cmd, stdin_text=prompt, timeout=60.0)
         except Exception as e:
             raise RuntimeError(f"copilot-cli: subprocess failed: {e}") from e
 

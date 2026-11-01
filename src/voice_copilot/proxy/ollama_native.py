@@ -19,6 +19,7 @@ from typing import Any
 
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.events import Event, EventKind
+from voice_copilot.proxy.tool_events import decode_tool_input, publish_tool_call
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +35,9 @@ class OllamaNativeParser:
         self._buf = b""
         self._text_buf: list[str] = []
         self._thinking_buf: list[str] = []
+        # A reply that asks for tools is a step: the client runs them and
+        # sends the results back in the next request.
+        self._called_tools = False
 
     async def feed(self, chunk: bytes) -> None:
         if not chunk:
@@ -79,10 +83,32 @@ class OllamaNativeParser:
             thinking = msg.get("thinking")
             if isinstance(thinking, str) and thinking:
                 self._thinking_buf.append(thinking)
+            await self._publish_tool_calls(msg.get("tool_calls"))
             await self._try_incremental_flush()
         if p.get("done"):
             await self._flush_turn()
-            await self._emit(EventKind.TURN_ENDED, {"via": "ollama.proxy"})
+            final = not self._called_tools
+            self._called_tools = False
+            await self._emit(EventKind.TURN_ENDED, {"via": "ollama.proxy", "final": final})
+
+    async def _publish_tool_calls(self, calls: Any) -> None:
+        """Native tool calls arrive whole: `{"function": {"name", "arguments"}}`."""
+        if not isinstance(calls, list):
+            return
+        for call in calls:
+            fn = call.get("function") if isinstance(call, dict) else None
+            if not isinstance(fn, dict) or not fn.get("name"):
+                continue
+            self._called_tools = True
+            args = fn.get("arguments")
+            await publish_tool_call(
+                self._bus,
+                source="ollama.proxy",
+                session_id=self._session_id,
+                tool=str(fn["name"]),
+                tool_input=decode_tool_input(args) if isinstance(args, str) else args,
+                tool_use_id=call.get("id") if isinstance(call.get("id"), str) else None,
+            )
 
     async def _try_incremental_flush(self) -> None:
         """Emit AGENT_THINKING / AGENT_TEXT mid-turn.

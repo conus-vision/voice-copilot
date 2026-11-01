@@ -69,7 +69,8 @@ class _RecordingCommentator:
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(web_server, "save_config", lambda cfg: None)
     app = web_server.create_app(EventBus(), Config())
-    return TestClient(app)
+    # The panel only answers to loopback Host headers (see web/guard.py).
+    return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
 def test_post_config_feeds_the_resolved_provider_to_the_commentator(client: TestClient) -> None:
@@ -94,3 +95,70 @@ def test_post_config_without_a_resolver_passes_the_saved_provider(client: TestCl
     res = client.post("/api/config", json=_saved_api_provider_config().model_dump(mode="json"))
     assert res.status_code == 200
     assert [c.provider.name for c in commentator.seen] == ["anthropic"]
+
+
+def test_a_provider_that_cannot_be_built_is_rejected_and_not_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `anthropic` takes no base_url: the old handler wrote this to disk first,
+    # then failed, and every later start crashed building the commentator.
+    saved: list[Config] = []
+    monkeypatch.setattr(web_server, "save_config", saved.append)
+    app = web_server.create_app(EventBus(), Config())
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+    before = app.state.config
+
+    cfg = Config()
+    cfg.commentator.mode = "api"
+    cfg.commentator.provider = ProviderConfig(
+        name="anthropic", options={"model": "haiku", "base_url": "http://localhost:1234/v1"}
+    )
+    res = client.post("/api/config", json=cfg.model_dump(mode="json"))
+
+    assert res.status_code == 400
+    assert "base_url" in res.json()["detail"]
+    assert saved == []
+    assert app.state.config is before
+
+
+def test_an_invalid_config_is_a_client_error(client: TestClient) -> None:
+    res = client.post("/api/config", json={"commentator_language": "klingon"})
+    assert res.status_code == 422
+
+
+def _launching_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _RecordingCommentator]:
+    monkeypatch.setattr(web_server, "save_config", lambda cfg: None)
+
+    def fake_launch(profile_id: str, cfg: Config, **_: Any) -> dict[str, Any]:
+        return {"ok": True, "profile_id": profile_id, "binary_path": f"/usr/bin/{profile_id}"}
+
+    monkeypatch.setattr(web_server, "launch_cli_profile", fake_launch)
+    app = web_server.create_app(EventBus(), Config(), proxy_port=8766)
+    commentator = _RecordingCommentator()
+    app.state.commentator = commentator
+    return TestClient(app, base_url="http://127.0.0.1:8765"), commentator
+
+
+def test_a_panel_launch_narrates_through_the_launched_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The Quickstart promises no extra API key: Launch must switch an `auto`
+    # commentator onto the CLI it just started, as `vc` does.
+    client, commentator = _launching_client(monkeypatch)
+    assert client.post("/api/proxy/cli-shims/claude/launch").status_code == 200
+
+    provider = commentator.seen[-1].provider
+    assert provider.name == "auto"
+    assert provider.options == {"cli": "claude", "binary": "/usr/bin/claude"}
+    assert "claude" in (client.app.state.launch_notice or "")
+
+    # A later settings save keeps narrating through that CLI.
+    res = client.post("/api/config", json=_saved_api_provider_config().model_dump(mode="json"))
+    assert res.status_code == 200
+    assert commentator.seen[-1].provider.name == "auto"
+
+
+def test_launching_a_cli_that_cannot_narrate_keeps_the_configured_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, commentator = _launching_client(monkeypatch)
+    assert client.post("/api/proxy/cli-shims/terminal/launch").status_code == 200
+    assert commentator.seen == []

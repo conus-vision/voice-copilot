@@ -133,3 +133,71 @@ async def test_the_panel_can_flip_it_live() -> None:
     await asyncio.sleep(0.02)
     task.cancel()
     assert adapter.calls == ["pause"]
+
+
+def _supervisor_stop() -> Event:
+    return Event(
+        kind=EventKind.SUPERVISOR_STOP, source="commentator.supervisor", payload={"message": "x"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_supervisor_stop_during_a_held_line_keeps_the_agent_paused() -> None:
+    # The STOP arrives while the previous line still holds the agent. When
+    # that line finishes playing, the agent must stay stopped.
+    cfg = DialogConfig(hold_agent_while_narrating=True)
+    adapter = await _run(cfg, [_tts_started(), _supervisor_stop(), _playback_ready()])
+    assert adapter.calls == ["pause"]
+    assert adapter.is_paused
+
+
+@pytest.mark.asyncio
+async def test_the_watchdog_does_not_release_a_supervisor_stop(monkeypatch) -> None:
+    monkeypatch.setattr(manager_mod, "_NARRATION_HOLD_TIMEOUT_S", 0.05)
+    cfg = DialogConfig(hold_agent_while_narrating=True)
+    adapter = await _run(cfg, [_tts_started(), _supervisor_stop()])
+    await asyncio.sleep(0.15)
+    assert adapter.is_paused
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_during_a_held_line_keeps_the_agent_paused() -> None:
+    cfg = DialogConfig(hold_agent_while_narrating=True)
+    interrupt = Event(kind=EventKind.USER_INTERRUPT, source="hotkey", payload={})
+    adapter = await _run(cfg, [_tts_started(), interrupt, _playback_ready()])
+    assert adapter.calls == ["pause"]
+    assert adapter.is_paused
+
+
+@pytest.mark.asyncio
+async def test_no_hold_when_no_panel_is_listening() -> None:
+    cfg = DialogConfig(hold_agent_while_narrating=True)
+    unheard = Event(
+        kind=EventKind.TTS_STARTED,
+        source="tts.driver",
+        payload={"utterance_id": "u1", "listeners": False},
+    )
+    adapter = await _run(cfg, [unheard])
+    assert adapter.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", ["error", "aborted"])
+async def test_a_line_that_never_plays_releases_the_hold(flag: str) -> None:
+    cfg = DialogConfig(hold_agent_while_narrating=True)
+    finished = Event(
+        kind=EventKind.TTS_FINISHED, source="tts.driver", payload={"utterance_id": "u1", flag: True}
+    )
+    adapter = await _run(cfg, [_tts_started(), finished])
+    assert adapter.calls == ["pause", "resume"]
+    assert not adapter.is_paused
+
+
+@pytest.mark.asyncio
+async def test_a_line_that_played_still_waits_for_the_browser() -> None:
+    cfg = DialogConfig(hold_agent_while_narrating=True)
+    finished = Event(
+        kind=EventKind.TTS_FINISHED, source="tts.driver", payload={"utterance_id": "u1"}
+    )
+    adapter = await _run(cfg, [_tts_started(), finished])
+    assert adapter.calls == ["pause"]

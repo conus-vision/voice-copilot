@@ -285,7 +285,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async (event) => {
-    await forward(event.aborted ? "Interrupt" : "Stop");
+    // Not in every version's types: older ones settle without saying why.
+    const aborted = (event as { aborted?: boolean }).aborted;
+    await forward(aborted ? "Interrupt" : "Stop");
   });
 
   if (IS_OH_MY_PI) {

@@ -35,6 +35,8 @@ class EventKind(StrEnum):
     USER_SKIP_REQUESTED = "user.skip.requested"
     #: The user asked what is going on, right now: `vc check`, the panel or the hotkey.
     USER_CHECK = "user.check"
+    #: The mute hotkey. Muting is the panel's job, so the panel acts on it.
+    USER_MUTE_TOGGLE = "user.mute.toggle"
 
     AGENT_PAUSED = "agent.paused"
     AGENT_RESUMED = "agent.resumed"

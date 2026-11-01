@@ -37,17 +37,51 @@ class TTSProvider(ABC):
 
 
 class NotInstalled(TTSProvider):
-    """Raises a friendly error when someone selects an un-installed backend."""
+    """Raises a friendly error when someone selects an un-installed backend.
 
-    def __init__(self, *, name: str, extra: str) -> None:
+    `planned=True` marks a name that is registered but has no engine yet:
+    installing its extra would not help, so the error must not suggest it.
+    """
+
+    def __init__(self, *, name: str, extra: str, planned: bool = False) -> None:
         self.name = name
         self._extra = extra
+        self._planned = planned
 
     async def synthesize(
         self, text: str, *, language: str, voice: str | None = None
     ) -> AsyncIterator[TTSChunk]:
+        if self._planned:
+            raise RuntimeError(
+                f"TTS provider {self.name!r} is not implemented yet. "
+                "Use edge-tts, openai or elevenlabs, or piper for a voice that runs "
+                "on this computer."
+            )
         raise RuntimeError(
             f"TTS provider {self.name!r} needs extra dependencies. "
             f"Install with: pipx install 'voice-copilot[{self._extra}]'"
         )
+        yield  # pragma: no cover
+
+
+class TTSUnavailable(RuntimeError):
+    """The configured voice could not start; the reason says why."""
+
+
+class UnavailableTTS(TTSProvider):
+    """Stands in for a voice that failed to build, until settings replace it.
+
+    Each line then reports the reason in the panel instead of passing in
+    silence, and saving working settings swaps a real voice in.
+    """
+
+    name = "unavailable"
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    async def synthesize(
+        self, text: str, *, language: str, voice: str | None = None
+    ) -> AsyncIterator[TTSChunk]:
+        raise TTSUnavailable(self.reason)
         yield  # pragma: no cover

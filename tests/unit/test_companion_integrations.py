@@ -1,0 +1,233 @@
+"""Installing and removing the plugins and hook entries, in a throwaway home."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from voice_copilot.companion import integrations, setup
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(integrations, "_home", lambda: tmp_path)
+    monkeypatch.setattr(integrations, "data_dir", lambda: tmp_path / "vc-data")
+    for var in (
+        "PI_CODING_AGENT_DIR",
+        "XDG_CONFIG_HOME",
+        "HERMES_HOME",
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    # A stable forwarder command, whatever the test machine has on PATH.
+    monkeypatch.setattr(integrations.shutil, "which", lambda name: f"/usr/bin/{name}")
+    return tmp_path
+
+
+def test_json_hooks_merge_keeps_the_users_own_hooks(home: Path) -> None:
+    settings = home / ".gemini" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    mine = {"type": "command", "command": "my-linter", "timeout": 5000}
+    settings.write_text(json.dumps({"theme": "dark", "hooks": {"BeforeTool": [{"hooks": [mine]}]}}))
+
+    gemini = integrations.get("gemini")
+    assert not gemini.installed()
+    gemini.install()
+    gemini.install()  # idempotent
+    data = json.loads(settings.read_text())
+    assert data["theme"] == "dark"
+    before_tool = data["hooks"]["BeforeTool"]
+    assert before_tool[0]["hooks"][0] == mine
+    ours = before_tool[1]
+    assert len(before_tool) == 2
+    assert ours["matcher"] == ".*"
+    assert ours["hooks"][0]["command"] == "/usr/bin/voice-copilot-hub-hook gemini"
+    assert ours["hooks"][0]["timeout"] == integrations.GATE_TIMEOUT_S * 1000
+    assert ours["hooks"][0]["name"] == "voice-copilot"
+    assert gemini.installed()
+    assert (home / ".gemini" / "settings.json.voice-copilot.bak").exists()
+
+    gemini.uninstall()
+    data = json.loads(settings.read_text())
+    assert data == {"theme": "dark", "hooks": {"BeforeTool": [{"hooks": [mine]}]}}
+    assert not gemini.installed()
+
+
+def test_hooks_name_the_cli_for_the_claude_dialect(home: Path) -> None:
+    qwen = integrations.get("qwen")
+    qwen.install()
+    data = json.loads((home / ".qwen" / "settings.json").read_text())
+    command = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert command == "/usr/bin/voice-copilot-hub-hook claude --cli qwen"
+    assert data["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"] == integrations.GATE_TIMEOUT_S
+    qwen.uninstall()
+    assert json.loads((home / ".qwen" / "settings.json").read_text()) == {}
+
+
+def test_a_broken_settings_file_is_left_alone(home: Path) -> None:
+    settings = home / ".qwen" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text("{ not json")
+    with pytest.raises(integrations.IntegrationError, match="not valid JSON"):
+        integrations.get("qwen").install()
+    assert settings.read_text() == "{ not json"
+
+
+def test_copilot_gets_its_own_hooks_file(home: Path) -> None:
+    copilot = integrations.get("copilot")
+    copilot.install()
+    data = json.loads((home / ".copilot" / "hooks" / "voice-copilot.json").read_text())
+    assert data["version"] == 1
+    pre = data["hooks"]["preToolUse"][0]
+    assert pre["bash"] == "/usr/bin/voice-copilot-hub-hook copilot preToolUse"
+    assert pre["timeoutSec"] == integrations.GATE_TIMEOUT_S
+    copilot.uninstall()
+    assert not copilot.installed()
+
+
+def test_kimi_hooks_live_between_markers_in_config_toml(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KIMI_CODE_HOME", raising=False)
+    config = home / ".kimi-code" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text('default_model = "kimi-k2"\n')
+    kimi = integrations.get("kimi")
+    kimi.install()
+    kimi.install()
+    text = config.read_text()
+    assert text.startswith('default_model = "kimi-k2"')
+    assert text.count("# >>> voice-copilot hooks >>>") == 1
+    assert 'event = "PreToolUse"' in text
+    # Kimi Code refuses a hook timeout above 600 seconds.
+    assert "timeout = 600" in text and "timeout = 3600" not in text
+    kimi.uninstall()
+    assert config.read_text().strip() == 'default_model = "kimi-k2"'
+    monkeypatch.setenv("KIMI_CODE_HOME", str(home / "elsewhere"))
+    assert kimi.target() == home / "elsewhere" / "config.toml"
+
+
+def test_opencode_plugin_is_copied_where_opencode_loads_it(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    opencode = integrations.get("opencode")
+    opencode.install()
+    target = home / ".config" / "opencode" / "plugins" / "voice-copilot.ts"
+    assert target.read_text() == (integrations.ASSETS / "opencode" / "voice-copilot.ts").read_text()
+    assert opencode.installed()
+    opencode.uninstall()
+    assert not target.exists()
+
+
+def test_hermes_plugin_folder(home: Path) -> None:
+    hermes = integrations.get("hermes")
+    hermes.install()
+    target = home / ".hermes" / "plugins" / "voice_copilot"
+    assert (target / "plugin.yaml").exists() and (target / "__init__.py").exists()
+    hermes.uninstall()
+    assert not target.exists()
+
+
+def test_claude_plugin_posts_every_event_to_voice_copilot(tmp_path: Path) -> None:
+    plugin = integrations.write_claude_plugin(
+        tmp_path / "p", integrations.companion_url(8765), launch="8765-abc", mode="control"
+    )
+    manifest = json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())
+    assert manifest["name"] == "voice-copilot"
+    hooks = json.loads((plugin / "hooks" / "hooks.json").read_text())["hooks"]
+    assert "SessionStart" not in hooks  # Claude Code runs only command hooks there
+    pre = hooks["PreToolUse"][0]
+    assert pre["matcher"] == "*"
+    entry = pre["hooks"][0]
+    assert entry["type"] == "http"
+    assert entry["url"] == (
+        "http://127.0.0.1:8765/api/companion/v1/hooks/claude?cli=claude&launch=8765-abc&mode=control"
+    )
+    assert entry["timeout"] == integrations.GATE_TIMEOUT_S
+    assert entry["headers"] == {
+        "X-Voice-Copilot-Launch": "$VOICE_COPILOT_LAUNCH",
+        "X-Voice-Copilot-Token": "$VOICE_COPILOT_TOKEN",
+    }
+    assert hooks["MessageDisplay"][0]["hooks"][0]["timeout"] <= 5
+
+
+def test_a_bundled_plugin_needs_its_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(integrations.shutil, "which", lambda name: None)
+    with pytest.raises(integrations.IntegrationError, match="not on PATH"):
+        integrations.get("claude").install()
+
+
+def test_a_bundled_plugin_installs_the_way_setup_does(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> object:
+        calls.append(argv)
+        return type("Done", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(setup.subprocess, "run", fake_run)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(integrations.shutil, "which", lambda name: f"/usr/bin/{name}")
+    report = integrations.get("claude").install()
+    assert calls[0][1:4] == ["plugin", "marketplace", "add"]
+    assert calls[1][1:] == ["plugin", "install", "voice-copilot@voice-copilot"]
+    assert "connected" in report
+
+
+def test_a_bundled_plugin_is_removed_with_the_clis_own_command() -> None:
+    with pytest.raises(integrations.IntegrationError, match="own plugin command"):
+        integrations.get("codex").uninstall()
+
+
+def test_session_wiring(home: Path) -> None:
+    wiring = integrations.session_wiring("claude", port=8800, launch_id="8800-x", proxied=True)
+    assert wiring.args[0] == "--plugin-dir"
+    assert Path(wiring.args[1], "hooks", "hooks.json").exists()
+    assert wiring.env == {
+        "VOICE_COPILOT_URL": "http://127.0.0.1:8800/api/companion/v1",
+        "VOICE_COPILOT_LAUNCH": "8800-x",
+        "VOICE_COPILOT_MODE": "control",
+        "VOICE_COPILOT_NO_HOOKS": "1",
+    }
+    other = integrations.session_wiring("codex", port=8800, launch_id="8800-z", proxied=True)
+    assert other.args == [] and other.env["VOICE_COPILOT_LAUNCH"] == "8800-z"
+    assert not integrations.plugin_narrates("pi") and not integrations.plugin_narrates("claude")
+
+
+def test_every_integration_describes_itself() -> None:
+    for item in integrations.describe_all(port=8765):
+        assert item["label"] and item["method"] and item["docs_url"].startswith("https://")
+        assert item["command"] == f"voice-copilot integrate {item['id']}"
+
+
+def test_shells_and_unknown_programs_get_no_wiring(home: Path) -> None:
+    # A launch id in a shell would hide a permanently installed Claude plugin
+    # for every claude started inside it.
+    for name in ("terminal", "bash", "aider"):
+        wiring = integrations.session_wiring(name, port=8800, launch_id="8800-x", proxied=True)
+        assert wiring.args == [] and wiring.env == {}
+
+
+def test_installed_hooks_narrate_clis_the_proxy_cannot_see(home: Path) -> None:
+    # Copilot CLI sends its model traffic to GitHub whatever the base URL
+    # says. Launched in control mode its hooks waited for a proxy that never
+    # saw anything, so the session stayed silent.
+    assert not integrations.plugin_narrates("copilot")  # nothing installed yet
+    integrations.get("copilot").install(port=8800)
+    assert integrations.plugin_narrates("copilot")
+    wiring = integrations.session_wiring("copilot", port=8800, launch_id="8800-c", proxied=False)
+    assert wiring.env["VOICE_COPILOT_MODE"] == "narrate"
+    assert wiring.note == "Narrated through the Voice Copilot hooks for Copilot CLI."
+    # Hermes reports through a plugin.
+    hermes = integrations.session_wiring("hermes", port=8800, launch_id="8800-h", proxied=False)
+    assert "plugin for Hermes Agent" in hermes.note
+
+
+def test_clis_the_proxy_does_see_stay_on_it(home: Path) -> None:
+    # Codex reaches the proxy through its config flag, and the proxy narrates the model's stream.
+    assert not integrations.plugin_narrates("codex")
+    assert not integrations.plugin_narrates("claude")
+    assert not integrations.plugin_narrates("aider")

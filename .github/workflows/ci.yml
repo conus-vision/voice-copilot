@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - name: Check out repository
@@ -48,3 +48,91 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+  web-and-plugins:
+    # The panel script and the TypeScript plugins for Pi and OpenCode are not
+    # covered by the Python checks above. The plugins are type-checked against
+    # the SDK versions pinned in tests/plugins/package.json.
+    name: Panel script and CLI plugins
+    runs-on: ubuntu-latest
+    # A stalled npm download otherwise holds the check for GitHub's 6 hours.
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check panel script syntax
+        run: node --check src/voice_copilot/web/static/app.js
+
+      - name: Install plugin SDK types
+        working-directory: tests/plugins
+        run: npm install --no-audit --no-fund
+
+      - name: Type-check Pi and OpenCode plugins
+        working-directory: tests/plugins
+        run: npx tsc -p .
+
+  panel-smoke:
+    # Opens the panel in Chromium against a running `voice-copilot serve`:
+    # script errors, failed requests, the icon font and the live WebSocket.
+    name: Panel in a browser
+    runs-on: ubuntu-latest
+    # The Chromium download stalled once on a runner and held the check;
+    # the job takes about a minute.
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Playwright and Chromium
+        working-directory: tests/smoke
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Start the panel
+        # Straight from the venv: a background `uv run` holds uv's cache lock,
+        # and setup-uv's cache pruning at the end of the job waits on it.
+        run: |
+          .venv/bin/voice-copilot serve --port 8799 --no-open --no-hotkeys --no-tray --no-proxy \
+            > "$RUNNER_TEMP/panel.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/panel.pid"
+
+      - name: Open every tab
+        working-directory: tests/smoke
+        run: node panel.mjs http://127.0.0.1:8799/
+
+      - name: Stop the panel
+        if: always()
+        run: |
+          pid="$(cat "$RUNNER_TEMP/panel.pid" 2>/dev/null)" || exit 0
+          kill "$pid" 2>/dev/null || exit 0
+          for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 0.5; done
+          kill -9 "$pid" 2>/dev/null || true
+
+      - name: Panel log
+        if: failure()
+        run: cat "$RUNNER_TEMP/panel.log"

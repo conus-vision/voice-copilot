@@ -6,7 +6,6 @@ Generalises the copilot-cli pattern via a per-CLI narration-profile table.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import os
@@ -94,10 +93,7 @@ class AutoCommentatorProvider(LLMProvider):
                 self._cli,
                 " ".join(argv if stdin_text is not None else argv[:-1]),
             )
-            loop = asyncio.get_running_loop()
-            stdout, stderr = await loop.run_in_executor(
-                None, lambda: run_cli(argv, stdin_text=stdin_text, timeout=60.0)
-            )
+            stdout, stderr = await run_cli(argv, stdin_text=stdin_text, timeout=60.0)
         finally:
             if system_path is not None:
                 with contextlib.suppress(OSError):
