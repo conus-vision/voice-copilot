@@ -26,7 +26,8 @@ def test_an_npm_shim_is_bypassed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(wake.shutil, "which", lambda name: "C:/node/node.exe")
     node, script = wake._direct_command(str(shim))
     assert node == "C:/node/node.exe"
-    assert Path(script) == tmp_path / "node_modules/@openai/codex/bin/codex.js"
+    # The shim's own separators, which only Windows reads as separators.
+    assert Path(script.replace("\\", "/")) == tmp_path / "node_modules/@openai/codex/bin/codex.js"
 
 
 def test_an_unknown_shim_is_refused(tmp_path: Path) -> None:
