@@ -21,13 +21,13 @@ had failed, along with 83 others, and the Supervisor named the line that broke
 them. The narrator and the Supervisor ran on local models there.
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=CFDFU5S1Grk">
-    <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/poster.jpg" alt="Watch the Voice Copilot demo (60s)" width="100%">
+  <a href="https://www.youtube.com/watch?v=7Ys5_RRrrLw">
+    <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/poster.jpg" alt="Watch the Voice Copilot video: the agent said its new tests passed, all three had failed (3 min)" width="100%">
   </a>
 </p>
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=CFDFU5S1Grk"><b>▶ Watch the 60-second demo</b></a>
+  <a href="https://www.youtube.com/watch?v=7Ys5_RRrrLw"><b>▶ Watch the 3-minute video</b></a>
   ·
   <a href="https://voice-copilot.conus.vision/">Website</a>
   ·
