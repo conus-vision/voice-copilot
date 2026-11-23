@@ -50,6 +50,12 @@ _VERBS = {
     "модель": "model",
     "review": "review",
     "анализ": "review",
+    "mode": "mode",
+    "режим": "mode",
+    "react": "react",
+    "реакция": "react",
+    "deny": "deny",
+    "отказ": "deny",
     "detail": "detail",
     "детали": "detail",
     "access": "access",
@@ -74,8 +80,34 @@ _VALUES = {
         "выкл": "off",
         "watch": "watch",
         "смотреть": "watch",
-        "guard": "guard",
-        "стоп": "guard",
+        "plus": "plus",
+        "плюс": "plus",
+        # What Supervisor+ was called before it learned more; kept so old habits still work.
+        "guard": "plus",
+        "стоп": "plus",
+    },
+    "mode": {
+        "narrator": "narrator",
+        "комментатор": "narrator",
+        "рассказчик": "narrator",
+        "supervisor": "supervisor",
+        "супервизор": "supervisor",
+        "plus": "plus",
+        "плюс": "plus",
+        "supervisor+": "plus",
+        "супервизор+": "plus",
+        "plus-narrator": "plus-narrator",
+        "плюс-комментатор": "plus-narrator",
+        "плюс-рассказчик": "plus-narrator",
+    },
+    "react": {
+        "hold": "hold",
+        "ждать": "hold",
+        "pause": "pause",
+        "пауза": "pause",
+        "say": "say",
+        "голос": "say",
+        "сказать": "say",
     },
     "detail": {
         "low": "low",
@@ -94,7 +126,22 @@ _VALUES = {
         "файлы": "files",
     },
 }
-_NO_ARGS = {"help", "status", "check", "mute", "unmute", "pause", "go", "settings", "log", "cost"}
+_NO_ARGS = {
+    "help",
+    "status",
+    "check",
+    "mute",
+    "unmute",
+    "pause",
+    "go",
+    "deny",
+    "settings",
+    "log",
+    "cost",
+}
+#: `vc review cli codex`, `vc model cli same`: which CLI, on its own login, runs that model.
+_CLI_WORDS = ("cli", "через")
+_SAME = {"same": "same", "тот-же": "same", "свой": "same"}
 _SPEED = re.compile(r"\d+(?:[.,]\d+)?x?", re.IGNORECASE)
 _VOLUME = re.compile(r"\d{1,3}%?")
 #: A number from the list, or a model's name, which has no spaces in it.
@@ -114,6 +161,10 @@ def _fits(verb: str, args: list[str]) -> Command | None:
         return _one_of(verb, args, _SPEED)
     if verb == "volume":
         return _one_of(verb, args, _VOLUME)
+    if verb in ("model", "review") and args and args[0].lower() in _CLI_WORDS:
+        if len(args) != 2 or not _MODEL.fullmatch(args[1]):
+            return None
+        return Command(verb, ("cli", _SAME.get(args[1].lower(), args[1].lower())))
     if verb == "model":
         return _one_of(verb, args, _MODEL)
     if verb == "ask":
@@ -165,7 +216,10 @@ _TEXTS: dict[str, dict[str, str]] = {
             "  vc speed 1.5            speech speed\n"
             "  vc volume 70            volume; vc mute, vc unmute\n"
             "  vc model                the narrator's model: lists them, vc model 2 picks\n"
-            "  vc review off|watch|guard   the supervisor; vc review model picks its model\n"
+            "  vc mode narrator|supervisor|plus|plus-narrator   how it works with the agent\n"
+            "  vc react hold|pause|say  Supervisor+ on a STOP or a dangerous command\n"
+            "  vc go | vc deny         run or refuse a command Supervisor+ holds\n"
+            "  vc review model | vc review cli codex   the supervisor's model; another CLI\n"
             "  vc detail low|normal|high   how much the narrator says\n"
             "  vc access events|edits|files   what the models may read\n"
             "  vc pause | vc go        stop the agent before its next action; carry on\n"
@@ -194,7 +248,10 @@ _TEXTS: dict[str, dict[str, str]] = {
             "  vc speed 1.5            скорость речи\n"
             "  vc volume 70            громкость; vc mute, vc unmute\n"
             "  vc model                модель рассказчика: список, vc model 2 выбирает\n"
-            "  vc review off|watch|guard   супервизор; vc review model выбирает его модель\n"
+            "  vc mode narrator|supervisor|plus|plus-narrator   режим работы\n"
+            "  vc react hold|pause|say  что делает Supervisor+ на STOP и опасную команду\n"
+            "  vc go | vc deny         выполнить или отклонить команду, задержанную Supervisor+\n"
+            "  vc review model | vc review cli codex   модель супервизора; другой CLI\n"
             "  vc detail low|normal|high   сколько говорит рассказчик\n"
             "  vc access events|edits|files   что могут читать модели\n"
             "  vc pause | vc go        остановить агента перед следующим действием; продолжить\n"

@@ -127,7 +127,7 @@ plugin:
   model may finish the sentence it is writing; it cannot run anything. A pause
   you forget lets go after 55 minutes, and sooner on a CLI that caps how long
   a hook may take.
-- A Supervisor STOP in guard mode refuses every tool call and ends the turn,
+- A Supervisor+ STOP (with `vc react hold` or `pause`) refuses every tool call and ends the turn,
   with the reason shown to the model. Typing a new prompt in the terminal, or
   pressing resume, lifts it.
 - A voice message goes to the agent at the next tool call it makes (Claude

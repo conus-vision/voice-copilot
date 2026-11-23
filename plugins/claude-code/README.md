@@ -35,8 +35,11 @@ only mentions one, such as `vc off please`, goes to Claude as usual.
 | `vc ask <question>` | Asks the second model, without bothering Claude |
 | `vc log`, `vc cost` | What it said; what it has spent |
 | `vc speed 1.5`, `vc volume 70`, `vc mute` | How it sounds |
+| `vc mode` | Narrator, Supervisor, Supervisor+ alone, or Supervisor+ with the narrator |
+| `vc react` | What Supervisor+ does on a dangerous command or a hard stop: wait for you, pause, or only warn |
 | `vc model`, `vc review`, `vc detail`, `vc access` | Which models, and how much they do and read |
 | `vc pause`, `vc go` | Stops Claude before its next action, and lets it go on |
+| `vc go`, `vc deny` | Runs or refuses a command Supervisor+ holds (from a terminal; the panel has buttons) |
 | `vc settings` | Opens the settings window |
 
 `/vc` does the same, and can act while a tool runs. You can also ask Claude to turn it on or off.

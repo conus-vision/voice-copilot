@@ -34,7 +34,7 @@ def register_hook_routes(
             by_agent, session_id = bool(asked.get("by_agent")), asked.get("session_id")
         except (ValueError, AttributeError) as e:
             raise HTTPException(400, "switch request is not a JSON object") from e
-        if by_agent and supervisor_mode() == "guard":
+        if by_agent and supervisor_mode() == "plus":
             # Supervisor+ exists to stop this agent, so the agent can't be the one to end it.
             refused = (
                 "Supervisor+ is watching this agent, so only the user can turn it off: `vc off`."

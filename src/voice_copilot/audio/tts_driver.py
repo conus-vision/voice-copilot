@@ -44,6 +44,9 @@ class _QueuedUtterance:
     #: A supervisor warning or stop: never superseded by routine narration,
     #: and spoken before it.
     priority: bool = False
+    role: str | None = None
+    #: Supervisor+'s alarms and warnings: spoken even when the panel isn't focused.
+    urgent: bool = False
 
 
 class TTSDriver:
@@ -61,6 +64,7 @@ class TTSDriver:
         self._language = language
         self._manual_muted = muted
         self._focus_allowed = True
+        self._current_urgent = False
         self._current: asyncio.Task[None] | None = None
         self._abort_task: asyncio.Task[None] | None = None
         self._latest_query_text: dict[str, str] = {}
@@ -138,7 +142,10 @@ class TTSDriver:
             return
         self._focus_allowed = allowed
         if not allowed:
-            self._clear_pending()
+            # Supervisor+'s alarms stay: they matter most when the user looks elsewhere.
+            self._pending = [item for item in self._pending if item.urgent]
+            if self._current_urgent:
+                return
             task = asyncio.create_task(
                 self._abort_current(silence_clients=True), name="tts.focus-abort"
             )
@@ -194,7 +201,11 @@ class TTSDriver:
         return True
 
     def _build_utterance(self, ev: Event) -> _QueuedUtterance | None:
-        if self.muted:
+        supervisor = ev.payload.get("role") == "supervisor"
+        urgent = bool(ev.payload.get("urgent"))
+        # Muted is muted. Out of focus quiets everything but Supervisor+'s alarms and
+        # warnings, which matter most exactly when the user is looking at something else.
+        if self._manual_muted or (not self._focus_allowed and not urgent):
             return None
         text = str(ev.payload.get("read_text") or ev.payload.get("text") or "").strip()
         if not text:
@@ -207,7 +218,9 @@ class TTSDriver:
             session_key=self._session_key_of(ev.payload),
             session_id=session_id if isinstance(session_id, str) and session_id else None,
             query_version=query_version if isinstance(query_version, int) else None,
-            priority=ev.payload.get("role") == "supervisor",
+            priority=supervisor,
+            role=str(ev.payload.get("role")) if ev.payload.get("role") else None,
+            urgent=urgent,
         )
 
     def _replace_pending(self, utterance: _QueuedUtterance) -> None:
@@ -236,10 +249,11 @@ class TTSDriver:
                 utterance = self._pop_next_pending()
                 if utterance is None:
                     continue
-                if self.muted:
+                if self._manual_muted or (not self._focus_allowed and not utterance.urgent):
                     continue
                 task = asyncio.create_task(self._speak(utterance), name="tts.speak")
                 self._current = task
+                self._current_urgent = utterance.urgent
                 try:
                     await task
                 except asyncio.CancelledError:
@@ -316,6 +330,8 @@ class TTSDriver:
                     "language": utterance.language,
                     "session_id": utterance.session_id,
                     "query_version": utterance.query_version,
+                    "role": utterance.role,
+                    "urgent": utterance.urgent,
                 }
             )
             try:

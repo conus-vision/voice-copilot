@@ -326,6 +326,7 @@
   function retryBlockedPlayback() {
     if (!audioBlocked) return;
     setAudioBlocked(false);
+    if (cueCtx && cueCtx.state === "suspended") cueCtx.resume().catch(() => {});
     if (player.src && player.paused) startPlayback();
     else if (!playing && !paused) playNext();
   }
@@ -704,13 +705,22 @@
     if (selectionPausedSessionId) return;
     // A session that isn't listed can't be selected: it has just started, or it has ended
     // and these are its last words, which is when the outcome and the final verdict come.
+    // Supervisor+'s warnings and alarms are heard whichever session they are about.
     const audible = !isListedSession(item.sessionId)
-      || sessionIdEquals(item.sessionId, activeNarrationSessionId());
+      || sessionIdEquals(item.sessionId, activeNarrationSessionId())
+      || item.urgent;
     if (!currentPlaybackItem && !playing && !paused && audible) {
       playNext(item.sessionId);
     }
   }
   function playNext(sessionId = activeNarrationSessionId()) {
+    const wait = cueBusyUntil - performance.now();
+    if (wait > 0) {
+      // A sound is playing: the line after it starts when it ends, not on top of it.
+      clearTimeout(playNext._afterCue);
+      playNext._afterCue = setTimeout(() => playNext(sessionId), wait);
+      return;
+    }
     const item = getPlaybackQueue(sessionId).shift();
     if (!item?.url) {
       // That session has nothing more to say, but the selected one may have been waiting.
@@ -740,9 +750,99 @@
       currentPlayerUrl = null;
       currentPlaybackItem = null;
       if (finishedItem?.url) URL.revokeObjectURL(finishedItem.url);
+      playPendingCues();
       if (!paused && !selectionPausedSessionId) playNext(finishedItem?.sessionId || activeNarrationSessionId());
       else refreshPlayButton();
     };
+  }
+
+  // ------------------------------------------------------------------ sounds
+  //
+  // Synthesised here, so there are no files to ship and nothing to license. One sound
+  // per meaning: advice (soft, rising), warn (two tones down), critical (three short low
+  // pulses), done (a rising arpeggio before the closing line). They share the speech
+  // queue's order: a sound never plays on top of a line, and a line waits for its sound.
+  // Critical interrupts what is playing. Muting silences all but critical: an alarm about
+  // a command that is about to run is the one thing mute shouldn't swallow.
+  const CUES = {
+    advice:   { wave: "sine",     gain: 0.16, notes: [[880, 0, 0.12], [1175, 0.13, 0.2]] },
+    warn:     { wave: "triangle", gain: 0.24, notes: [[784, 0, 0.16], [587, 0.19, 0.24]] },
+    critical: { wave: "square",   gain: 0.10, notes: [[392, 0, 0.11], [392, 0.17, 0.11], [392, 0.34, 0.11]] },
+    done:     { wave: "sine",     gain: 0.16, notes: [[523, 0, 0.11], [659, 0.11, 0.11], [784, 0.22, 0.11], [1047, 0.33, 0.3]] },
+  };
+  let cueCtx = null;
+  let cueBusyUntil = 0;
+  const pendingCues = [];
+
+  function cueContext() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    if (!cueCtx) cueCtx = new Ctx();
+    return cueCtx;
+  }
+  // Browsers start audio only once the page has been used. Start the context on the first
+  // click or key, so the first alarm doesn't meet a context that is still starting.
+  function unlockCues() {
+    const ctx = cueContext();
+    if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+  }
+  window.addEventListener("pointerdown", unlockCues, { capture: true });
+  window.addEventListener("keydown", unlockCues, { capture: true });
+
+  function playCueNow(name) {
+    const cue = CUES[name];
+    const ctx = cue && cueContext();
+    if (!ctx) return;
+    // Reserve the time now: a line queued behind the sound waits even while the context starts.
+    const length = Math.max(...cue.notes.map(([, at, len]) => at + len));
+    cueBusyUntil = Math.max(cueBusyUntil, performance.now()) + length * 1000 + 160;
+    if (ctx.state === "running") {
+      scheduleCue(ctx, name, cue);
+      return;
+    }
+    let started = false;
+    ctx.resume().then(() => {
+      if (ctx.state !== "running") return;
+      started = true;
+      scheduleCue(ctx, name, cue);
+    }).catch(() => {});
+    // Blocked until the page is clicked, like speech: say so instead of failing quietly.
+    setTimeout(() => { if (!started && ctx.state !== "running") setAudioBlocked(true); }, 400);
+  }
+
+  function scheduleCue(ctx, name, cue) {
+    const start = ctx.currentTime + 0.02;
+    const level = (name === "critical" ? Math.max(volume, 60) : volume) / 100;
+    for (const [freq, at, length] of cue.notes) {
+      const osc = ctx.createOscillator();
+      const amp = ctx.createGain();
+      osc.type = cue.wave;
+      osc.frequency.value = freq;
+      amp.gain.setValueAtTime(0.0001, start + at);
+      amp.gain.exponentialRampToValueAtTime(cue.gain * level + 0.0001, start + at + 0.012);
+      amp.gain.exponentialRampToValueAtTime(0.0001, start + at + length);
+      osc.connect(amp).connect(ctx.destination);
+      osc.start(start + at);
+      osc.stop(start + at + length + 0.02);
+    }
+  }
+
+  function playPendingCues() {
+    while (pendingCues.length) playCueNow(pendingCues.shift());
+  }
+
+  function playCue(name) {
+    if (isMini || !CUES[name]) return;
+    if (muted && name !== "critical") return;
+    if (name === "critical") {
+      // Whatever is being read is less urgent than this: sound the alarm, then cut the line.
+      // In that order, so the line that would play next waits for the alarm to end.
+      playCueNow(name);
+      if (currentPlaybackItem) skipCurrentPlayback();
+      return;
+    }
+    if (currentPlaybackItem && playing) pendingCues.push(name);
+    else playCueNow(name);
   }
   function stopPlayback() {
     selectionPausedSessionId = null;
@@ -884,6 +984,57 @@
     agentPausedBox.hidden = false;
   }
   agentResumeBtn?.addEventListener("click", () => send({ type: "cmd", cmd: "agent_toggle_pause" }));
+
+  // Supervisor+ holds a dangerous command until the user answers (or the time runs out).
+  // Oldest first: parallel calls arrive together and are answered one by one.
+  const dangerBox = qs("#danger-held");
+  const dangerTitle = qs("#danger-title");
+  const dangerCommand = qs("#danger-command");
+  const heldCommands = new Map();
+  let dangerTicker = null;
+
+  function showDangerHeld(p) {
+    if (!p.id || typeof p.wait_s !== "number" || p.wait_s <= 0) return;  // `say`: nothing to answer
+    heldCommands.set(p.id, {
+      excerpt: p.excerpt || "",
+      reaction: p.reaction,
+      deadline: Date.now() + p.wait_s * 1000,
+      subagent: !!p.subagent,
+    });
+    renderDangerHeld();
+  }
+  function dangerDecided(p) {
+    heldCommands.delete(p.id);
+    renderDangerHeld();
+  }
+  function renderDangerHeld() {
+    if (!dangerBox) return;
+    const first = heldCommands.entries().next();
+    if (first.done) {
+      dangerBox.hidden = true;
+      clearInterval(dangerTicker);
+      dangerTicker = null;
+      return;
+    }
+    const [id, held] = first.value;
+    const left = Math.max(0, Math.round((held.deadline - Date.now()) / 1000));
+    const who = held.subagent ? "A sub-agent's command" : "Dangerous command";
+    const more = heldCommands.size > 1 ? ` (+${heldCommands.size - 1} more)` : "";
+    dangerTitle.textContent = held.reaction === "pause"
+      ? `${who} — goes ahead in ${left} s unless you refuse${more}`
+      : `${who} — the agent waits for your answer (${left} s)${more}`;
+    dangerCommand.textContent = held.excerpt;
+    dangerBox.dataset.id = id;
+    dangerBox.hidden = false;
+    if (!dangerTicker) dangerTicker = setInterval(renderDangerHeld, 1000);
+  }
+  function answerDanger(allow) {
+    const id = dangerBox?.dataset.id;
+    if (!id) return;
+    send({ type: "cmd", cmd: "danger_decide", id, allow });
+  }
+  qs("#btn-danger-allow")?.addEventListener("click", () => answerDanger(true));
+  qs("#btn-danger-deny")?.addEventListener("click", () => answerDanger(false));
   qs("#btn-check")?.addEventListener("click", () => send({ type: "cmd", cmd: "check_now" }));
 
   const agentMessageText = qs("#agent-message-text");
@@ -999,6 +1150,9 @@
               && pluginsVisible()) loadPlugins();
           if (msg.kind === "agent.paused") showAgentPaused(msg.payload || {});
           if (msg.kind === "agent.resumed") showAgentPaused(null);
+          if (!isMini && msg.kind === "cue") playCue((msg.payload || {}).cue);
+          if (msg.kind === "supervisor.danger") showDangerHeld(msg.payload || {});
+          if (msg.kind === "supervisor.danger.decided") dangerDecided(msg.payload || {});
           traceAppend(msg);
         } else if (!isMini && msg.type === "audio_header") {
           currentUtt = {
@@ -1006,6 +1160,8 @@
             format: msg.format || "mp3",
             chunks: [],
             aborted: false,
+            role: msg.role || null,
+            urgent: !!msg.urgent,
             sessionId: msg.session_id || null,
             queryVersion: Number.isInteger(msg.query_version) ? msg.query_version : null,
           };
@@ -1020,6 +1176,8 @@
             queueBlobUrl({
               url: URL.createObjectURL(blob),
               kind: "narration",
+              role: currentUtt.role,
+              urgent: currentUtt.urgent,
               utteranceId: currentUtt.id,
               sessionId: currentUtt.sessionId,
               queryVersion: currentUtt.queryVersion,
@@ -1301,6 +1459,17 @@
           text: p.message ? `${head}: ${p.message}` : `${head}${why}`,
         };
       }
+      case "supervisor.danger": {
+        const how = p.before_run ? `held before it ran (${p.reaction})` : "seen, already running";
+        return { cls: "supervisor", tag: "DANGER", text: `${p.rule}: ${p.excerpt || ""} — ${how}` };
+      }
+      case "supervisor.danger.decided": {
+        const what = p.allowed ? "ran" : "did not run";
+        const by = p.by === "timeout" ? "time ran out" : "your answer";
+        return { cls: p.allowed ? "supervisor-ok" : "supervisor", tag: "DANGER", text: `${p.excerpt || ""} — ${what} (${by})` };
+      }
+      case "cue":
+        return { cls: "supervisor-ok", tag: "SOUND", text: p.cue || "" };
       case "agent.paused":
         return { cls: "supervisor", tag: "PAUSED", text: `agent paused (${p.reason || "?"})` };
       case "agent.resumed":
@@ -1618,11 +1787,35 @@
       else el.value = v;
     };
 
+    // The four ways of working, each a (narrator on, supervisor mode) pair.
+    const WORK_MODES = {
+      narrator: [true, "off"],
+      supervisor: [true, "watch"],
+      plus: [false, "plus"],
+      "plus-narrator": [true, "plus"],
+    };
+    function workMode(narrator, supervisor) {
+      if (supervisor === "plus" || supervisor === "guard") return narrator ? "plus-narrator" : "plus";
+      return supervisor === "watch" ? "supervisor" : "narrator";
+    }
+    const workModeSelect = qs("#work-mode");
+    workModeSelect?.addEventListener("change", () => {
+      // Runs before the form's own listener, so the save sees the new pair.
+      const [narrator, supervisor] = WORK_MODES[workModeSelect.value];
+      form.elements["commentator.narrator"].checked = narrator;
+      form.elements["commentator.supervisor.mode"].value = supervisor;
+      scheduleSave();
+    });
+
     async function loadConfig() {
       const cfg = await fetch("/api/config").then(r => r.json());
       for (const el of form.elements) {
         if (!el.name) continue;
         setElValue(el, getByPath(cfg, el.name));
+      }
+      if (workModeSelect) {
+        const cmt = cfg.commentator || {};
+        workModeSelect.value = workMode(cmt.narrator !== false, (cmt.supervisor || {}).mode);
       }
       applyHotkeyTitles(cfg);
       renderPerCli(cfg);
@@ -1676,16 +1869,29 @@
           `<input class="per-cli-model" placeholder="model (optional)" />` +
           `<select class="per-cli-supervisor">` +
           `<option value="default">default</option>` +
-          `<option value="off">off</option>` +
-          `<option value="watch">Supervisor</option>` +
-          `<option value="guard">Supervisor+</option>` +
+          `<option value="narrator">Narrator</option>` +
+          `<option value="supervisor">Supervisor</option>` +
+          `<option value="plus">Supervisor+</option>` +
+          `<option value="plus-narrator">Supervisor+ with narrator</option>` +
           `</select>` +
-          `<input class="per-cli-supervisor-model" placeholder="supervisor model (optional)" />`;
+          `<input class="per-cli-supervisor-model" placeholder="supervisor model (optional)" />` +
+          `<select class="per-cli-supervisor-cli">` +
+          `<option value="">default</option>` +
+          ["claude", "codex", "gemini", "copilot", "opencode", "pi"]
+            .filter((other) => other !== name)
+            .map((other) => `<option value="${other}">${other}</option>`)
+            .join("") +
+          `</select>`;
         host.appendChild(row);
         row.querySelector(".per-cli-mode").value = cur.mode || "default";
         row.querySelector(".per-cli-model").value = cur.model || "";
-        row.querySelector(".per-cli-supervisor").value = cur.supervisor_mode || "default";
+        const modeSet = cur.supervisor_mode && cur.supervisor_mode !== "default";
+        const narratorSet = cur.narrator && cur.narrator !== "default";
+        row.querySelector(".per-cli-supervisor").value = modeSet || narratorSet
+          ? workMode(cur.narrator !== "off", modeSet ? cur.supervisor_mode : "off")
+          : "default";
         row.querySelector(".per-cli-supervisor-model").value = cur.supervisor_model || "";
+        row.querySelector(".per-cli-supervisor-cli").value = cur.supervisor_cli || "";
       }
     }
 
@@ -1695,13 +1901,19 @@
       for (const row of qsa("#commentator-per-cli .per-cli-row")) {
         const mode = row.querySelector(".per-cli-mode").value;
         const model = row.querySelector(".per-cli-model").value.trim();
-        const supMode = row.querySelector(".per-cli-supervisor").value;
+        const workModeName = row.querySelector(".per-cli-supervisor").value;
         const supModel = row.querySelector(".per-cli-supervisor-model").value.trim();
+        const supCli = row.querySelector(".per-cli-supervisor-cli").value;
         const entry = {};
         if (mode !== "default") entry.mode = mode;
         if (model) entry.model = model;
-        if (supMode !== "default") entry.supervisor_mode = supMode;
+        if (workModeName !== "default") {
+          const [narrator, supervisor] = WORK_MODES[workModeName];
+          entry.narrator = narrator ? "on" : "off";
+          entry.supervisor_mode = supervisor;
+        }
         if (supModel) entry.supervisor_model = supModel;
+        if (supCli) entry.supervisor_cli = supCli;
         if (Object.keys(entry).length === 0) continue; // all defaults → absent
         out[row.dataset.cli] = entry;
       }
@@ -1970,7 +2182,7 @@
       scheduleSave();
     });
     form.addEventListener("change", (e) => {
-      if (!e.target.name) return;
+      if (!e.target.name && !e.target.closest("#commentator-per-cli")) return;
       scheduleSave();
     });
     // Form has no submit button anymore — but guard against <Enter>.

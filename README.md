@@ -61,8 +61,12 @@ thinking aloud.
 The Supervisor is the most capable model your CLI can run, and it only looks at
 checkpoints: the end of a turn, a run of tool calls, a failure that repeats. It
 gets the goal, a running summary and the recent transcript, then answers `OK`
-or says what is wrong. In Supervisor+ mode it also pauses the agent and waits
-for you.
+or says what is wrong. Supervisor+ also checks every command before it runs,
+stops a dangerous one (a force push, `git reset --hard`, a delete outside the
+project) until you answer, and has its own sounds for a warning, an alarm and
+finished work. It can run quietly on its own, without the narrator, and it can
+run through another CLI you are logged in to: Codex supervising Claude Code, or
+the other way round.
 
 ```
  coding agent  ──►  event stream  ──►  narrator (cheap)     ──►  spoken update        ──►  you
@@ -145,8 +149,10 @@ companions like this one (see the integration RFC below).
   the launcher, or through stream-JSON for Claude Code and Codex.
 - Has a Supervisor, the strongest model your CLI can run, review the agent at
   checkpoints and warn you out loud when it drifts, goes in circles, touches
-  files outside the task or runs something destructive. Supervisor+ also pauses
-  the agent on a hard stop and shows a Resume banner in the panel.
+  files outside the task or runs something destructive. Supervisor+ also holds
+  a dangerous command before it runs, until you pick Run it or Refuse in the
+  panel, and pauses the agent on a hard stop. Stop and wait, pause for a while,
+  or only sound the alarm: `vc react` picks.
 - Uses a small narrator model to sum up decisions, file edits and reasoning in
   short spoken lines. One setting picks the CLI's weakest model for the
   narrator and its strongest for the Supervisor, from the CLI's own catalog.
@@ -358,11 +364,16 @@ refuses to save a provider it cannot start. Saved settings apply at once: the
 narrator, the voice, speech input, hotkeys and the debounce. Only the panel's
 host and port need a restart.
 
-The Supervisor is configured with `commentator.supervisor.mode` (`off`, `watch`
-or `guard`), `commentator.supervisor.model` and
-`commentator.supervisor.every_n_tools`. `commentator.auto_tier_models: true`
-picks the weakest and strongest model per CLI, and
-`commentator.per_cli.<cli>.supervisor_mode` overrides the mode for one CLI. See
+The way of working is two settings: `commentator.narrator` (on or off) and
+`commentator.supervisor.mode` (`off`, `watch` for the Supervisor, `plus` for
+Supervisor+; the old `guard` still reads as `plus`). `vc mode` sets both at once.
+Supervisor+ reacts as `commentator.supervisor.react` says (`hold`, `pause` for
+`pause_s` seconds, or `say`), and `commentator.supervisor.cli` runs it through
+another CLI. `commentator.supervisor.model` and
+`commentator.supervisor.every_n_tools` work as before.
+`commentator.auto_tier_models: true` picks the weakest and strongest model per
+CLI, and `commentator.per_cli.<cli>` overrides the mode, the model and the CLI
+for one CLI. See
 [docs/supervisor.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/supervisor.md).
 
 Secrets live in the OS keychain (Credential Manager, Keychain or Secret

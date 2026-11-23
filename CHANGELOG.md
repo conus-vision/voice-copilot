@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+Supervisor+ grows up: it guards the agent before a command runs, not after.
+
+### Added
+- **Four ways of working**, picked with `vc mode` or in Settings: Narrator,
+  Supervisor, Supervisor+ on its own (quiet until something matters) and
+  Supervisor+ with the narrator.
+- **Supervisor+ checks every command before it runs.** Fixed rules, no model: a
+  delete outside the project, `git reset --hard`, a force push, deleting a
+  branch, `--no-verify`, a script piped from the internet, `DROP TABLE`,
+  writing to `.env` or `~/.ssh`, publishing a package and more. Through the
+  plugins (Claude Code, Codex, Pi, oh-my-pi, DeepSeek Harness) the command waits
+  for **Run it** or **Refuse** in the panel, or `vc go` / `vc deny`; through the
+  proxy and the `integrate` hooks it is called out with the alarm.
+- **`vc react hold|pause|say`**: stop and wait for you, hold for `pause_s`
+  seconds and then go on, or only sound the alarm. It governs a STOP verdict too.
+- **Sounds** under Supervisor+, synthesised in the panel: a warning, an alarm
+  that cuts the line being read and plays even when muted, and a chime when the
+  agent's work is done.
+- Under Supervisor+ the agent can't answer for you: `vc go`, `vc react`,
+  `vc mode`, `vc review` and `vc off` run by the agent itself are refused.
+- A command held with no panel open opens the panel; a panel opened late shows
+  what still waits.
+- **Another CLI as the supervisor or the narrator**, on its own login:
+  `vc review cli codex` has Codex supervise Claude Code, and the other way round.
+
+### Changed
+- `guard` is now `plus`. Old configs, per-CLI rows and `vc review guard` still work.
+- Out of focus, Supervisor+'s warnings and alarms are still spoken; the narrator
+  and the plain Supervisor wait for focus as before.
+- With the narrator off, the supervisor gets a summary built from what the code
+  knows (files edited, failures, the user's additions), and every event, whatever
+  the narration detail settings say.
+
 ## 0.3.0 — 2026-11-02
 
 Plugins for the CLIs you start yourself, and commands in their chat.

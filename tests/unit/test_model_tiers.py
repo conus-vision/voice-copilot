@@ -99,18 +99,18 @@ def test_per_cli_supervisor_override_without_touching_the_narrator() -> None:
     cmt = CommentatorConfig(
         mode="auto",
         supervisor=SupervisorConfig(mode="off"),
-        per_cli={"claude": CommentatorCliOverride(supervisor_mode="guard")},
+        per_cli={"claude": CommentatorCliOverride(supervisor_mode="plus")},
     )
     # narrator still resolves to the global auto mode …
     assert resolve_commentator_provider(cmt, cli="claude", binary="/bin/claude").name == "auto"
     # … while the supervisor is switched on for this CLI only
-    assert resolve_supervisor(cmt, cli="claude").mode == "guard"
+    assert resolve_supervisor(cmt, cli="claude").mode == "plus"
     assert resolve_supervisor(cmt, cli="codex").mode == "off"
 
 
 def test_status_text_names_the_mode_and_model() -> None:
     assert supervisor_status_text(SupervisorConfig(mode="off")) is None
     assert supervisor_status_text(SupervisorConfig(mode="watch")) == "Supervisor on"
-    assert supervisor_status_text(SupervisorConfig(mode="guard", model="gpt-5.5")) == (
+    assert supervisor_status_text(SupervisorConfig(mode="plus", model="gpt-5.5")) == (
         "Supervisor+ (gpt-5.5) on"
     )

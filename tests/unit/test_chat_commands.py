@@ -27,7 +27,7 @@ from voice_copilot.companion.runtime import (
     set_switched_off,
 )
 from voice_copilot.core.bus import EventBus
-from voice_copilot.core.config import CommentatorConfig, Config
+from voice_copilot.core.config import CommentatorCliOverride, CommentatorConfig, Config
 from voice_copilot.core.events import Event, EventKind
 from voice_copilot.proxy.chat_commands import (
     ChatCommands,
@@ -70,10 +70,11 @@ from voice_copilot.web import server as web_server
         ("vc model 2", Command("model", ("2",))),
         ("vc model ollama/gemma4:12b", Command("model", ("ollama/gemma4:12b",))),
         ("vc review", Command("review")),
-        ("vc review guard", Command("review", ("guard",))),
+        ("vc review guard", Command("review", ("plus",))),
+        ("vc review plus", Command("review", ("plus",))),
         ("vc review model", Command("review", ("model",))),
         ("vc review model 3", Command("review", ("model", "3"))),
-        ("vc анализ стоп", Command("review", ("guard",))),
+        ("vc анализ стоп", Command("review", ("plus",))),
         ("vc detail high", Command("detail", ("high",))),
         ("vc access files", Command("access", ("files",))),
         ("vc доступ файлы", Command("access", ("files",))),
@@ -373,8 +374,9 @@ async def test_review_detail_and_access_take_effect_and_are_saved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     w = _center(monkeypatch)
+    # `guard` is what Supervisor+ was called before: an old habit still lands on it.
     await w["center"].run("review", ["guard"])
-    assert w["commentator"].supervisor_mode == "guard"
+    assert w["commentator"].supervisor_mode == "plus"
     await w["center"].run("detail", ["high"])
     assert w["commentator"]._cfg.min_importance == "low"
     answer = await w["center"].run("access", ["files"])
@@ -726,3 +728,97 @@ def test_the_plugins_are_found_with_or_without_a_checkout() -> None:
     assert (root / "plugins" / "pi" / "voice-copilot.ts").is_file()
     assert (root / ".claude-plugin" / "marketplace.json").is_file()
     assert (root / ".agents" / "plugins" / "marketplace.json").is_file()
+
+
+async def test_mode_sets_narrator_and_supervisor_together(monkeypatch: pytest.MonkeyPatch) -> None:
+    w = _center(monkeypatch)
+    w["app"].state.config.commentator.per_cli["claude"] = CommentatorCliOverride(
+        supervisor_mode="watch", narrator="on"
+    )
+    answer = await w["center"].run("mode", ["plus"])
+    assert "Supervisor+ alone" in answer["text"]
+    saved = w["saved"][-1].commentator
+    assert (saved.narrator, saved.supervisor.mode) == (False, "plus")
+    # A per-CLI row must not quietly undo what the user just asked for.
+    assert saved.per_cli["claude"].supervisor_mode == "default"
+    assert saved.per_cli["claude"].narrator == "default"
+    now = await w["center"].run("mode", [])
+    assert now["choices"] == ["narrator", "supervisor", "plus", "plus-narrator"]
+
+
+async def test_react_is_saved_and_says_when_supervisor_plus_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    w = _center(monkeypatch)
+    answer = await w["center"].run("react", ["pause"])
+    assert w["saved"][-1].commentator.supervisor.react == "pause"
+    assert "30 seconds" in answer["text"]
+    assert "Supervisor+ is off now" in answer["text"]
+
+
+async def test_go_and_deny_answer_a_held_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    w = _center(monkeypatch)
+    assert "isn't holding" in (await w["center"].run("deny", []))["text"]
+    adapter: HookAdapter = w["adapter"]
+    adapter._gate_policy = lambda: ("hold", 30)
+    call = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s1",
+        "tool_name": "Bash",
+        "tool_use_id": "t1",
+        "tool_input": {"command": "git push --force"},
+    }
+    held = asyncio.create_task(adapter.handle_hook("claude", call))
+    await asyncio.sleep(0.02)
+    assert "refused" in (await w["center"].run("deny", []))["text"]
+    reply = await asyncio.wait_for(held, 0.5)
+    assert reply["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    held = asyncio.create_task(adapter.handle_hook("claude", {**call, "tool_use_id": "t2"}))
+    await asyncio.sleep(0.02)
+    assert "goes ahead" in (await w["center"].run("go", []))["text"]
+    assert await asyncio.wait_for(held, 0.5) is None
+
+
+async def test_the_supervisor_can_run_through_another_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    import voice_copilot.companion.center as center_module
+
+    w = _center(monkeypatch)
+    monkeypatch.setattr(center_module.shutil, "which", lambda name: f"/bin/{name}")
+    answer = await w["center"].run("review", ["cli", "codex"])
+    assert "through codex" in answer["text"]
+    assert w["saved"][-1].commentator.supervisor.cli == "codex"
+    assert "can't run" in (await w["center"].run("review", ["cli", "notepad"]))["text"]
+    await w["center"].run("review", ["cli", "same"])
+    assert w["saved"][-1].commentator.supervisor.cli is None
+    monkeypatch.setattr(center_module.shutil, "which", lambda name: None)
+    assert "isn't on PATH" in (await w["center"].run("model", ["cli", "gemini"]))["text"]
+
+
+@pytest.mark.parametrize(("clients", "opened"), [(False, True), (True, False)])
+async def test_a_held_command_with_no_panel_open_opens_one(
+    monkeypatch: pytest.MonkeyPatch, clients: bool, opened: bool
+) -> None:
+    import voice_copilot.companion.center as center_module
+
+    seen: list[str] = []
+    monkeypatch.setattr(center_module.webbrowser, "open", seen.append)
+    w = _center(monkeypatch, hub=_Hub(clients=clients))
+    watching = asyncio.create_task(w["center"].watch())
+    await asyncio.sleep(0.02)
+    alarm = {"id": "t1", "rule": "force_push", "excerpt": "git push -f", "wait_s": 540.0}
+    await w["bus"].publish(
+        Event(kind=EventKind.SUPERVISOR_DANGER, source="hooks.claude", payload=alarm)
+    )
+    await asyncio.sleep(0.05)
+    # `say` has nothing to answer, so nothing to open for.
+    await w["bus"].publish(
+        Event(
+            kind=EventKind.SUPERVISOR_DANGER,
+            source="hooks.claude",
+            payload={**alarm, "id": "t2", "wait_s": None},
+        )
+    )
+    await asyncio.sleep(0.05)
+    watching.cancel()
+    assert seen == (["http://127.0.0.1:1/"] if opened else [])

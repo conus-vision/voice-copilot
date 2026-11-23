@@ -52,6 +52,8 @@ class DialogManager:
         self._auto_paused_by_ptt = False
         self._auto_paused_by_narration = False
         self._narration_watchdog: asyncio.Task[None] | None = None
+        #: Supervisor+ with `react: pause`: lets the agent go when the pause is up.
+        self._supervisor_release: asyncio.Task[None] | None = None
 
     def set_hold_while_narrating(self, enabled: bool) -> None:
         """Live toggle from the panel; the saved config supplies the default."""
@@ -92,6 +94,7 @@ class DialogManager:
             return
 
         if k is EventKind.USER_PAUSE_TOGGLE:
+            self._cancel_supervisor_release()  # the user has taken it from here
             if self._adapter.is_paused:
                 if await self._adapter.resume():
                     # The user let it go: a hold that was in place is over too.
@@ -115,9 +118,22 @@ class DialogManager:
                     await self._emit_resumed("auto_on_speak")
             return
 
+        if k is EventKind.USER_DANGER_DECISION:
+            # Only plugin hooks can hold a command before it runs; elsewhere there is
+            # nothing to answer, and the panel shows no buttons.
+            decide = getattr(self._adapter, "decide", None)
+            if decide is not None:
+                gate_id = ev.payload.get("id")
+                decide(
+                    gate_id if isinstance(gate_id, str) else None,
+                    allow=bool(ev.payload.get("allow")),
+                )
+            return
+
         if k is EventKind.SUPERVISOR_STOP:
-            # Supervisor+ judged the agent off track. Pause it and leave it
-            # paused: resuming is the user's call, from the panel or the hotkey.
+            # Supervisor+ judged the agent off track. Pause it; with `react: hold`
+            # leave it paused, as resuming is the user's call, from the panel or the
+            # hotkey. With `react: pause` let it go once the pause is up.
             # A STOP usually lands while the line before it is still playing;
             # if that line holds the agent, the hold becomes the stop — else
             # the end of the line would quietly resume an agent we meant to halt.
@@ -125,6 +141,13 @@ class DialogManager:
                 not self._adapter.is_paused and await self._adapter.pause()
             ):
                 await self._emit_paused("supervisor")
+                after = ev.payload.get("resume_after_s")
+                if isinstance(after, (int, float)) and after > 0:
+                    self._cancel_supervisor_release()
+                    self._supervisor_release = asyncio.create_task(
+                        self._release_supervisor_pause(float(after)),
+                        name="dialog.supervisor-pause",
+                    )
             return
 
         if k is EventKind.TTS_STARTED:
@@ -197,6 +220,19 @@ class DialogManager:
         self._auto_paused_by_narration = False
         self._cancel_narration_watchdog()
         return True
+
+    def _cancel_supervisor_release(self) -> None:
+        task = self._supervisor_release
+        self._supervisor_release = None
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _release_supervisor_pause(self, after_s: float) -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.sleep(after_s)
+            self._supervisor_release = None
+            if await self._adapter.resume():
+                await self._emit_resumed("supervisor_pause_over")
 
     def _arm_narration_watchdog(self) -> None:
         """Lift the hold even if the panel never reports playback.
