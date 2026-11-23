@@ -671,3 +671,31 @@ def test_the_advisor_stays_off_when_switched_off_or_outside_supervisor_plus() ->
         ctx = c._contexts.setdefault("s", _SessionContext())
         c._advise_if_due(_edit_batch(c, "a.py"), ctx)
         assert not ctx.advised_plan
+
+
+# --- what the user tells the agent from the panel ------------------------------------------
+
+
+async def test_a_panel_message_goes_on_record_of_the_session_it_was_sent_to() -> None:
+    from voice_copilot.proxy.session import SessionRegistry
+
+    registry = SessionRegistry()
+    registry.register_external("s1", label="claude", cli_id="claude")
+    c = Commentator(EventBus(), CommentatorConfig(), "en", llm=_LLM("x"), sessions=registry)  # type: ignore[arg-type]
+    c._consume_control_event(
+        _ev(EventKind.USER_MESSAGE, session_id="s1", text="fix the parser", delivery="observed")
+    )
+    sent = Event(
+        kind=EventKind.USER_MESSAGE,
+        source="dialog.manager",
+        payload={"text": "skip the README", "delivery": "sent"},
+    )
+    assert c._consume_control_event(sent) == "consume"
+    assert c._contexts["s1"].corrections == ["skip the README"]
+    assert "_none" not in c._contexts  # no task of its own that nobody works on
+    # The proxy then sees it as the agent's latest message: still an addition.
+    echo = _ev(EventKind.USER_MESSAGE, session_id="s1", text="skip the README", delivery="observed")
+    c._consume_control_event(echo)
+    ctx = c._contexts["s1"]
+    assert ctx.user_query == "fix the parser"
+    assert ctx.corrections == ["skip the README"]

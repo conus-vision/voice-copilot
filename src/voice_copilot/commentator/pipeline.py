@@ -528,8 +528,15 @@ class Commentator:
                 return "consume"
             text = cleaned
             key = self._session_key_of(event)
+            if key == _NO_SESSION_KEY and _is_correction(event) and self._sessions is not None:
+                # The panel and `vc send` name no session: the message goes to the agent the
+                # panel follows, so that is where it belongs on record. Not on a session of
+                # its own, where it would be a new task nobody works on.
+                key = self._sessions.get_active_id() or key
             ctx = self._contexts.setdefault(key, _SessionContext())
-            if ctx.user_query and _is_correction(event):
+            # Through the proxy, the user's addition comes back as the latest message of the
+            # agent's next request. It is still an addition, not a new task.
+            if ctx.user_query and (_is_correction(event) or text in ctx.corrections):
                 # Said to a working agent: it changes the task, it doesn't replace it.
                 # As the new "goal", "skip the README" would make the rest of the work
                 # look unrelated, and the supervisor would stop the agent for it.
