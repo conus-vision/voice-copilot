@@ -5,7 +5,7 @@
 > **Listen to Control.** A second engineer watching your coding agent: it stops a dangerous
 > command before it runs, asks the questions you didn't, and tells you how the work was really checked.
 
-Coding agents now work for minutes at a time, and their mistakes are confident ones: a
+Coding agents now work for hours on a single prompt, and their mistakes are confident ones: a
 force push, a migration edited after it already ran, a password stored as is, "all tests
 pass" when none ran. Reading every line defeats the point of delegating; not reading them
 means finding out afterwards.
@@ -77,7 +77,7 @@ forms that must not fire. How each part works, and what it can't see:
 
 ## Why this exists
 
-One prompt can now start minutes of autonomous work. The part you care about
+One prompt can now start hours of autonomous work. The part you care about
 (what the agent understood, what it changed, which risks it noticed) is buried in text
 that scrolls faster than you can read. Reading all of it defeats the point of
 delegating, and ignoring it means you learn about a bad turn after the damage is
@@ -165,7 +165,7 @@ tells you in plain language what the agent decided and changed, so you keep trac
 without reading.
 
 Professional engineers run long autonomous sessions with Claude Code or Codex
-on real codebases, where the risk is a confident wrong turn buried in minutes
+on real codebases, where the risk is a confident wrong turn buried in hours
 of output. Supervisor+ holds a destructive command until you answer, checks the
 agent's "done" against what actually ran, and closes each turn with what is still
 unchecked, so you can do something else and still interrupt early, instead of

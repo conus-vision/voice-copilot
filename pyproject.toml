@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voice-copilot"
-version = "0.3.0"
+version = "0.4.0"
 description = "A second engineer watching your LLM coding agent: holds dangerous commands, asks what you did not, reviews the work, and tells you by voice"
 readme = "README.md"
 requires-python = ">=3.11"

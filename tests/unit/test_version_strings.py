@@ -44,3 +44,16 @@ def test_the_changelog_names_it() -> None:
     # Work after a release goes under "Unreleased" until the next version.
     top = headings[1] if headings[0] == "Unreleased" else headings[0]
     assert top.split()[0] == __version__
+
+
+def test_the_plugin_manifests_carry_it() -> None:
+    import json
+
+    for manifest in (
+        "plugins/claude-code/.claude-plugin/plugin.json",
+        "plugins/codex/.codex-plugin/plugin.json",
+        "plugins/deepseek-harness/package.json",
+        "plugins/pi/package.json",
+    ):
+        version = json.loads((_ROOT / manifest).read_text(encoding="utf-8"))["version"]
+        assert version == __version__, manifest
