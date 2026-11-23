@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import webbrowser
 from collections import Counter
 from collections.abc import Callable
@@ -18,10 +19,17 @@ from typing import Any
 
 from voice_copilot.adapters.base import CLIAdapter
 from voice_copilot.audio.hub import AudioHub
+from voice_copilot.commentator.cli_profiles import NARRATION_PROFILES
 from voice_copilot.commentator.model_catalog import listed_models, ollama_models
 from voice_copilot.commentator.pipeline import Commentator
 from voice_copilot.core.bus import EventBus
-from voice_copilot.core.config import CommentatorCliOverride, Config, ProviderConfig
+from voice_copilot.core.config import (
+    WORK_MODES,
+    CommentatorCliOverride,
+    Config,
+    ProviderConfig,
+    work_mode,
+)
 from voice_copilot.core.events import Event, EventKind
 from voice_copilot.core.secrets import get_secret
 from voice_copilot.web.server import ConfigRejected, apply_config
@@ -74,12 +82,71 @@ _TEXTS: dict[str, dict[str, Any]] = {
             "the chat keeps a copy. Opening it: {url}"
         ),
         "no_cli": "No CLI has reported in yet, so name a model with its provider, such as ollama/gemma4:12b.",
-        "review_now": "The supervisor: {value}. Change it with vc review off, watch or guard.",
+        "review_now": "The supervisor: {value}. Change it with vc review off, watch or plus.",
         "review_set": {
             "off": "The supervisor is off. The narrator carries on.",
             "watch": "The supervisor reviews the agent and speaks up when something is off.",
-            "guard": "The supervisor reviews the agent, and stops it when something is wrong.",
+            "plus": (
+                "Supervisor+ reviews the agent, checks every command before it runs, "
+                "and reacts the way vc react says."
+            ),
         },
+        "mode_now": "Mode: {value}. Change it with vc mode narrator, supervisor, plus or plus-narrator.",
+        "mode_set": {
+            "narrator": "Narrator only: it tells what the agent does, and nobody reviews the work.",
+            "supervisor": (
+                "Narrator and supervisor: the supervisor reviews at checkpoints and speaks "
+                "up when something is off."
+            ),
+            "plus": (
+                "Supervisor+ alone: quiet, it checks every command before it runs and speaks "
+                "only when something matters."
+            ),
+            "plus-narrator": (
+                "Supervisor+ with the narrator: the narrator talks, Supervisor+ checks every "
+                "command before it runs and reacts."
+            ),
+        },
+        "react_now": (
+            "Supervisor+ on a STOP or a dangerous command: {value}. "
+            "Change it with vc react hold, pause or say."
+        ),
+        "react_set": {
+            "hold": "Supervisor+ stops the agent and waits for you.",
+            "pause": (
+                "Supervisor+ holds the agent for {n} seconds, then lets it go on; "
+                "you can refuse in the panel or with vc deny."
+            ),
+            "say": "Supervisor+ only says so, with the alarm sound; the agent carries on.",
+        },
+        "react_needs_plus": " Supervisor+ is off now: vc mode plus or plus-narrator turns it on.",
+        "held_allowed": "The held command goes ahead.",
+        "held_denied": "The held command is refused, and the agent is told why.",
+        "nothing_held": "Supervisor+ isn't holding any command now.",
+        "note_sent": "Sent to the agent: {text}",
+        "no_note": "The advisor has no open note with something to send.",
+        "advice_now": "The advisor: {value}. Change it with vc advice on, off or auto.",
+        "advice_set": {
+            "on": "The advisor puts its notes in the panel; vc send passes one to the agent.",
+            "off": "The advisor is off. Supervisor+ still guards and reviews.",
+            "auto": "The advisor's notes go to the agent at once, and to the panel.",
+        },
+        "who": {"narrator": "narrator", "supervisor": "supervisor"},
+        "memory_set": {
+            "on": (
+                "The supervisor keeps one running conversation per session through the "
+                "Claude CLI: each review sends only what is new."
+            ),
+            "off": "Each review is a fresh call again, with the whole recent record.",
+        },
+        "cost_cache": (
+            " The supervisor's running conversation read {read}k tokens from the prompt "
+            "cache and wrote {write}k."
+        ),
+        "cli_set": "The {who} now runs through {cli}, on {cli}'s own login.",
+        "cli_same": "The {who} runs through the watched CLI again.",
+        "cli_missing": "{cli} isn't on PATH. Install it and log in to it first.",
+        "cli_unknown": "Voice Copilot can't run a model through {cli}. It can through: {known}.",
         "detail_now": "Detail: {value}. Change it with vc detail low, normal or high.",
         "detail_set": "Detail: {value}.",
         "access_now": "File access: {value}. Change it with vc access events, edits or files.",
@@ -139,12 +206,70 @@ _TEXTS: dict[str, dict[str, Any]] = {
             "чат хранит копию. Открываю: {url}"
         ),
         "no_cli": "Ни один CLI ещё не подключился, поэтому укажите модель с провайдером, например ollama/gemma4:12b.",
-        "review_now": "Супервизор: {value}. Изменить: vc review off, watch или guard.",
+        "review_now": "Супервизор: {value}. Изменить: vc review off, watch или plus.",
         "review_set": {
             "off": "Супервизор выключен. Рассказчик продолжает.",
             "watch": "Супервизор проверяет агента и говорит, если что-то не так.",
-            "guard": "Супервизор проверяет агента и останавливает его, если что-то не так.",
+            "plus": (
+                "Supervisor+ проверяет агента, смотрит каждую команду до запуска "
+                "и реагирует так, как задано в vc react."
+            ),
         },
+        "mode_now": "Режим: {value}. Изменить: vc mode narrator, supervisor, plus или plus-narrator.",
+        "mode_set": {
+            "narrator": "Только комментатор: рассказывает, что делает агент, работу никто не проверяет.",
+            "supervisor": (
+                "Комментатор и супервизор: супервизор проверяет работу в контрольных точках "
+                "и говорит, если что-то не так."
+            ),
+            "plus": (
+                "Supervisor+ без комментатора: молчит, проверяет каждую команду до запуска "
+                "и говорит только по делу."
+            ),
+            "plus-narrator": (
+                "Supervisor+ с комментатором: комментатор рассказывает, Supervisor+ проверяет "
+                "каждую команду до запуска и реагирует."
+            ),
+        },
+        "react_now": (
+            "Supervisor+ на STOP и опасную команду: {value}. "
+            "Изменить: vc react hold, pause или say."
+        ),
+        "react_set": {
+            "hold": "Supervisor+ останавливает агента и ждёт вашего решения.",
+            "pause": (
+                "Supervisor+ держит агента {n} секунд, потом отпускает; "
+                "отказать можно в панели или командой vc deny."
+            ),
+            "say": "Supervisor+ только говорит об этом со звуком тревоги, агент продолжает.",
+        },
+        "react_needs_plus": " Сейчас Supervisor+ выключен: включить — vc mode plus или plus-narrator.",
+        "held_allowed": "Задержанная команда выполняется.",
+        "held_denied": "Задержанная команда отклонена, агенту сказано почему.",
+        "nothing_held": "Supervisor+ сейчас не держит ни одной команды.",
+        "note_sent": "Отправлено агенту: {text}",
+        "no_note": "У советника нет открытой заметки, которую можно отправить.",
+        "advice_now": "Советник: {value}. Изменить: vc advice on, off или auto.",
+        "advice_set": {
+            "on": "Советник кладёт заметки в панель; vc send передаёт заметку агенту.",
+            "off": "Советник выключен. Supervisor+ по-прежнему охраняет и делает обзор.",
+            "auto": "Заметки советника сразу уходят агенту и появляются в панели.",
+        },
+        "who": {"narrator": "Рассказчик", "supervisor": "Супервизор"},
+        "memory_set": {
+            "on": (
+                "Супервизор ведёт один разговор на сессию через Claude CLI: каждая проверка "
+                "отправляет только новое."
+            ),
+            "off": "Каждая проверка снова отдельный вызов со всей недавней историей.",
+        },
+        "cost_cache": (
+            " Разговор супервизора прочитал из кэша промпта {read} тыс. токенов и записал {write} тыс."
+        ),
+        "cli_set": "{who} теперь работает через {cli}, по его собственному входу.",
+        "cli_same": "{who} снова работает через тот CLI, за которым смотрит.",
+        "cli_missing": "{cli} не найден в PATH. Сначала установите его и войдите в него.",
+        "cli_unknown": "Через {cli} Voice Copilot модель не запускает. Можно через: {known}.",
         "detail_now": "Подробность: {value}. Изменить: vc detail low, normal или high.",
         "detail_set": "Подробность: {value}.",
         "access_now": "Доступ к файлам: {value}. Изменить: vc access events, edits или files.",
@@ -253,6 +378,13 @@ class CommandCenter:
                 ):
                     message = self._say("warned", message=payload.get("message"))
                     self._adapter.notify(payload.get("session_id"), message)
+                elif (
+                    event.kind is EventKind.SUPERVISOR_DANGER
+                    and payload.get("wait_s")
+                    and not self._hub.has_clients()
+                ):
+                    # A command waits for an answer and no panel is open to give it.
+                    await asyncio.to_thread(webbrowser.open, self._panel_url + "/")
 
     # -------------------------------------------------------------- the panel
 
@@ -321,10 +453,48 @@ class CommandCenter:
         return {"text": reply}
 
     async def _do_go(self, _args: list[str], _sid: str | None) -> dict[str, Any]:
+        if self._decide_held(allow=True):
+            return {"text": self._say("held_allowed")}
         if not self._adapter.is_paused:
             return {"text": self._say("not_paused")}
         await self._toggle_pause()
         return {"text": self._say("resumed")}
+
+    async def _do_deny(self, _args: list[str], _sid: str | None) -> dict[str, Any]:
+        return {
+            "text": self._say("held_denied" if self._decide_held(allow=False) else "nothing_held")
+        }
+
+    async def _do_send(self, _args: list[str], _sid: str | None) -> dict[str, Any]:
+        note = self._commentator.latest_open_note()
+        if note is None or not note.send:
+            return {"text": self._say("no_note")}
+        await self._bus.publish(
+            Event(
+                kind=EventKind.USER_ADVICE,
+                source="commands",
+                payload={"id": note.id, "action": "send"},
+            )
+        )
+        return {"text": self._say("note_sent", text=note.send)}
+
+    async def _do_advice(self, args: list[str], _sid: str | None) -> dict[str, Any]:
+        cfg: Config = self._state.config.model_copy(deep=True)
+        if not args:
+            return {
+                "text": self._say("advice_now", value=cfg.commentator.supervisor.advice),
+                "choices": ["on", "off", "auto"],
+                "pick": "vc advice",
+            }
+        cfg.commentator.supervisor.advice = args[0]  # type: ignore[assignment]
+        await self._apply(cfg)
+        off = "" if self._commentator.supervisor_mode == "plus" else self._say("react_needs_plus")
+        return {"text": self._say_choice("advice_set", args[0]) + off}
+
+    def _decide_held(self, *, allow: bool) -> bool:
+        """Answer the oldest command Supervisor+ holds. Only plugin hooks can hold one."""
+        decide = getattr(self._adapter, "decide", None)
+        return bool(decide(None, allow=allow)) if decide is not None else False
 
     async def _toggle_pause(self) -> None:
         await self._bus.publish(Event(kind=EventKind.USER_PAUSE_TOGGLE, source="commands"))
@@ -345,16 +515,24 @@ class CommandCenter:
     # ------------------------------------------------------------- the models
 
     async def _do_model(self, args: list[str], _sid: str | None) -> dict[str, Any]:
+        if args and args[0] == "cli":
+            return await self._set_cli(args[1], for_supervisor=False)
         return await self._pick_model(args, for_supervisor=False)
 
-    async def _choices(self) -> list[str]:
-        cli = self._active_cli()
+    def _model_cli(self, *, for_supervisor: bool) -> str | None:
+        """The CLI whose models are on offer: the one that runs that model."""
+        cmt = self._state.config.commentator
+        chosen = cmt.supervisor.cli if for_supervisor else cmt.narrator_cli
+        return chosen or self._active_cli()
+
+    async def _choices(self, *, for_supervisor: bool = False) -> list[str]:
+        cli = self._model_cli(for_supervisor=for_supervisor)
         own = await listed_models(cli) if cli else []
         local = [f"ollama/{name}" for name in await ollama_models()]
         return [*own, *local]
 
     async def _pick_model(self, args: list[str], *, for_supervisor: bool) -> dict[str, Any]:
-        choices = await self._choices()
+        choices = await self._choices(for_supervisor=for_supervisor)
         models = self._commentator.models()
         current = models["supervisor" if for_supervisor else "narrator"]
         if not args:
@@ -383,6 +561,8 @@ class CommandCenter:
         self, name: str, *, known: list[str], for_supervisor: bool
     ) -> dict[str, Any]:
         cli = self._active_cli()
+        if not for_supervisor and self._state.config.commentator.narrator_cli:
+            cli = self._state.config.commentator.narrator_cli
         cfg: Config = self._state.config.model_copy(deep=True)
         provider, _, model = name.partition("/")
         own = name in known and provider != "ollama"
@@ -421,20 +601,94 @@ class CommandCenter:
     async def _do_review(self, args: list[str], _sid: str | None) -> dict[str, Any]:
         if args and args[0] == "model":
             return await self._pick_model(args[1:], for_supervisor=True)
+        if args and args[0] == "cli":
+            return await self._set_cli(args[1], for_supervisor=True)
+        if args and args[0] == "memory":
+            memory: Config = self._state.config.model_copy(deep=True)
+            memory.commentator.supervisor.keep_session = args[1] == "on"
+            await self._apply(memory)
+            return {"text": self._say_choice("memory_set", args[1])}
         if not args:
             return {
                 "text": self._say("review_now", value=self._commentator.supervisor_mode),
-                "choices": ["off", "watch", "guard"],
+                "choices": ["off", "watch", "plus"],
                 "pick": "vc review",
             }
+        value = "plus" if args[0] == "guard" else args[0]
         cfg: Config = self._state.config.model_copy(deep=True)
-        cfg.commentator.supervisor.mode = args[0]  # type: ignore[assignment]
+        cfg.commentator.supervisor.mode = value  # type: ignore[assignment]
+        if value == "off":
+            cfg.commentator.narrator = True  # never silence: someone has to speak
         cli = self._active_cli()
         over = cfg.commentator.per_cli.get(cli) if cli else None
         if over is not None:
             over.supervisor_mode = "default"
         await self._apply(cfg)
-        return {"text": self._say_choice("review_set", args[0])}
+        return {"text": self._say_choice("review_set", value)}
+
+    async def _do_mode(self, args: list[str], _sid: str | None) -> dict[str, Any]:
+        if not args:
+            current = work_mode(self._commentator.narrator_on, self._commentator.supervisor_mode)
+            return {
+                "text": self._say("mode_now", value=current),
+                "choices": list(WORK_MODES),
+                "pick": "vc mode",
+            }
+        narrator, supervisor = WORK_MODES[args[0]]
+        cfg: Config = self._state.config.model_copy(deep=True)
+        cfg.commentator.narrator = narrator
+        cfg.commentator.supervisor.mode = supervisor
+        cli = self._active_cli()
+        over = cfg.commentator.per_cli.get(cli) if cli else None
+        if over is not None:
+            # The user just said how to work: a per-CLI row must not quietly undo it.
+            over.supervisor_mode, over.narrator = "default", "default"
+        await self._apply(cfg)
+        return {"text": self._say_choice("mode_set", args[0])}
+
+    async def _do_react(self, args: list[str], _sid: str | None) -> dict[str, Any]:
+        cfg: Config = self._state.config.model_copy(deep=True)
+        sup = cfg.commentator.supervisor
+        off = "" if self._commentator.supervisor_mode == "plus" else self._say("react_needs_plus")
+        if not args:
+            return {
+                "text": self._say("react_now", value=sup.react) + off,
+                "choices": ["hold", "pause", "say"],
+                "pick": "vc react",
+            }
+        sup.react = args[0]  # type: ignore[assignment]
+        await self._apply(cfg)
+        return {"text": self._say_choice("react_set", args[0], n=sup.pause_s) + off}
+
+    async def _set_cli(self, name: str, *, for_supervisor: bool) -> dict[str, Any]:
+        who = self._say_choice("who", "supervisor" if for_supervisor else "narrator")
+        cfg: Config = self._state.config.model_copy(deep=True)
+        cmt = cfg.commentator
+        if name == "same":
+            chosen = None
+        elif name not in NARRATION_PROFILES:
+            known = ", ".join(sorted(NARRATION_PROFILES))
+            return {"text": self._say("cli_unknown", cli=name, known=known)}
+        elif await asyncio.to_thread(shutil.which, name) is None:
+            return {"text": self._say("cli_missing", cli=name)}
+        else:
+            chosen = name
+        if for_supervisor:
+            cmt.supervisor.cli = chosen
+            cmt.supervisor.model = None  # a model of the old CLI means nothing to the new one
+        else:
+            cmt.narrator_cli = chosen
+        cli = self._active_cli()
+        over = cmt.per_cli.get(cli) if cli else None
+        if over is not None:
+            if for_supervisor:
+                over.supervisor_cli, over.supervisor_model = None, None
+            else:
+                over.narrator_cli = None
+        await self._apply(cfg)
+        if chosen is None:
+            return {"text": self._say("cli_same", who=who)}
+        return {"text": self._say("cli_set", who=who, cli=chosen)}
 
     async def _do_detail(self, args: list[str], _sid: str | None) -> dict[str, Any]:
         cfg: Config = self._state.config.model_copy(deep=True)
@@ -479,6 +733,15 @@ class CommandCenter:
                 question=usage["question.calls"],
                 tokens_in=_thousands(sum(v for k, v in usage.items() if k.endswith(".in"))),
                 tokens_out=_thousands(sum(v for k, v in usage.items() if k.endswith(".out"))),
+            )
+            + (
+                self._say(
+                    "cost_cache",
+                    read=f"{usage['supervisor.cache_read'] / 1000:.1f}",
+                    write=f"{usage['supervisor.cache_write'] / 1000:.1f}",
+                )
+                if usage["supervisor.cache_read"] or usage["supervisor.cache_write"]
+                else ""
             )
         }
 

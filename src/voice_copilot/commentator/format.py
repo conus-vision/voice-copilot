@@ -324,6 +324,86 @@ def build_supervisor_user(
     )
 
 
+def build_supervisor_delta(
+    *,
+    new_lines: list[str],
+    reason: str,
+    progress: str | None = None,
+    already_said: str | None = None,
+    edits: list[str] | None = None,
+    language: str = "en",
+) -> str:
+    """A later review in a running conversation: only what happened since the last verdict.
+
+    The first message of the conversation is `build_supervisor_user`, word for word, so the
+    first review reads exactly as a one-shot one. The goal, the summary and the earlier
+    events stay in the conversation above this message.
+    """
+    told = f"ALREADY TOLD THE USER:\n{already_said}\n\n" if already_said else ""
+    counts = f"PROGRESS:\n{progress}\n\n" if progress else ""
+    code = "RECENT EDITS:\n" + "\n".join(edits) + "\n\n" if edits else ""
+    events = "\n".join(new_lines) or "(no new events)"
+    return (
+        "NEW SINCE YOUR LAST VERDICT (the goal and the earlier events are above, and "
+        "still count):\n"
+        f"{events}\n\n"
+        f"{counts}"
+        f"{told}"
+        f"CHECKPOINT REASON:\n{reason}\n\n"
+        f"{code}"
+        f"Verdict (line 1: OK, WARN or STOP; for WARN and STOP, then one sentence "
+        f"in {language_name(language)}):"
+    )
+
+
+def build_debrief_user(
+    *,
+    user_query: str | None,
+    case_file: str,
+    verdict: str | None,
+    history: list[str],
+    edits: list[str] | None = None,
+    language: str = "en",
+) -> str:
+    """The message for Supervisor+'s spoken review at the end of the work."""
+    question = _extract_question(user_query) if user_query else None
+    parts = [
+        f"REQUEST:\n{_trim(question or user_query or '', 600) or '(not known)'}",
+        f"CASE FILE:\n{case_file}",
+        f"VERDICT:\n{verdict or '(nothing said)'}",
+        "RECENT EVENTS:\n" + ("\n".join(history[-60:]) or "(no events)"),
+        "RECENT EDITS:\n" + "\n".join(edits) if edits else "",
+        f"The spoken review, in {language_name(language)}, two to four sentences:",
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
+def build_advisor_user(
+    *,
+    user_query: str | None,
+    case_file: str,
+    watch: list[str],
+    raised: list[str],
+    reason: str,
+    history: list[str],
+    edits: list[str] | None = None,
+    language: str = "en",
+) -> str:
+    """The message for Supervisor+'s advisor at a checkpoint."""
+    question = _extract_question(user_query) if user_query else None
+    parts = [
+        f"REQUEST:\n{_trim(question or user_query or '', 600) or '(not known)'}",
+        f"CASE FILE:\n{case_file}",
+        "WATCH LIST:\n" + ("\n".join(f"- {w}" for w in watch) or "(empty: build it now)"),
+        "ALREADY RAISED:\n" + ("\n".join(f"- {r}" for r in raised) or "(nothing)"),
+        f"CHECKPOINT:\n{reason}",
+        "RECENT EVENTS:\n" + ("\n".join(history[-60:]) or "(no events)"),
+        "RECENT EDITS:\n" + "\n".join(edits) if edits else "",
+        f"Your answer: WATCH lines, then OK, or NOTE and SEND in {language_name(language)}:",
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
 def build_summary_user(
     *,
     prev_summary: str | None,

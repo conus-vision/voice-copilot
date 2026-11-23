@@ -2,15 +2,20 @@
   <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/logo.png" width="440" alt="Voice Copilot">
 </p>
 
-> **Listen to Control.** Hear what your coding agent is doing, and get warned when it goes off track.
+> **Listen to Control.** A second engineer watching your coding agent: it stops a dangerous
+> command before it runs, asks the questions you didn't, and tells you how the work was really checked.
 
-Coding agents now work for minutes at a time: they read files, edit code and
-call tools. You can watch the terminal the whole time, or you can look away and
-find out about a wrong turn after it happened. Voice Copilot lets you look away
-and still hear about it in time. A cheap model tells you, in a sentence or two,
-what the agent is doing right now. A stronger model, the Supervisor, reviews the
-work at checkpoints, speaks up when the agent drifts, and in Supervisor+ mode
-pauses it until you decide what happens next.
+Coding agents now work for minutes at a time, and their mistakes are confident ones: a
+force push, a migration edited after it already ran, a password stored as is, "all tests
+pass" when none ran. Reading every line defeats the point of delegating; not reading them
+means finding out afterwards.
+
+Voice Copilot puts a second, stronger model beside the agent. **Supervisor+** keeps its
+own record of the session, checks every command before it runs, works out what can go
+wrong in this particular task, and closes the work with a review of what was done and how
+it was checked. A cheap narrator tells you by voice what the agent is doing right now, so
+you can look away and still step in while a mistake can be undone. It works with the
+Claude Code or Codex you already log in to, with no extra keys.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/conus-vision/voice-copilot/main/public/demo.gif" alt="A real session: Codex says its new tests passed, all three failed, and the Supervisor names the line that broke them" width="100%">
@@ -32,7 +37,43 @@ them. The narrator and the Supervisor ran on local models there.
   <a href="https://voice-copilot.conus.vision/">Website</a>
   ·
   <a href="#quickstart">Quickstart</a>
+  ·
+  <a href="https://github.com/conus-vision/voice-copilot/discussions">Discussions</a>
 </p>
+
+## Supervisor+: better work from the agent you already use
+
+The agent writes the code; Supervisor+ makes sure it is the code you asked for. It never
+writes code itself. Turn it on with `vc mode plus-narrator` in your CLI's chat (or
+`vc mode plus` to keep it quiet until something matters).
+
+- **Stops a dangerous command before it runs.** A delete outside the project, `git reset
+  --hard`, a force push, `--no-verify`, `DROP TABLE`, a script piped from the internet, a
+  write to `.env` or `~/.ssh`, a package publish: the command waits for **Run it** or
+  **Refuse** in the panel, with an alarm. Or pause for a while, or only warn: `vc react`.
+  The agent can't approve its own command.
+- **Asks what you didn't.** The advisor keeps a short watch list for the task at hand: a
+  sign-up form gets password hashing and duplicate emails, a schema change gets data
+  loss, a one-line fix gets "why is it rewriting the module". When the agent gets near
+  one, a note waits in the panel with an instruction you can send it (`vc send`).
+- **Judges the work, not the agent's account of it.** A record kept by the code (which
+  checks ran, how they ended, what changed after the last one that passed) is set
+  against what the agent says. "Done, tests pass" with no test run after the last edit,
+  a hard-coded special case, a swallowed error, edits outside the task: a warning, or a
+  stop.
+- **Closes the work with a spoken review:** what was done against what you asked, how it
+  was checked, what is still open, and one next step.
+- **Remembers the whole session at a ninth of the price.** Through the Claude CLI it keeps
+  one running conversation and sends only what is new: about $0.0055 a review on Opus
+  instead of $0.05.
+- **A second opinion from another vendor, if you like:** Codex supervising Claude Code, or
+  the other way round, each on its own subscription (`vc review cli codex`).
+
+Measured, not assumed: on 32 checkpoints and 5 review sequences with a known right answer
+the supervisor scores 43 of 44 on Opus, with no false alarms; the advisor 15–16 of 16 on
+Opus and Sonnet; the command rules are a table of 117 commands, half of them everyday
+forms that must not fire. How each part works, and what it can't see:
+[docs/supervisor.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/supervisor.md).
 
 ## Why this exists
 
@@ -42,12 +83,12 @@ that scrolls faster than you can read. Reading all of it defeats the point of
 delegating, and ignoring it means you learn about a bad turn after the damage is
 done.
 
-Plain text-to-speech reads logs word for word, which is noise. Voice-coding
-tools help you dictate prompts to the agent but tell you nothing about what it
-does next. Voice Copilot works in the other direction: it listens to the agent
-on your behalf, turns the stream into short spoken updates you can follow with
-your eyes off the screen, and gives you a way to interrupt when you want to
-steer.
+The agent itself is the worst judge of its own work: its context fills up, its earlier
+assumptions go unquestioned, and it reports what it meant to do. A second model that
+reads the session from outside, with its own record and none of that context, catches
+what the first one talks itself past. Voice Copilot is that second model, and the voice
+is how it reaches you without asking you to watch: it listens to the agent on your
+behalf, says what matters, and lets you step in.
 
 ## How it works
 
@@ -60,9 +101,10 @@ thinking aloud.
 
 The Supervisor is the most capable model your CLI can run, and it only looks at
 checkpoints: the end of a turn, a run of tool calls, a failure that repeats. It
-gets the goal, a running summary and the recent transcript, then answers `OK`
-or says what is wrong. In Supervisor+ mode it also pauses the agent and waits
-for you.
+gets the goal, its record of the session and what happened since its last look,
+then answers `OK` or says what is wrong. Supervisor+ adds what runs between and
+around those checkpoints: the check before each command, the advisor, the review at
+the end and its own sounds.
 
 ```
  coding agent  ──►  event stream  ──►  narrator (cheap)     ──►  spoken update        ──►  you
@@ -115,17 +157,20 @@ press **Launch** next to a CLI on the panel's Launch tab, which needs no env var
 
 ## Who it's for
 
-Vibe coders build by feel and let the agent do most of the typing, and a fast
-wall of diffs and tool calls breaks the flow. Voice Copilot tells you in plain
-language what the agent decided and changed, so you keep track of where it is
-going and can step in the moment it drifts.
+Vibe coders build by feel, let the agent do the typing and rarely read the diff,
+which is exactly when nobody asks whether the password is hashed or the migration
+is safe. Supervisor+ asks for you: it works out what this task can get wrong, says
+so when the agent gets near it, and hands you the instruction to send. The narrator
+tells you in plain language what the agent decided and changed, so you keep track
+without reading.
 
 Professional engineers run long autonomous sessions with Claude Code or Codex
 on real codebases, where the risk is a confident wrong turn buried in minutes
-of output. Voice Copilot tells you the root cause, the risk and the next step as
-the work happens, so you can do something else and still interrupt early,
-instead of reviewing a large bad diff afterwards. Listening also lets you follow
-more than one session without watching every token.
+of output. Supervisor+ holds a destructive command until you answer, checks the
+agent's "done" against what actually ran, and closes each turn with what is still
+unchecked, so you can do something else and still interrupt early, instead of
+reviewing a large bad diff afterwards. Listening also lets you follow more than one
+session without watching every token.
 
 Multitaskers and reviewers hand work off and need to know when to step in.
 The narration runs in the background; when a line tells you something matters,
@@ -134,10 +179,12 @@ open the trace.
 Authors of coding CLIs can have their tool expose a clean event stream for
 companions like this one (see the integration RFC below).
 
-> **Status: 0.3.0 alpha, plugins and chat commands.** It is aimed at advanced users
-> who are comfortable testing CLI workflows and sending feedback. Voice Copilot
-> is made by Volodymyr Moskvin at [Conus Vision](https://conus.vision), and we
-> welcome collaboration: [info@conus.vision](mailto:info@conus.vision).
+> **Status: alpha, Supervisor+.** It is aimed at advanced users who are comfortable
+> testing CLI workflows and sending feedback. Questions, ideas and sessions where it
+> got something wrong are welcome in
+> [Discussions](https://github.com/conus-vision/voice-copilot/discussions). Voice
+> Copilot is made by Volodymyr Moskvin at [Conus Vision](https://conus.vision), and
+> we welcome collaboration: [info@conus.vision](mailto:info@conus.vision).
 
 ## What it does
 
@@ -145,8 +192,9 @@ companions like this one (see the integration RFC below).
   the launcher, or through stream-JSON for Claude Code and Codex.
 - Has a Supervisor, the strongest model your CLI can run, review the agent at
   checkpoints and warn you out loud when it drifts, goes in circles, touches
-  files outside the task or runs something destructive. Supervisor+ also pauses
-  the agent on a hard stop and shows a Resume banner in the panel.
+  files outside the task or calls unchecked work done. Supervisor+ also holds a
+  dangerous command before it runs, raises the questions the task needs through
+  its advisor, and closes the work with a spoken review (see above).
 - Uses a small narrator model to sum up decisions, file edits and reasoning in
   short spoken lines. One setting picks the CLI's weakest model for the
   narrator and its strongest for the Supervisor, from the CLI's own catalog.
@@ -358,11 +406,16 @@ refuses to save a provider it cannot start. Saved settings apply at once: the
 narrator, the voice, speech input, hotkeys and the debounce. Only the panel's
 host and port need a restart.
 
-The Supervisor is configured with `commentator.supervisor.mode` (`off`, `watch`
-or `guard`), `commentator.supervisor.model` and
-`commentator.supervisor.every_n_tools`. `commentator.auto_tier_models: true`
-picks the weakest and strongest model per CLI, and
-`commentator.per_cli.<cli>.supervisor_mode` overrides the mode for one CLI. See
+The way of working is two settings: `commentator.narrator` (on or off) and
+`commentator.supervisor.mode` (`off`, `watch` for the Supervisor, `plus` for
+Supervisor+; the old `guard` still reads as `plus`). `vc mode` sets both at once.
+Supervisor+ reacts as `commentator.supervisor.react` says (`hold`, `pause` for
+`pause_s` seconds, or `say`), and `commentator.supervisor.cli` runs it through
+another CLI. `commentator.supervisor.model` and
+`commentator.supervisor.every_n_tools` work as before.
+`commentator.auto_tier_models: true` picks the weakest and strongest model per
+CLI, and `commentator.per_cli.<cli>` overrides the mode, the model and the CLI
+for one CLI. See
 [docs/supervisor.md](https://github.com/conus-vision/voice-copilot/blob/main/docs/supervisor.md).
 
 Secrets live in the OS keychain (Credential Manager, Keychain or Secret

@@ -50,6 +50,21 @@ class EventKind(StrEnum):
     SUPERVISOR_VERDICT = "supervisor.verdict"
     #: Supervisor+ decided the agent is off track: the dialog manager pauses it.
     SUPERVISOR_STOP = "supervisor.stop"
+    #: Supervisor+ caught a dangerous command: held before it runs (plugin hooks) or
+    #: only seen (proxy). Payload: id, rule, excerpt, reaction, wait_s, before_run.
+    SUPERVISOR_DANGER = "supervisor.danger"
+    #: The user (or the clock) decided on a held command: id, allowed, by.
+    SUPERVISOR_DANGER_DECIDED = "supervisor.danger.decided"
+    #: A sound for the panel: cue = warn | critical | done | advice.
+    CUE = "cue"
+    #: The user's answer on a held command, from the panel: id (or none: the oldest), allow.
+    USER_DANGER_DECISION = "user.danger.decision"
+    #: Supervisor+'s advisor raised something: id, text, send (an instruction for the agent).
+    SUPERVISOR_NOTE = "supervisor.note"
+    #: What became of a note: id, status = sent | dismissed.
+    SUPERVISOR_NOTE_DECIDED = "supervisor.note.decided"
+    #: The user acts on a note, from the panel or `vc send`: id (or none: the latest), action.
+    USER_ADVICE = "user.advice"
     TTS_STARTED = "tts.started"
     TTS_FINISHED = "tts.finished"
     PLAYBACK_STATE = "playback.state"

@@ -58,6 +58,11 @@ class AutoCommentatorProvider(LLMProvider):
         max_tokens: int = 512,
         temperature: float = 0.4,
     ) -> AsyncIterator[str]:
+        if self._cli and not self._binary:
+            raise RuntimeError(
+                f"auto commentator: '{self._cli}' isn't on PATH, so it can't narrate or "
+                "supervise — install it and log in, or pick another CLI in Settings."
+            )
         if not self._cli or not self._binary:
             raise RuntimeError(
                 "auto commentator: no launched CLI to narrate with — run via "

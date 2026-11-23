@@ -54,6 +54,20 @@
     <button type="button" id="btn-agent-resume" class="ghost">Resume agent</button>
   </div>
 
+  <!-- Supervisor+ holds a dangerous command before it runs (plugin hooks only). -->
+  <div id="danger-held" class="danger-held" role="alert" hidden>
+    <span class="material-symbols-rounded" aria-hidden="true">front_hand</span>
+    <div class="danger-body">
+      <strong id="danger-title"></strong>
+      <code id="danger-command"></code>
+    </div>
+    <button type="button" id="btn-danger-allow" class="ghost">Run it</button>
+    <button type="button" id="btn-danger-deny" class="danger-deny">Refuse</button>
+  </div>
+
+  <!-- Supervisor+'s advisor: notes the user may pass on to the agent, or put away. -->
+  <div id="advice-notes" class="advice-notes" hidden></div>
+
   <div id="launch-notice" class="launch-notice" hidden></div>
 
   <!-- Shown when attached through a CLI plugin. -->
@@ -145,14 +159,62 @@
               <option value="high">high — only critical</option>
             </select>
           </label>
-          <label>Supervisor
-            <select name="commentator.supervisor.mode">
-              <option value="off">off</option>
-              <option value="watch">Supervisor — a stronger model reviews checkpoints and warns you</option>
-              <option value="guard">Supervisor+ — also pauses the agent when it judges the work off track</option>
+          <label>Mode
+            <select id="work-mode">
+              <option value="narrator">Narrator — tells what the agent does</option>
+              <option value="supervisor">Supervisor — the narrator, plus a stronger model that reviews checkpoints and warns you</option>
+              <option value="plus">Supervisor+ — quiet: checks every command before it runs, reviews checkpoints, speaks only when it matters</option>
+              <option value="plus-narrator">Supervisor+ with narrator — the narrator talks, Supervisor+ checks and reacts</option>
             </select>
           </label>
-          <p class="hint">Runs only at checkpoints — the end of a turn, a run of tool calls, a failure that repeats — so it stays cheap. The narrator keeps its own detail level above.</p>
+          <input type="hidden" name="commentator.supervisor.mode" />
+          <input type="checkbox" name="commentator.narrator" hidden />
+          <p class="hint">The supervisor runs only at checkpoints — the end of a turn, a run of tool calls, a failure that repeats — so it stays cheap. Supervisor+ also checks each command before it runs (through the CLI plugins; through the proxy it can only call it out), and plays a sound for warnings, alarms and finished work.</p>
+          <label>Supervisor+ on a STOP or a dangerous command
+            <select name="commentator.supervisor.react">
+              <option value="hold">Stop the agent and wait for my answer</option>
+              <option value="pause">Hold it for a while, then let it go on</option>
+              <option value="say">Only say so, with the alarm sound</option>
+            </select>
+          </label>
+          <label>Hold for, seconds
+            <input type="number" name="commentator.supervisor.pause_s" min="5" max="300" step="5" />
+          </label>
+          <label class="row">
+            <input type="checkbox" name="commentator.supervisor.debrief" />
+            Supervisor+ reviews the work out loud when the agent is done
+          </label>
+          <label>Supervisor+'s advisor
+            <select name="commentator.supervisor.advice">
+              <option value="on">Notes in the panel; I send them to the agent</option>
+              <option value="auto">Notes go to the agent at once</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
+          <p class="hint">The advisor works out what can go wrong in this particular task (security, data, scope, a simpler way) and speaks up when the agent gets near it: when it starts changing files, and when it edits a sensitive one. Its notes come with a soft chime and wait in the panel; the review at the end mentions the ones still open.</p>
+          <label>Supervisor runs through
+            <select name="commentator.supervisor.cli">
+              <option value="">the CLI it watches</option>
+              <option value="claude">Claude Code, on its own login</option>
+              <option value="codex">Codex, on its own login</option>
+              <option value="gemini">Gemini CLI, on its own login</option>
+              <option value="copilot">GitHub Copilot CLI, on its own login</option>
+              <option value="opencode">OpenCode, on its own login</option>
+              <option value="pi">Pi, on its own login</option>
+            </select>
+          </label>
+          <label>Narrator runs through
+            <select name="commentator.narrator_cli">
+              <option value="">the CLI it watches (or the API provider above)</option>
+              <option value="claude">Claude Code, on its own login</option>
+              <option value="codex">Codex, on its own login</option>
+              <option value="gemini">Gemini CLI, on its own login</option>
+              <option value="copilot">GitHub Copilot CLI, on its own login</option>
+              <option value="opencode">OpenCode, on its own login</option>
+              <option value="pi">Pi, on its own login</option>
+            </select>
+          </label>
+          <p class="hint">A second opinion from another vendor: Codex can supervise Claude Code and the other way round, each on the subscription you are already logged in with. The CLI has to be installed.</p>
           <label class="row">
             <input type="checkbox" name="commentator.auto_tier_models" />
             Pick models automatically: weakest for the narrator, strongest for the supervisor
@@ -161,6 +223,11 @@
           <label>Supervisor model
             <input name="commentator.supervisor.model" placeholder="auto: gpt-5.5 for codex, sonnet for claude" />
           </label>
+          <label class="row">
+            <input type="checkbox" name="commentator.supervisor.keep_session" />
+            Keep one running conversation with the supervisor per session (Claude CLI)
+          </label>
+          <p class="hint">Each review then sends only what is new, and the rest comes from the prompt cache: about a ninth of the cost of a fresh review on Opus. Codex, Gemini and the API providers review with a fresh call each time.</p>
           <label>Review every N tool calls
             <input type="number" name="commentator.supervisor.every_n_tools" min="0" max="50" step="1" />
           </label>
@@ -177,7 +244,7 @@
           </label>
           <h3 class="section-title">Per-CLI override</h3>
           <p class="hint">Narrator and supervisor per CLI. "default" uses the settings above; models are optional.</p>
-          <div class="per-cli-head" aria-hidden="true"><span></span><span>Narrator</span><span>Narrator model</span><span>Supervisor</span><span>Supervisor model</span></div>
+          <div class="per-cli-head" aria-hidden="true"><span></span><span>Narrator</span><span>Narrator model</span><span>Mode</span><span>Supervisor model</span><span>Supervisor via</span></div>
           <div id="commentator-per-cli"></div>
         </details>
 

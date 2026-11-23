@@ -70,8 +70,15 @@ tokens, with one exception on Codex below. The same words work in a terminal.
 | `vc pause`, `vc go` | Stops the agent before its next action, and lets it go on |
 | `vc model`, `vc model 2` | Lists the narrator's models, and picks one |
 | `vc model ollama/gemma4:12b` | Picks one by name, from any provider |
-| `vc review off`, `watch` or `guard` | The supervisor. See [supervisor.md](supervisor.md) |
+| `vc mode narrator`, `supervisor`, `plus` or `plus-narrator` | How Voice Copilot works with the agent. See [supervisor.md](supervisor.md) |
+| `vc react hold`, `pause` or `say` | What Supervisor+ does on a STOP or a dangerous command |
+| `vc go`, `vc deny` | Run or refuse a command Supervisor+ holds; from a terminal, as the held CLI can't take a chat word until it is answered |
+| `vc send` | Send the advisor's latest note to the agent, as your own message |
+| `vc advice on`, `off` or `auto` | The advisor: notes in the panel, off, or sent to the agent at once |
+| `vc review off`, `watch` or `plus` | The supervisor alone |
 | `vc review model` | The same as `vc model`, for the supervisor |
+| `vc review memory on` or `off` | One running conversation with the supervisor per session (Claude CLI), or a fresh call per review |
+| `vc review cli codex`, `vc model cli claude` | Run the supervisor or the narrator through another CLI, on its own login; `same` goes back |
 | `vc detail low`, `normal` or `high` | How much the narrator says |
 | `vc access events`, `edits` or `files` | What the models may read, below |
 | `vc settings` | Opens the settings window |

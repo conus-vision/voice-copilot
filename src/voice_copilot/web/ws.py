@@ -14,6 +14,8 @@ Protocol:
       { "type":"cmd", "cmd":"hold_while_narrating", "enabled":true|false }
       { "type":"cmd", "cmd":"agent_toggle_pause" }
       { "type":"cmd", "cmd":"check_now" }
+      { "type":"cmd", "cmd":"danger_decide", "id":"...", "allow":true|false }
+      { "type":"cmd", "cmd":"advice", "id":"...", "action":"send"|"dismiss" }
       { "type":"cmd", "cmd":"panel_state", "volume":70, "muted":false }
       { "type":"cmd", "cmd":"user_message", "text":"..." }
       { "type":"cmd", "cmd":"speak_start"|"speak_end" }
@@ -160,6 +162,33 @@ async def _handle_cmd(
                 )
             )
         return
+    if cmd == "danger_decide":
+        # The panel's answer on a command Supervisor+ holds before it runs.
+        gate_id = data.get("id")
+        await bus.publish(
+            Event(
+                kind=EventKind.USER_DANGER_DECISION,
+                source="web",
+                payload={
+                    "id": gate_id if isinstance(gate_id, str) and gate_id else None,
+                    "allow": bool(data.get("allow")),
+                },
+            )
+        )
+        return
+    if cmd == "advice":
+        # The user acts on an advisor's note: send its instruction to the agent, or put it away.
+        action = data.get("action")
+        if action in ("send", "dismiss"):
+            note_id = data.get("id")
+            await bus.publish(
+                Event(
+                    kind=EventKind.USER_ADVICE,
+                    source="web",
+                    payload={"id": note_id if isinstance(note_id, str) else None, "action": action},
+                )
+            )
+        return
     if cmd == "agent_toggle_pause":
         # The panel's way to release an agent the supervisor (or the user)
         # paused — same event the alt+p hotkey publishes.
@@ -218,6 +247,12 @@ def register_ws(app: FastAPI) -> None:
 
         mic = MicSession()
         pump = asyncio.create_task(_pump_bus_to_ws(bus, ws), name="ws.pump")
+        held = getattr(ws.app.state, "held_alarms", None)
+        if callable(held):
+            # A panel opened while Supervisor+ holds a command must show it to be answered.
+            for alarm in held():
+                replay = Event(kind=EventKind.SUPERVISOR_DANGER, source="hooks", payload=alarm)
+                await ws.send_text(_encode(replay))
         try:
             while True:
                 msg = await ws.receive()

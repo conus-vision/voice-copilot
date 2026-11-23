@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+Supervisor+ grows up: it guards the agent before a command runs, not after.
+
+### Added
+- **Four ways of working**, picked with `vc mode` or in Settings: Narrator,
+  Supervisor, Supervisor+ on its own (quiet until something matters) and
+  Supervisor+ with the narrator.
+- **Supervisor+ checks every command before it runs.** Fixed rules, no model: a
+  delete outside the project, `git reset --hard`, a force push, deleting a
+  branch, `--no-verify`, a script piped from the internet, `DROP TABLE`,
+  writing to `.env` or `~/.ssh`, publishing a package and more. Through the
+  plugins (Claude Code, Codex, Pi, oh-my-pi, DeepSeek Harness) the command waits
+  for **Run it** or **Refuse** in the panel, or `vc go` / `vc deny`; through the
+  proxy and the `integrate` hooks it is called out with the alarm.
+- **`vc react hold|pause|say`**: stop and wait for you, hold for `pause_s`
+  seconds and then go on, or only sound the alarm. It governs a STOP verdict too.
+- **Sounds** under Supervisor+, synthesised in the panel: a warning, an alarm
+  that cuts the line being read and plays even when muted, and a chime when the
+  agent's work is done.
+- Under Supervisor+ the agent can't answer for you: `vc go`, `vc react`,
+  `vc mode`, `vc review` and `vc off` run by the agent itself are refused.
+- A command held with no panel open opens the panel; a panel opened late shows
+  what still waits.
+- **Another CLI as the supervisor or the narrator**, on its own login:
+  `vc review cli codex` has Codex supervise Claude Code, and the other way round.
+- **A spoken review when the work is done:** Supervisor+ closes the turn with what
+  was done, how it was checked, what is open and one next step, from a case file
+  the code keeps (checks, their results, edits after the last passing one).
+- **The advisor:** it works out what can go wrong in the task at hand (security,
+  data, scope, a simpler way) and leaves a note in the panel when the agent gets
+  near it. `vc send` passes its instruction to the agent, `vc advice auto` sends
+  at once. `scripts/eval_advisor.py` scores its prompt.
+
+- **The supervisor keeps one running conversation per session** through the
+  Claude CLI: each review sends only what is new and reads the rest from the prompt
+  cache. On Opus, a review after the first costs about $0.0055 instead of $0.05, and
+  judges the same (`scripts/eval_supervisor.py --live`). `vc review memory off`
+  goes back to a fresh call per review.
+
+### Changed
+- `guard` is now `plus`. Old configs, per-CLI rows and `vc review guard` still work.
+- Out of focus, Supervisor+'s warnings and alarms are still spoken; the narrator
+  and the plain Supervisor wait for focus as before.
+- With the narrator off, the supervisor gets a summary built from what the code
+  knows (files edited, failures, the user's additions), and every event, whatever
+  the narration detail settings say.
+
 ## 0.3.0 — 2026-11-02
 
 Plugins for the CLIs you start yourself, and commands in their chat.

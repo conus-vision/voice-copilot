@@ -54,7 +54,11 @@ subscribes via `EventBus.subscribe()`.
 | `FILE_EDITED`          | CLI adapter            | Commentator           |
 | `COMMENTATOR_UTTERANCE`| Commentator, Supervisor | TTS driver, UI       |
 | `SUPERVISOR_VERDICT`   | Supervisor             | UI (Trace)            |
-| `SUPERVISOR_STOP`      | Supervisor (`guard`)   | Dialog manager (pauses the CLI) |
+| `SUPERVISOR_STOP`      | Supervisor+            | Dialog manager (pauses the CLI, for good or for `resume_after_s`) |
+| `SUPERVISOR_DANGER`    | Hook adapter (held before it runs), commentator (seen through the proxy) | Commentator (alarm, spoken line), UI (banner) |
+| `SUPERVISOR_DANGER_DECIDED` | Hook adapter       | Commentator (supervisor's log), UI |
+| `USER_DANGER_DECISION` | Web (panel buttons)    | Dialog manager → hook adapter |
+| `CUE`                  | Commentator            | UI (sounds)           |
 | `USER_MESSAGE`         | STT, web, dialog       | Dialog manager        |
 | `USER_SPEAK_REQUESTED` | Hotkey, web            | Dialog manager, TTS driver (barge-in) |
 | `USER_INTERRUPT`       | Hotkey                 | Dialog manager        |
@@ -126,8 +130,11 @@ The **supervisor** (the strongest model the launched CLI can run) is invoked
 only at checkpoints — the end of the user's turn, a run of N tool calls, or the
 same tool failing twice — and sees the goal, the rolling summary and the last
 ~80 formatted events. It answers `OK` / `WARN` / `STOP`; a warning is spoken,
-and in `guard` mode a `STOP` publishes `SUPERVISOR_STOP`, which the dialog
-manager turns into a pause of the wrapped CLI until the user resumes it.
+and under Supervisor+ (`plus`) a `STOP` publishes `SUPERVISOR_STOP`, which the dialog
+manager turns into a pause of the wrapped CLI until the user resumes it, or for
+`pause_s` seconds with `react: pause`. Supervisor+ also checks each command against
+`core/danger.py` in the `PreToolUse` hook, before it runs; see
+[supervisor.md](supervisor.md#supervisor).
 
 Two proxy-side tags keep the checkpoints honest: events from a CLI's own side
 requests (title generation, quota probes) carry `internal: true` and never

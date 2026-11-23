@@ -22,16 +22,19 @@ import contextlib
 import logging
 import re
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from voice_copilot.adapters.base import CLIAdapter, QuickAsideCapability
+from voice_copilot.companion.commands import parse as parse_command
 from voice_copilot.companion.normalize import events_from_hook
 from voice_copilot.companion.transcript import TranscriptTail
 from voice_copilot.companion.wake import WAKERS, Waker
 from voice_copilot.core.bus import EventBus
+from voice_copilot.core.danger import check_tool, program_of, simple_commands
 from voice_copilot.core.events import Event, EventKind
 from voice_copilot.proxy.session import SessionRegistry
 
@@ -52,6 +55,31 @@ _MESSAGE_FRAME = "Message from the user, relayed by the Voice Copilot plugin:\n"
 _REFUSAL_FRAME = (
     "The user stopped this tool call through the Voice Copilot plugin, so it did not run. "
     "Their message:\n"
+)
+#: Supervisor+'s seatbelt, said as what happened: a rule held the call, and then the user
+#: (or nobody, in time) decided. Not dressed up as the user's own words.
+_DANGER_REFUSED = (
+    "Voice Copilot's Supervisor+ held this tool call before it ran ({what}) and the user "
+    "declined it, so it did not run. Do not retry it in another form; if it is needed, "
+    "say why and let the user run it."
+)
+_DANGER_UNANSWERED = (
+    "Voice Copilot's Supervisor+ held this tool call before it ran ({what}) and asked the "
+    "user, who did not answer in {seconds} s, so it did not run. Do not retry it in another "
+    "form; if it is needed, say why and let the user decide."
+)
+#: How a held call that never ran reads in the narrator's and the supervisor's log.
+_DANGER_NOT_RUN = "stopped by Supervisor+ before it ran ({what}); {why}"
+
+#: (reaction, pause seconds) while Supervisor+ is on, or None.
+GatePolicy = tuple[str, int]
+
+#: `vc` words the agent may not run under Supervisor+: they let a held command go, or
+#: loosen the watch on the agent itself. The rest (`vc check`, `vc ask`) are fine.
+_USERS_WORDS = {"go", "react", "mode", "review", "off", "send", "advice"}
+_SELF_APPROVAL = (
+    "Under Voice Copilot's Supervisor+ only the user may run `vc {verb}`: it lets a held "
+    "command go or loosens the watch on you. It did not run. If it is needed, ask the user."
 )
 
 #: CLIs whose hooks don't say how a command ended. Without this a failed command would
@@ -107,6 +135,17 @@ class _HookSession:
         )
 
 
+@dataclass
+class _Held:
+    """A dangerous command waiting for the user's answer."""
+
+    sid: str
+    #: The alarm as published, for a panel that opens while it waits.
+    alarm: dict[str, Any]
+    deadline: float
+    answer: asyncio.Future[bool]
+
+
 class HookAdapter(CLIAdapter):
     name = "hooks"
     quick_aside = QuickAsideCapability.STEP
@@ -120,10 +159,14 @@ class HookAdapter(CLIAdapter):
         on_active_cli: Callable[[str | None], None] | None = None,
         wakers: dict[str, Waker] | None = None,
         greeting: Callable[[], str] | None = None,
+        gate: Callable[[], GatePolicy | None] | None = None,
     ) -> None:
         self._bus = bus
         self._registry = registry
         self._hold_timeout_s = hold_timeout_s
+        self._gate_policy = gate or (lambda: None)
+        #: Dangerous commands held for the user's answer, by id, oldest first.
+        self._held: dict[str, _Held] = {}
         self._on_active_cli = on_active_cli
         self._wakers = WAKERS if wakers is None else wakers
         self._greeting = greeting
@@ -140,6 +183,7 @@ class HookAdapter(CLIAdapter):
 
     async def stop(self) -> None:
         self._resume.set()  # Never leave an agent waiting on a dying server.
+        self._release_held(allow=False)  # ...but a held command still doesn't run.
 
     async def send_user_message(self, text: str, *, urgent: bool = False) -> None:
         # `urgent` changes nothing: every message already stops the next tool call.
@@ -229,6 +273,9 @@ class HookAdapter(CLIAdapter):
         """
         was_paused = self._paused
         left = [sid for sid in self._sessions if session_id not in (None, sid)]
+        # Off means Voice Copilot stops interfering: what it held is the CLI's to decide again.
+        # Only for the sessions being let go: another session's held command still waits.
+        self._release_held(allow=True, sid=session_id)
         if was_paused and not left:
             # A pause holds whichever session is active, so it ends with the last of them.
             self._paused = False
@@ -272,6 +319,37 @@ class HookAdapter(CLIAdapter):
     def idle_seconds(self) -> float:
         return time.monotonic() - self._last_hook
 
+    @property
+    def held_commands(self) -> list[str]:
+        """Ids of the dangerous commands waiting for the user, oldest first."""
+        return [gid for gid, held in self._held.items() if not held.answer.done()]
+
+    def held_alarms(self) -> list[dict[str, Any]]:
+        """The alarms still waiting, with the time left: for a panel that opens late."""
+        now = time.monotonic()
+        return [
+            {**held.alarm, "wait_s": max(0.0, held.deadline - now)}
+            for held in self._held.values()
+            if not held.answer.done()
+        ]
+
+    def decide(self, gate_id: str | None, *, allow: bool) -> bool:
+        """The user's answer on a held command; None answers the oldest. False if none waits."""
+        waiting = self.held_commands
+        if gate_id is None:
+            target = waiting[0] if waiting else None
+        else:
+            target = gate_id if gate_id in waiting else None
+        if target is None:
+            return False
+        self._held[target].answer.set_result(allow)
+        return True
+
+    def _release_held(self, *, allow: bool, sid: str | None = None) -> None:
+        for held in self._held.values():
+            if not held.answer.done() and sid in (None, held.sid):
+                held.answer.set_result(allow)
+
     # ------------------------------------------------------------------ hooks
 
     async def handle_hook(self, cli: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -305,8 +383,13 @@ class HookAdapter(CLIAdapter):
             session.working = True
         elif event == "Interrupt":
             session.working = False
+        #: An edit announced before it runs waits for Supervisor+'s gate: refused, it never was.
+        edits_after_gate: list[dict[str, Any]] = []
         for kind, body in hook_events:
             tool_id = body.get("tool_use_id")
+            if event == "PreToolUse" and kind is EventKind.FILE_EDITED:
+                edits_after_gate.append(body)
+                continue
             if kind is EventKind.TOOL_CALL_STARTED and cli in _EXIT_CODE_IN_TRANSCRIPT:
                 tool_input = body.get("input")
                 session.commands[str(tool_id)] = (
@@ -326,6 +409,15 @@ class HookAdapter(CLIAdapter):
             else:
                 await self._bus.publish(Event(kind=kind, source=source, payload=body))
 
+        if event == "PreToolUse":
+            # Any session and any sub-agent: a dangerous command is one wherever it comes from.
+            refused = await self._gate(session, sid, source, payload, hook_events)
+            if refused is not None:
+                return refused
+            for body in edits_after_gate:
+                await self._bus.publish(
+                    Event(kind=EventKind.FILE_EDITED, source=source, payload=body)
+                )
         held = self._paused
         if event == "PreToolUse" and sid == self._registry.get_active_id():
             await self._hold_if_paused(sid, source)
@@ -464,6 +556,126 @@ class HookAdapter(CLIAdapter):
                 Event(kind=EventKind.TOOL_CALL_FINISHED, source=source, payload=body)
             )
 
+    async def _gate(
+        self,
+        session: _HookSession,
+        sid: str,
+        source: str,
+        payload: dict[str, Any],
+        hook_events: list[tuple[EventKind, dict[str, Any]]],
+    ) -> dict[str, Any] | None:
+        """Supervisor+'s seatbelt: hold a dangerous command before it runs.
+
+        Returns the refusal for the CLI, or None to let the call go on: on to the CLI's
+        own permissions, never past them, as we only ever deny.
+        """
+        policy = self._gate_policy()
+        if policy is None:
+            return None
+        started = next((b for k, b in hook_events if k is EventKind.TOOL_CALL_STARTED), None)
+        if started is None:
+            return None
+        verb = _self_approval(started.get("input"))
+        if verb is not None:
+            await self._bus.publish(
+                Event(
+                    kind=EventKind.ERROR,
+                    source=source,
+                    payload={
+                        "session_id": sid,
+                        "where": "self_approval",
+                        "message": f"The agent tried to run `vc {verb}` itself; Supervisor+ refused it.",
+                    },
+                )
+            )
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": _SELF_APPROVAL.format(verb=verb),
+                }
+            }
+        cwd = payload.get("cwd")
+        danger = check_tool(
+            started.get("tool"), started.get("input"), cwd if isinstance(cwd, str) else None
+        )
+        if danger is None:
+            return None
+        reaction, pause_s = policy
+        tool_id = started.get("tool_use_id")
+        gate_id = str(tool_id) if tool_id else uuid.uuid4().hex
+        wait_s = {"hold": self._hold_timeout_s, "pause": float(pause_s)}.get(reaction)
+        what = danger.label("en")
+        subagent = {"subagent": True} if payload.get("agent_id") else {}
+        alarm = {
+            "session_id": sid,
+            "id": gate_id,
+            "rule": danger.rule,
+            "excerpt": danger.excerpt,
+            "reaction": reaction,
+            "wait_s": wait_s,
+            "before_run": True,
+            **subagent,
+        }
+        decision: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        if wait_s is not None:
+            # On record before the alarm goes out: whoever hears it can answer at once.
+            self._held[gate_id] = _Held(sid, alarm, time.monotonic() + wait_s, decision)
+        await self._bus.publish(
+            Event(kind=EventKind.SUPERVISOR_DANGER, source=source, payload=alarm)
+        )
+        if wait_s is None:
+            return None  # `say`: the alarm is all
+        try:
+            allowed = await asyncio.wait_for(asyncio.shield(decision), timeout=wait_s)
+            by = "user"
+        except TimeoutError:
+            # `pause` is a delay the user can use; `hold` waits for a yes, and silence isn't one.
+            allowed, by = reaction == "pause", "timeout"
+        finally:
+            self._held.pop(gate_id, None)
+        await self._bus.publish(
+            Event(
+                kind=EventKind.SUPERVISOR_DANGER_DECIDED,
+                source=source,
+                payload={
+                    "session_id": sid,
+                    "id": gate_id,
+                    "rule": danger.rule,
+                    "excerpt": danger.excerpt,
+                    "allowed": allowed,
+                    "by": by,
+                },
+            )
+        )
+        if allowed:
+            return None
+        if isinstance(tool_id, str):
+            session.commands.pop(tool_id, None)  # it won't run, so no exit code will come
+        why = "nobody answered in time" if by == "timeout" else "the user declined it"
+        await self._bus.publish(
+            Event(
+                kind=EventKind.TOOL_CALL_FINISHED,
+                source=source,
+                payload={
+                    "session_id": sid,
+                    "tool_use_id": tool_id,
+                    "tool": started.get("tool"),
+                    "is_error": True,
+                    "preview": _DANGER_NOT_RUN.format(what=what, why=why),
+                    **subagent,
+                },
+            )
+        )
+        frame = _DANGER_UNANSWERED if by == "timeout" else _DANGER_REFUSED
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": frame.format(what=what, seconds=round(wait_s)),
+            }
+        }
+
     async def _hold_if_paused(self, sid: str, source: str) -> None:
         if self._resume.is_set():
             return
@@ -560,3 +772,30 @@ class HookAdapter(CLIAdapter):
         if self._on_active_cli is not None:
             with contextlib.suppress(Exception):
                 self._on_active_cli(cli)
+
+
+def _self_approval(tool_input: Any) -> str | None:
+    """The `vc` word in this command that only the user may give, if there is one.
+
+    Only what runs counts: `vc go`, `voice-copilot go`, `voice-copilot-hook --chat claude --
+    vc go`, a request to the companion's `/api/command`. `grep "vc go" docs` is a search.
+    """
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if not isinstance(command, (str, list)):
+        return None
+    for words in simple_commands(command):
+        program, rest = program_of(words), words[1:]
+        if program == "voice-copilot-hook" and "--" in rest:
+            rest = rest[rest.index("--") + 1 :]
+            rest = rest[1:] if rest[:1] == ["vc"] else rest
+        elif program not in ("vc", "voice-copilot"):
+            if program in ("curl", "iwr", "irm", "invoke-webrequest", "invoke-restmethod"):
+                text = " ".join(words)
+                word = re.search(r'"verb"\s*:\s*"(\w+)"', text) if "/api/command" in text else None
+                if word and word.group(1) in _USERS_WORDS:
+                    return word.group(1)
+            continue
+        parsed = parse_command(" ".join(["vc", *rest]))
+        if parsed is not None and parsed.verb in _USERS_WORDS:
+            return parsed.verb
+    return None

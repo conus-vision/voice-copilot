@@ -1,9 +1,13 @@
 # Voice Copilot for Claude Code
 
-A second model watches what Claude Code does: a cheap one narrates the work aloud, and a
-stronger one checks it at a few moments in each task. If Claude says "fixed" while the
-tests still fail, you hear about it. You can answer from the panel or by voice, and your
-words reach Claude as your own message, mid-turn or while it's idle.
+A second engineer watching Claude Code. A stronger model checks the work at a few moments
+in each task: if Claude says "fixed" while the tests still fail, you hear about it. With
+Supervisor+ (`vc mode plus-narrator`) it also holds a dangerous command such as a force
+push until you answer, raises what the task needs and nobody asked (a password stored as
+is, a migration edited after it ran), and closes the work with a short spoken review of
+what was done and how it was checked. A cheap model narrates along the way. You can
+answer from the panel, and your words reach Claude as your own message, mid-turn or while
+it's idle.
 
 ## What you need
 
@@ -35,8 +39,11 @@ only mentions one, such as `vc off please`, goes to Claude as usual.
 | `vc ask <question>` | Asks the second model, without bothering Claude |
 | `vc log`, `vc cost` | What it said; what it has spent |
 | `vc speed 1.5`, `vc volume 70`, `vc mute` | How it sounds |
+| `vc mode` | Narrator, Supervisor, Supervisor+ alone, or Supervisor+ with the narrator |
+| `vc react` | What Supervisor+ does on a dangerous command or a hard stop: wait for you, pause, or only warn |
 | `vc model`, `vc review`, `vc detail`, `vc access` | Which models, and how much they do and read |
 | `vc pause`, `vc go` | Stops Claude before its next action, and lets it go on |
+| `vc go`, `vc deny` | Runs or refuses a command Supervisor+ holds (from a terminal; the panel has buttons) |
 | `vc settings` | Opens the settings window |
 
 `/vc` does the same, and can act while a tool runs. You can also ask Claude to turn it on or off.

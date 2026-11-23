@@ -5,8 +5,22 @@ panel status indicator.
 
 from __future__ import annotations
 
+import shutil
+
 from voice_copilot.commentator.model_catalog import model_tiers
-from voice_copilot.core.config import CommentatorConfig, ProviderConfig, SupervisorConfig
+from voice_copilot.core.config import (
+    CommentatorConfig,
+    ProviderConfig,
+    SupervisorConfig,
+    work_mode,
+)
+
+
+def narrator_cli_for(cmt: CommentatorConfig, cli: str | None) -> str | None:
+    """Another CLI the narrator runs through while `cli` is watched, or None."""
+    override = cmt.per_cli.get(cli) if cli else None
+    chosen = (override.narrator_cli if override is not None else None) or cmt.narrator_cli
+    return chosen if chosen and chosen != cli else None
 
 
 def resolve_commentator_provider(
@@ -19,6 +33,11 @@ def resolve_commentator_provider(
         if override.mode != "default":
             effective = override.mode
         model = override.model
+    other = narrator_cli_for(cmt, cli)
+    if other is not None:
+        # Asked for by name, so it wins over `api`. Not found is the provider's error to
+        # report when it runs, never a quiet switch back to the watched CLI.
+        effective, cli, binary = "current", other, shutil.which(other)
     if not model and cmt.auto_tier_models:
         tiers = model_tiers(cli)
         if tiers is not None:
@@ -48,11 +67,24 @@ def resolve_supervisor(cmt: CommentatorConfig, *, cli: str | None) -> Supervisor
             sup.mode = override.supervisor_mode
         if override.supervisor_model:
             sup.model = override.supervisor_model
+        if override.supervisor_cli:
+            sup.cli = override.supervisor_cli
+    if sup.cli == cli:
+        sup.cli = None  # the watched CLI is the default anyway
     if not sup.model and cmt.auto_tier_models:
-        tiers = model_tiers(cli)
+        tiers = model_tiers(sup.cli or cli)
         if tiers is not None:
             sup.model = tiers.strongest
     return sup
+
+
+def resolve_narrator(cmt: CommentatorConfig, sup: SupervisorConfig, *, cli: str | None) -> bool:
+    """Whether the narrator speaks. Never off with no supervisor: that would be silence."""
+    override = cmt.per_cli.get(cli) if cli else None
+    on = cmt.narrator
+    if override is not None and override.narrator != "default":
+        on = override.narrator == "on"
+    return on or sup.mode == "off"
 
 
 def resolve_for_launch(
@@ -68,18 +100,28 @@ def resolve_for_launch(
     commentator_cfg = cmt.model_copy(deep=True)
     commentator_cfg.provider = effective
     commentator_cfg.supervisor = resolve_supervisor(cmt, cli=cli)
-    status = commentator_status_text(effective, cli)
+    commentator_cfg.narrator = resolve_narrator(cmt, commentator_cfg.supervisor, cli=cli)
+    status = commentator_status_text(effective, cli) if commentator_cfg.narrator else None
     sup_status = supervisor_status_text(commentator_cfg.supervisor)
-    if sup_status:
-        status = f"{status}  •  {sup_status}"
+    status = "  •  ".join(part for part in (status, sup_status) if part) or "Narrator off"
     return commentator_cfg, status
+
+
+#: How the panel and `vc mode` name the four ways of working.
+MODE_LABELS = {
+    "narrator": "Narrator",
+    "supervisor": "Supervisor",
+    "plus": "Supervisor+",
+    "plus-narrator": "Supervisor+ with narrator",
+}
 
 
 def supervisor_status_text(sup: SupervisorConfig) -> str | None:
     if sup.mode == "off":
         return None
-    label = "Supervisor+" if sup.mode == "guard" else "Supervisor"
-    model = f" ({sup.model})" if sup.model else ""
+    label = MODE_LABELS[work_mode(True, sup.mode)] if sup.mode == "watch" else "Supervisor+"
+    via = f"{sup.cli}, " if sup.cli else ""
+    model = f" ({via}{sup.model})" if sup.model else (f" ({sup.cli})" if sup.cli else "")
     return f"{label}{model} on"
 
 
@@ -94,7 +136,8 @@ def commentator_status_text(provider: ProviderConfig, cli: str | None) -> str:
             )
         model = provider.options.get("model")
         suffix = f", {model}" if model else ""
-        return f"Commentator: {target} (current CLI{suffix}) — change in the Commentator tab"
+        whose = "current CLI" if not cli or target == cli else "its own login"
+        return f"Commentator: {target} ({whose}{suffix}) — change in the Commentator tab"
     model = provider.options.get("model")
     model_part = f" {model}" if model else ""
     return f"Commentator: {provider.name}{model_part} (API) — change in the Commentator tab"

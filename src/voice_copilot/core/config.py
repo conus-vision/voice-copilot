@@ -7,7 +7,7 @@ from typing import Any, Literal, cast
 
 import yaml
 from platformdirs import user_config_path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from voice_copilot.proxy.cli_catalog import CLI_CATALOG
 
@@ -121,14 +121,53 @@ class FocusConfig(BaseModel):
     narrate_only_when_focused: bool = True
 
 
+#: off — no supervisor. watch — Supervisor: reviews at checkpoints and says so when
+#: the agent drifts. plus — Supervisor+: also checks every command before it runs and
+#: reacts to a STOP or a dangerous command the way `SupervisorConfig.react` says.
+SupervisorMode = Literal["off", "watch", "plus"]
+#: hold — stop the agent and wait for the user. pause — stop it for `pause_s` seconds,
+#: then let it go on. say — only say so, with the alarm sound.
+Reaction = Literal["hold", "pause", "say"]
+
+
+def _legacy_supervisor_mode(value: Any) -> Any:
+    """`guard` was Supervisor+ before it learned more. Old configs, an old panel tab
+    and per-CLI rows still send it."""
+    return "plus" if value == "guard" else value
+
+
+#: What the user picks: the four ways of working, as (narrator on, supervisor mode).
+WORK_MODES: dict[str, tuple[bool, SupervisorMode]] = {
+    "narrator": (True, "off"),
+    "supervisor": (True, "watch"),
+    "plus": (False, "plus"),
+    "plus-narrator": (True, "plus"),
+}
+
+
+def work_mode(narrator: bool, supervisor: str) -> str:
+    """The name of the way of working these two settings make."""
+    if supervisor == "plus":
+        return "plus-narrator" if narrator else "plus"
+    return "supervisor" if supervisor == "watch" else "narrator"
+
+
 class CommentatorCliOverride(BaseModel):
     """Per-CLI knobs for narrator and supervisor; "default" defers to the
     global setting so a row can override one without touching the other."""
 
     mode: Literal["default", "current", "api"] = "default"
     model: str | None = None
-    supervisor_mode: Literal["default", "off", "watch", "guard"] = "default"
+    supervisor_mode: Literal["default", "off", "watch", "plus"] = "default"
     supervisor_model: str | None = None
+    #: Whether the narrator speaks for this CLI: Supervisor+ alone turns it off.
+    narrator: Literal["default", "on", "off"] = "default"
+    #: Another CLI the narrator or the supervisor runs through, on its own login:
+    #: Codex supervising Claude Code, say. Empty: the global choice.
+    narrator_cli: str | None = None
+    supervisor_cli: str | None = None
+
+    _legacy_mode = field_validator("supervisor_mode", mode="before")(_legacy_supervisor_mode)
 
 
 class SupervisorConfig(BaseModel):
@@ -139,14 +178,29 @@ class SupervisorConfig(BaseModel):
     run of tool calls, a failure that repeats — and only if something is off.
     """
 
-    #: off — never runs. watch — says so out loud when the agent drifts.
-    #: guard — additionally pauses the agent and waits for you.
-    mode: Literal["off", "watch", "guard"] = "off"
+    mode: SupervisorMode = "off"
     #: Model for the supervisor call; empty picks the CLI's strong default
     #: (auto) or the API provider's configured model.
     model: str | None = None
     #: Review after this many tool calls even if the turn hasn't ended.
     every_n_tools: int = 8
+    #: Supervisor+: what a STOP verdict or a dangerous command does to the agent.
+    react: Reaction = "hold"
+    #: How long `react: pause` holds the agent before letting it go on.
+    pause_s: int = Field(default=30, ge=5, le=300)
+    #: The CLI the supervisor runs through, on that CLI's own login. Empty: the
+    #: narrator's (in `auto`, the CLI being watched).
+    cli: str | None = None
+    #: Keep one running conversation with the supervisor per session, so each review
+    #: sends only what is new and the rest comes from the prompt cache. Claude CLI only.
+    keep_session: bool = True
+    #: Supervisor+: a spoken review when the agent's work is done.
+    debrief: bool = True
+    #: Supervisor+'s advisor: off; on (notes in the panel, sent to the agent when the
+    #: user says so); auto (sent at once).
+    advice: Literal["off", "on", "auto"] = "on"
+
+    _legacy_mode = field_validator("mode", mode="before")(_legacy_supervisor_mode)
 
 
 class CommentatorConfig(BaseModel):
@@ -165,6 +219,12 @@ class CommentatorConfig(BaseModel):
     speak_tool_calls: bool = True
     speak_thinking: bool = True
     speak_file_edits: bool = True
+    #: The narrator speaks. Off only with a supervisor on: that is Supervisor+ alone,
+    #: quiet until there is something to say.
+    narrator: bool = True
+    #: The CLI the narrator runs through, on that CLI's own login, instead of the one
+    #: being watched. Empty: the watched CLI (in `auto`).
+    narrator_cli: str | None = None
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     #: What the models may read. events: tools, commands, their output. edits: the supervisor
     #: also gets the latest edits. files: it also gets the files the agent changed, whole.

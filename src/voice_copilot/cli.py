@@ -958,7 +958,15 @@ async def _run_companion(
     def greeting() -> str:
         return say("connected", state.config.commentator_language)
 
-    adapter = HookAdapter(bus, sessions, on_active_cli=on_active_cli, greeting=greeting)
+    def gate_policy() -> tuple[str, int] | None:
+        # Read per tool call: a mode or reaction changed in the panel applies at once.
+        running = state.commentator
+        return running.gate_policy() if running is not None else None
+
+    adapter = HookAdapter(
+        bus, sessions, on_active_cli=on_active_cli, greeting=greeting, gate=gate_policy
+    )
+    state.held_alarms = adapter.held_alarms
     commentator_cfg, state.launch_notice = resolve_commentator(cfg)
     commentator = Commentator(bus, commentator_cfg, cfg.commentator_language, sessions=sessions)
     state.commentator = commentator

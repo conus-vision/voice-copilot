@@ -25,18 +25,24 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import shutil
 import time
 from collections import Counter, deque
+from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any, cast
 from uuid import uuid4
 
+from voice_copilot.commentator.casefile import CaseFile, Note, parse_advice
 from voice_copilot.commentator.cli_profiles import NARRATION_PROFILES, strong_model_for
 from voice_copilot.commentator.format import (
+    build_advisor_user,
     build_ask_user,
+    build_debrief_user,
     build_narration_user,
     build_summary_user,
+    build_supervisor_delta,
     build_supervisor_user,
     edit_excerpt,
     format_events,
@@ -46,15 +52,20 @@ from voice_copilot.commentator.format import (
 )
 from voice_copilot.commentator.importance import classify, meets_threshold
 from voice_copilot.commentator.prompts import load as load_prompt
+from voice_copilot.commentator.prompts import load_advisor as load_advisor_prompt
 from voice_copilot.commentator.prompts import load_ask as load_ask_prompt
+from voice_copilot.commentator.prompts import load_debrief as load_debrief_prompt
 from voice_copilot.commentator.prompts import load_summary as load_summary_prompt
 from voice_copilot.commentator.prompts import load_supervisor as load_supervisor_prompt
 from voice_copilot.core.bus import EventBus
 from voice_copilot.core.config import CommentatorConfig, Language
+from voice_copilot.core.danger import RULES, Danger, check_tool
 from voice_copilot.core.events import Event, EventKind
 from voice_copilot.core.user_query import clean_user_query
 from voice_copilot.providers import registry
 from voice_copilot.providers.llm.base import LLMMessage, LLMProvider
+from voice_copilot.providers.llm.live_claude import LiveClaude
+from voice_copilot.providers.llm.live_claude import stats as live_stats
 from voice_copilot.proxy.session import SessionRegistry
 
 log = logging.getLogger(__name__)
@@ -102,12 +113,30 @@ class _SessionContext:
     files_edited: set[str] = field(default_factory=set)
     #: The latest changes the agent made, for the supervisor to read.
     edits: list[str] = field(default_factory=list)
+    #: Which tool call made which of those, so a refused one can be taken back.
+    edit_of: dict[str, str] = field(default_factory=dict)
     #: The session's folder, and the files it changed with the latest last.
     cwd: str | None = None
     recent_files: list[str] = field(default_factory=list)
     #: Events on record already: `vc ask` may get to them before the narrator does.
     recorded: set[str] = field(default_factory=set)
     last_event_at: float | None = None
+    #: Lines ever added to `history` and edits ever added to `edits`: both are trimmed
+    #: from the front, and a running conversation needs to know what it hasn't seen.
+    history_total: int = 0
+    edits_total: int = 0
+    #: Facts about the request in hand, for the end-of-work review and the advisor.
+    case: CaseFile = field(default_factory=CaseFile)
+    #: The supervisor's word on the turn that just ended, for the review to build on.
+    turn_verdict: str | None = None
+    #: Advisor: whether it has looked at the plan yet, which sensitive files it has
+    #: been asked about, and when it last ran.
+    advised_plan: bool = False
+    advised_files: set[str] = field(default_factory=set)
+    sensitive_due: str | None = None
+    #: Never, at first. Not 0.0: on Linux the monotonic clock counts from boot, and a
+    #: machine up for less than the gap would hold the advisor back.
+    advised_at: float = float("-inf")
 
     @property
     def quiet_s(self) -> int | None:
@@ -122,6 +151,28 @@ class _SessionContext:
             f"{spent} since the request, {self.tool_calls} tool calls, "
             f"{len(self.files_edited)} files edited"
         )
+
+    def log(self, *lines: str) -> None:
+        """Add to the supervisor's transcript: the one way it grows."""
+        self.history.extend(lines)
+        self.history_total += len(lines)
+        if len(self.history) > _SUPERVISOR_HISTORY_LINES:
+            self.history = self.history[-_SUPERVISOR_HISTORY_LINES:]
+
+    @property
+    def facts(self) -> str | None:
+        """What the code knows for certain: the summary when no narrator writes one."""
+        parts: list[str] = []
+        if self.files_edited:
+            names = sorted(self.files_edited)
+            more = f" (+{len(names) - 8} more)" if len(names) > 8 else ""
+            parts.append(f"Files edited: {', '.join(names[:8])}{more}.")
+        failed = sum(self.failures.values())
+        if failed:
+            parts.append(f"Failed tool calls so far: {failed}.")
+        if self.corrections:
+            parts.append(f"The user added {len(self.corrections)} instruction(s) along the way.")
+        return " ".join(parts) or None
 
     @property
     def goal(self) -> str | None:
@@ -167,8 +218,13 @@ class Commentator:
         self._llm_provider_key = _provider_key(cfg)
         self._supervisor_llm: LLMProvider | None = None
         self._supervisor_key: str | None = None
-        self._supervisor_prompt = load_supervisor_prompt(language, self._prompt_style)
+        #: By (language, prompt style): the supervisor may run through another CLI.
+        self._supervisor_prompts: dict[tuple[str, str], str] = {}
         self._supervisor_tasks: set[asyncio.Task[None]] = set()
+        #: Sounds and alarms on their way to the bus, held so the GC doesn't drop them.
+        self._side_tasks: set[asyncio.Task[None]] = set()
+        #: The supervisor's running conversation per session, where the CLI allows one.
+        self._live: dict[str, _LiveReview] = {}
 
         self._buffer: list[Event] = []
         self._max_buffer = 60
@@ -194,6 +250,20 @@ class Commentator:
     def supervisor_mode(self) -> str:
         return self._cfg.supervisor.mode
 
+    @property
+    def narrator_on(self) -> bool:
+        return self._cfg.narrator
+
+    def latest_open_note(self) -> Note | None:
+        """The advisor's latest note the user hasn't acted on, for `vc send`."""
+        notes = [n for ctx in self._contexts.values() for n in ctx.case.notes if n.status == "open"]
+        return notes[-1] if notes else None
+
+    def gate_policy(self) -> tuple[str, int] | None:
+        """Supervisor+'s reaction to a dangerous command, or None when it isn't on."""
+        sup = self._cfg.supervisor
+        return (sup.react, sup.pause_s) if sup.mode == "plus" else None
+
     def models(self) -> dict[str, str]:
         """What the narrator and the supervisor use, by the name `vc model` gives it."""
         provider = self._cfg.provider
@@ -204,8 +274,9 @@ class Commentator:
             cli = str(provider.options.get("cli") or provider.name)
             profile = NARRATION_PROFILES.get(cli)
             narrator = str(model or (profile.model if profile else None) or f"{cli} default")
-        strong = strong_model_for(str(provider.options.get("cli") or ""))
-        supervisor = self._cfg.supervisor.model or strong or narrator
+        sup = self._cfg.supervisor
+        strong = strong_model_for(sup.cli or str(provider.options.get("cli") or ""))
+        supervisor = sup.model or strong or (f"{sup.cli} default" if sup.cli else narrator)
         return {"narrator": narrator, "supervisor": str(supervisor)}
 
     def recent_lines(self, count: int) -> list[str]:
@@ -261,10 +332,11 @@ class Commentator:
             edits=edits,
             files=files,
         )
-        system = load_ask_prompt(self._language, self._prompt_style)
+        llm = self._supervisor()
+        system = load_ask_prompt(self._language, getattr(llm, "prompt_style", "api"))
         pieces: list[str] = []
         async with asyncio.timeout(_LLM_TIMEOUT_S):
-            stream = self._supervisor().stream_chat(
+            stream = llm.stream_chat(
                 [LLMMessage(role="user", content=user_content)],
                 system=system,
                 max_tokens=300,
@@ -300,7 +372,6 @@ class Commentator:
             self._language = language
             self._system_prompt = load_prompt(language, self._prompt_style)
             self._summary_prompt = load_summary_prompt(language, self._prompt_style)
-            self._supervisor_prompt = load_supervisor_prompt(language, self._prompt_style)
         # The supervisor LLM is rebuilt lazily at its next checkpoint if the
         # provider or model changed — `_supervisor()` compares keys.
 
@@ -308,6 +379,16 @@ class Commentator:
         """Main loop — subscribe to the bus and narrate until cancelled."""
         loop = asyncio.get_event_loop()
 
+        try:
+            await self._run_loop(loop)
+        finally:
+            # A running `claude -p` per session: none may outlive the run.
+            await asyncio.gather(
+                *(c.live.close() for c in self._live.values()), return_exceptions=True
+            )
+            self._live.clear()
+
+    async def _run_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         async with self._bus.subscribe() as q:
             while True:
                 # Read per batch: a debounce saved in the panel applies at once.
@@ -348,8 +429,17 @@ class Commentator:
         if control == "check":
             await self._check_now(event)
             return
+        if control == "danger":
+            await self._on_danger(event)
+            return
+        if control == "advice":
+            await self._on_advice(event)
+            return
         if control == "consume":
             return  # USER_MESSAGE etc. — context-only, not narrated
+        if not self._cfg.narrator:
+            self._watch_only(event)
+            return
         admitted = self._admit(event)
         if admitted is None or admitted == "context":
             return
@@ -376,6 +466,12 @@ class Commentator:
                     continue
                 if control == "check":
                     await self._check_now(event)
+                    continue
+                if control == "danger":
+                    await self._on_danger(event)
+                    continue
+                if control == "advice":
+                    await self._on_advice(event)
                     continue
                 if control == "consume":
                     continue
@@ -419,6 +515,12 @@ class Commentator:
         if event.kind is EventKind.USER_CHECK:
             return "check"
 
+        if event.kind in (EventKind.SUPERVISOR_DANGER, EventKind.SUPERVISOR_DANGER_DECIDED):
+            return "danger"
+
+        if event.kind is EventKind.USER_ADVICE:
+            return "advice"
+
         if event.kind is EventKind.NARRATION_STOP:
             only = event.payload.get("session_id")
             self._buffer = (
@@ -430,7 +532,12 @@ class Commentator:
                 if only in (None, key):
                     ctx.query_version += 1  # whatever is being generated now comes back stale
                     ctx.final_review_due = None
+            self._end_live(only)
             return "consume"
+
+        if event.kind is EventKind.SESSION_ENDED:
+            self._end_live(self._session_key_of(event))
+            return None
 
         if event.kind is EventKind.SESSION_STARTED:
             # Not consumed: only noted, for what `vc access files` may read.
@@ -454,14 +561,21 @@ class Commentator:
                 return "consume"
             text = cleaned
             key = self._session_key_of(event)
+            if key == _NO_SESSION_KEY and _is_correction(event) and self._sessions is not None:
+                # The panel and `vc send` name no session: the message goes to the agent the
+                # panel follows, so that is where it belongs on record. Not on a session of
+                # its own, where it would be a new task nobody works on.
+                key = self._sessions.get_active_id() or key
             ctx = self._contexts.setdefault(key, _SessionContext())
-            if ctx.user_query and _is_correction(event):
+            # Through the proxy, the user's addition comes back as the latest message of the
+            # agent's next request. It is still an addition, not a new task.
+            if ctx.user_query and (_is_correction(event) or text in ctx.corrections):
                 # Said to a working agent: it changes the task, it doesn't replace it.
                 # As the new "goal", "skip the README" would make the rest of the work
                 # look unrelated, and the supervisor would stop the agent for it.
                 if text != ctx.user_query and text not in ctx.corrections:
                     ctx.corrections.append(text)
-                    ctx.history.append(f"- the user said: {text}")
+                    ctx.log(f"- the user said: {text}")
                 return "consume"
             if ctx.user_query != text:
                 dropped = sum(1 for ev in self._buffer if self._session_key_of(ev) == key)
@@ -475,6 +589,9 @@ class Commentator:
                 ctx.tool_calls = 0
                 ctx.files_edited = set()
                 ctx.edits = []
+                ctx.case = CaseFile()
+                self._end_live(key)  # a new task: the conversation starts over with it
+                ctx.advised_plan, ctx.advised_files, ctx.sensitive_due = False, set(), None
                 ctx.summary = None  # fresh question → forget previous thread
                 ctx.query_version += 1
                 ctx.playback_ready_for_next = False
@@ -518,8 +635,10 @@ class Commentator:
         are in play. They just never wake it on their own; that stays the job
         of thinking, answers, edits and failures.
         """
+        self._danger_seen(event)
         imp = classify(event, self._cfg)
         if imp is None:
+            self._intake_for_supervisor(event)
             return None
         if event.source.startswith("commentator"):
             return None  # don't narrate our own utterances
@@ -536,6 +655,34 @@ class Commentator:
         if not meets_threshold(imp, self._cfg.min_importance):
             return "context"
         return imp
+
+    def _intake_for_supervisor(self, event: Event) -> None:
+        """What the narrator was told not to mention still happened: the supervisor gets it."""
+        if self._cfg.supervisor.mode == "off" or event.source.startswith("commentator"):
+            return
+        if classify(event, _SEE_ALL) is None or not self._accepts(event):
+            return
+        self._record_events(self._session_key_of(event), [event])
+
+    def _watch_only(self, event: Event) -> None:
+        """Supervisor+ alone: nothing is narrated, every event goes straight on its record."""
+        self._danger_seen(event)
+        if event.source.startswith("commentator") or not self._accepts(event):
+            return
+        if classify(event, _SEE_ALL) is None:
+            return
+        key = self._session_key_of(event)
+        ctx = self._contexts.setdefault(key, _SessionContext())
+        ctx.last_event_at = time.monotonic()
+        self._review_if_due(
+            _Batch(
+                events=[event],
+                session_key=key,
+                user_query=ctx.goal,
+                summary=ctx.summary,
+                query_version=ctx.query_version,
+            )
+        )
 
     def _accepts(self, event: Event) -> bool:
         """Drop events from non-active proxy sessions."""
@@ -600,7 +747,8 @@ class Commentator:
         """Narrate one batch, update summary, then re-flush if more piled up."""
         given_up = False
         try:
-            await self._narrate(batch)
+            if self._cfg.narrator and not self._review_speaks_for(batch):
+                await self._narrate(batch)
             # Whatever became of the narration: a narrator that fails or stays silent
             # must not take the supervisor down with it.
             self._review_if_due(batch)
@@ -801,9 +949,11 @@ class Commentator:
 
     async def _review(self, batch: _Batch, reason: str, ctx: _SessionContext) -> None:
         await self._supervise(batch, reason)
+        await self._debrief_if_due(batch, reason)
         due, ctx.final_review_due = ctx.final_review_due, None
         if due is not None and due.query_version == ctx.query_version:
             await self._supervise(due, "turn ended")
+            await self._debrief_if_due(due, "turn ended")
 
     def _review_if_due(self, batch: _Batch) -> None:
         """Add the batch to the supervisor's transcript; review at a checkpoint.
@@ -815,6 +965,7 @@ class Commentator:
             return
         ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
         self._record_for_supervisor(batch)
+        self._advise_if_due(batch, ctx)
         reason = self._checkpoint_reason(batch, ctx)
         if reason is None:
             return
@@ -835,20 +986,36 @@ class Commentator:
             ev for ev in events if ev.kind is not EventKind.USER_CHECK and ev.id not in ctx.recorded
         ]
         ctx.recorded.update(ev.id for ev in fresh)
-        ctx.history.extend(format_events(fresh).splitlines())
-        if len(ctx.history) > _SUPERVISOR_HISTORY_LINES:
-            ctx.history = ctx.history[-_SUPERVISOR_HISTORY_LINES:]
+        ctx.log(*format_events(fresh).splitlines())
         for ev in fresh:
+            ctx.case.tick()
+            tool_id = ev.payload.get("tool_use_id") if isinstance(ev.payload, dict) else None
             if ev.kind is EventKind.TOOL_CALL_STARTED:
                 ctx.tools_since_review += 1
                 ctx.tool_calls += 1
                 edit = edit_excerpt(ev.payload)
                 if edit:
                     ctx.edits = [*ctx.edits, edit][-_SUPERVISOR_EDITS:]
+                    ctx.edits_total += 1
+                    ctx.case.edited()
+                    if tool_id:
+                        ctx.edit_of[str(tool_id)] = edit
+                tool_input = ev.payload.get("input")
+                if isinstance(tool_input, dict):
+                    command = tool_input.get("command") or tool_input.get("cmd")
+                    ctx.case.started(str(tool_id) if tool_id else None, command)
             elif ev.kind is EventKind.FILE_EDITED:
-                ctx.files_edited.add(str(ev.payload.get("path")))
-                ctx.recent_files.append(str(ev.payload.get("path")))
-            elif ev.kind is EventKind.TOOL_CALL_FINISHED and ev.payload.get("is_error"):
+                path = str(ev.payload.get("path"))
+                ctx.files_edited.add(path)
+                ctx.recent_files.append(path)
+                ctx.case.edited()
+                if _SENSITIVE_PATH.search(path) and path not in ctx.advised_files:
+                    ctx.sensitive_due = path
+            elif ev.kind is EventKind.TOOL_CALL_FINISHED:
+                ctx.case.finished(
+                    str(tool_id) if tool_id else None, bool(ev.payload.get("is_error"))
+                )
+            if ev.kind is EventKind.TOOL_CALL_FINISHED and ev.payload.get("is_error"):
                 key, description = _describe_failure(ev.payload)
                 count = ctx.failures[key] = ctx.failures.get(key, 0) + 1
                 if count >= 2:
@@ -867,12 +1034,7 @@ class Commentator:
             return (
                 f"{_CHECK_REASON}, {batch.events[-1].payload.get('quiet_s')} s since the last event"
             )
-        turn_over = any(
-            ev.kind is EventKind.TURN_ENDED
-            and ev.payload.get("final") is not False
-            and not ev.payload.get("subagent")
-            for ev in batch.events
-        )
+        turn_over = _turn_is_over(batch.events)
         if self._review_in_flight(batch.session_key):
             # One review at a time per session; the next checkpoint will look. The end
             # of the turn has no next checkpoint, so that one waits its turn instead.
@@ -896,31 +1058,54 @@ class Commentator:
         )
 
     def _supervisor(self) -> LLMProvider:
-        """The supervisor's LLM: the narrator's provider with a stronger model."""
+        """The supervisor's LLM: the narrator's provider with a stronger model, or another
+        CLI on its own login when the user picked one."""
         sup = self._cfg.supervisor
         provider = self._cfg.provider
-        options = dict(provider.options)
-        model = sup.model or (
-            strong_model_for(str(options.get("cli") or "")) if provider.name == "auto" else None
-        )
+        name = provider.name
+        options: dict[str, str | int | float | bool]
+        if sup.cli:
+            name, options = "auto", {"cli": sup.cli}
+            binary = shutil.which(sup.cli)
+            if binary:
+                options["binary"] = binary  # missing: the provider says so when called
+            model = sup.model or strong_model_for(sup.cli)
+        else:
+            options = dict(provider.options)
+            model = sup.model or (
+                strong_model_for(str(options.get("cli") or "")) if name == "auto" else None
+            )
         if model:
             options["model"] = model
-        key = f"{provider.name}:{sorted(options.items())}"
+        key = f"{name}:{sorted(options.items())}"
         if self._supervisor_llm is None or key != self._supervisor_key:
-            self._supervisor_llm = cast(LLMProvider, registry.build("llm", provider.name, options))
+            self._supervisor_llm = cast(LLMProvider, registry.build("llm", name, options))
             self._supervisor_key = key
             log.info(
-                "supervisor: using %s model=%s", provider.name, options.get("model", "<default>")
+                "supervisor: using %s%s model=%s",
+                name,
+                f" ({sup.cli})" if sup.cli else "",
+                options.get("model", "<default>"),
             )
         return self._supervisor_llm
 
+    def _supervisor_system(self, llm: LLMProvider) -> str:
+        style = getattr(llm, "prompt_style", "api")
+        key = (self._language, style)
+        if key not in self._supervisor_prompts:
+            self._supervisor_prompts[key] = load_supervisor_prompt(self._language, style)
+        return self._supervisor_prompts[key]
+
     async def _supervise(self, batch: _Batch, reason: str) -> None:
         ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
+        if reason == "turn ended":
+            # This turn's word, or none: a review that fails must not hand on the last one's OK.
+            ctx.turn_verdict = None
         ctx.tools_since_review = 0
         edits, files = self._files_for_models(ctx)
         user_content = build_supervisor_user(
             user_query=batch.user_query,
-            summary=ctx.summary or batch.summary,
+            summary=ctx.summary or batch.summary or ctx.facts,
             history=ctx.history,
             reason=reason,
             style=self._prompt_style,
@@ -935,20 +1120,28 @@ class Commentator:
         )
         log.info("supervisor: review (%s) for session=%s", reason, batch.session_key)
         pieces: list[str] = []
+        system = ""
         try:
-            # Off the event loop: building a provider can read the keychain or
-            # run `gh auth token`, and the proxy shares this loop.
-            llm = await asyncio.to_thread(self._supervisor)
-            async with asyncio.timeout(_LLM_TIMEOUT_S):
-                stream = llm.stream_chat(
-                    [LLMMessage(role="user", content=user_content)],
-                    system=self._supervisor_prompt,
-                    max_tokens=200,
-                    temperature=0.2,
-                )
-                async for delta in stream:
-                    if delta:
-                        pieces.append(delta)
+            if self._live_binary() is not None:
+                async with asyncio.timeout(_LLM_TIMEOUT_S):
+                    pieces.append(
+                        await self._live_review(batch.session_key, ctx, user_content, reason)
+                    )
+            else:
+                # Off the event loop: building a provider can read the keychain or
+                # run `gh auth token`, and the proxy shares this loop.
+                llm = await asyncio.to_thread(self._supervisor)
+                system = self._supervisor_system(llm)
+                async with asyncio.timeout(_LLM_TIMEOUT_S):
+                    stream = llm.stream_chat(
+                        [LLMMessage(role="user", content=user_content)],
+                        system=system,
+                        max_tokens=200,
+                        temperature=0.2,
+                    )
+                    async for delta in stream:
+                        if delta:
+                            pieces.append(delta)
         except TimeoutError:
             log.warning("supervisor: no answer in %.0f s", _LLM_TIMEOUT_S)
             await self._bus.publish(
@@ -1001,13 +1194,16 @@ class Commentator:
                 )
             )
             return
-        self._count("supervisor", self._supervisor_prompt + user_content, reply)
+        if system:
+            self._count("supervisor", system + user_content, reply)
         status, message = parse_supervisor_verdict(reply)
         if ctx.query_version != batch.query_version:
             log.info("supervisor: dropping stale verdict for session=%s", batch.session_key)
             return
-        mode = self._cfg.supervisor.mode
-        acted = status == "stop" and mode == "guard"
+        sup = self._cfg.supervisor
+        # Supervisor+ acts on a STOP the way the user chose; the plain supervisor only says it.
+        reaction = sup.react if sup.mode == "plus" else "say"
+        acted = status == "stop" and reaction in ("hold", "pause")
         # The same complaint at every checkpoint is nagging, not oversight:
         # a verdict that restates the last spoken one goes to the Trace only.
         repeat = (
@@ -1017,6 +1213,8 @@ class Commentator:
         )
         if status != "ok":
             ctx.last_verdict = (status, message)
+        if reason == "turn ended":
+            ctx.turn_verdict = "OK" if status == "ok" else f"{status.upper()}: {message}"
         log.info(
             "supervisor: %s%s — %s", status.upper(), " (pausing agent)" if acted else "", message
         )
@@ -1029,37 +1227,504 @@ class Commentator:
                     "message": message,
                     "reason": reason,
                     "paused_agent": acted,
+                    "reaction": reaction,
                     "repeat": repeat,
                     "query_version": batch.query_version,
                     **session_payload,
                 },
             )
         )
+        plus = sup.mode == "plus"
         if status == "ok" or not message or (repeat and not acted):
+            if plus and reason == "turn ended" and ctx.tool_calls and not sup.debrief:
+                await self._cue("done", batch.session_key)  # with a review, it chimes first
             return
+        ctx.case.told.append(f"{status.upper()}: {message}")
         if acted:
             await self._bus.publish(
                 Event(
                     kind=EventKind.SUPERVISOR_STOP,
                     source="commentator.supervisor",
-                    payload={"message": message, **session_payload},
+                    payload={
+                        "message": message,
+                        "resume_after_s": sup.pause_s if reaction == "pause" else None,
+                        **session_payload,
+                    },
                 )
             )
+        if plus:
+            await self._cue("critical" if status == "stop" else "warn", batch.session_key)
         spoken = _SPOKEN_PREFIX.get(self._language, _SPOKEN_PREFIX["en"])
+        lead = (
+            spoken["warn"]
+            if not acted
+            else spoken["pause"].format(n=sup.pause_s)
+            if reaction == "pause"
+            else spoken["stop"]
+        )
         await self._emit(
             {
                 "utterance_id": f"sup-{batch.events[-1].id}",
-                "text": f"{spoken['stop'] if acted else spoken['warn']} {message}",
-                "read_text": speech_text(
-                    f"{spoken['stop'] if acted else spoken['warn']} {message}"
-                ),
+                "text": f"{lead} {message}",
+                "read_text": speech_text(f"{lead} {message}"),
                 "streaming": False,
                 "language": self._language,
                 "role": "supervisor",
+                "urgent": plus,
                 "query_version": batch.query_version,
                 **session_payload,
             }
         )
+
+    # ------------------------------------------------- the running conversation
+
+    def _live_binary(self) -> str | None:
+        """The `claude` to keep a conversation with, or None: one-shot reviews then.
+
+        Only through the Claude CLI: it is the one measured, and the one that takes a
+        conversation on stdin. Other CLIs and the API providers review one-shot.
+        """
+        sup = self._cfg.supervisor
+        if not sup.keep_session:
+            return None
+        provider = self._cfg.provider
+        through = sup.cli or (
+            str(provider.options.get("cli") or "") if provider.name == "auto" else ""
+        )
+        if through != "claude":
+            return None
+        return shutil.which("claude") or "claude"  # not found: the start fails, out loud
+
+    async def _live_review(
+        self, session_key: str, ctx: _SessionContext, full: str, reason: str
+    ) -> str:
+        """One review in the session's running conversation: only what is new goes out.
+
+        The first message is the one-shot review's, word for word. A new task, a long
+        pause (the cache has gone cold), a conversation grown large, a changed model or
+        language, or a turn that didn't finish: each starts over with a full message.
+        """
+        sup = self._cfg.supervisor
+        model = sup.model or strong_model_for("claude")
+        key = f"{model}|{self._language}|{self._cfg.file_access}"
+        conv = self._live.get(session_key)
+        why = None
+        if conv is not None:
+            why = (
+                "the model, language or access changed"
+                if conv.key != key
+                else "a new task"
+                if conv.query_version != ctx.query_version
+                else "its process ended"
+                if not conv.live.alive
+                else "a long pause"
+                if time.monotonic() - conv.live.last_turn_at > _LIVE_IDLE_S
+                else "it grew large"
+                if conv.live.context_tokens > _LIVE_BUDGET_TOKENS
+                else None
+            )
+        if conv is not None and why is not None:
+            log.info("supervisor: starting the conversation over for %s: %s", session_key, why)
+            self._end_live(session_key)
+            conv = None
+        if conv is None:
+            binary = self._live_binary() or "claude"
+            conv = _LiveReview(
+                live=LiveClaude(
+                    binary,
+                    system=load_supervisor_prompt(self._language, "cli"),
+                    model=model,
+                    args=NARRATION_PROFILES["claude"].args,
+                ),
+                key=key,
+                query_version=ctx.query_version,
+            )
+            self._live[session_key] = conv
+            content = full
+        else:
+            unsent = ctx.history_total - conv.sent_total
+            new_lines = ctx.history[max(0, len(ctx.history) - unsent) :]
+            if unsent > len(ctx.history):
+                # More happened than the transcript keeps: the latest part, and say so.
+                new_lines = [
+                    f"- (… {unsent - len(ctx.history)} earlier lines not shown)",
+                    *new_lines,
+                ]
+            new_edits = (
+                ctx.edits[max(0, len(ctx.edits) - (ctx.edits_total - conv.edits_sent)) :]
+                if self._cfg.file_access != "events"
+                else []
+            )
+            told = ctx.last_verdict[1] if ctx.last_verdict else None
+            content = build_supervisor_delta(
+                new_lines=new_lines,
+                reason=reason,
+                progress=ctx.progress,
+                already_said=told if told != conv.told else None,
+                edits=new_edits,
+                language=self._language,
+            )
+        try:
+            reply = await conv.live.turn(content)
+        except BaseException:
+            # Whatever happened, this conversation can't go on: the next review starts over.
+            if self._live.get(session_key) is conv:
+                self._end_live(session_key)
+            raise
+        conv.sent_total, conv.edits_sent = ctx.history_total, ctx.edits_total
+        conv.told = ctx.last_verdict[1] if ctx.last_verdict else None
+        for field_name, name in (
+            ("cache_read_input_tokens", "cache_read"),
+            ("cache_creation_input_tokens", "cache_write"),
+            ("input_tokens", "uncached"),
+        ):
+            self._usage[f"supervisor.{name}"] += reply.usage.get(field_name, 0)
+        log.info(
+            "supervisor: live turn %d for session=%s (%s)",
+            conv.live.turns,
+            session_key,
+            live_stats(reply.usage),
+        )
+        self._count("supervisor", content, reply.text)
+        return reply.text
+
+    def _end_live(self, session_key: str | None) -> None:
+        """Close the running conversation of this session, or of all of them."""
+        for key in [k for k in self._live if session_key in (None, k)]:
+            self._spawn(self._live.pop(key).live.close())
+
+    # ------------------------------------------------------- the review at the end
+
+    def _review_speaks_for(self, batch: _Batch) -> bool:
+        """Supervisor+'s review will close this turn, so the narrator's closing line would
+        only say the same twice: the end of the work has one voice."""
+        sup = self._cfg.supervisor
+        if sup.mode != "plus" or not sup.debrief or not _turn_is_over(batch.events):
+            return False
+        ctx = self._contexts.get(batch.session_key)
+        return ctx is not None and ctx.tool_calls > 0
+
+    async def _debrief_if_due(self, batch: _Batch, reason: str) -> None:
+        """When the work is done: the chime, then a short spoken review."""
+        sup = self._cfg.supervisor
+        ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
+        if reason != "turn ended" or sup.mode != "plus" or not sup.debrief or not ctx.tool_calls:
+            return
+        if ctx.query_version != batch.query_version:
+            return
+        edits, _ = self._files_for_models(ctx)
+        user_content = build_debrief_user(
+            user_query=ctx.goal,
+            case_file=self._case_file(ctx),
+            verdict=ctx.turn_verdict,
+            history=ctx.history,
+            edits=edits,
+            language=self._language,
+        )
+        reply = await self._ask_strong(
+            "debrief", user_content, load_debrief_prompt, batch.session_key, max_tokens=300
+        )
+        if reply is None or ctx.query_version != batch.query_version:
+            return
+        log.info("debrief: %s", _truncate_log(reply))
+        if ctx.turn_verdict == "OK":
+            await self._cue("done", batch.session_key)
+        await self._emit(
+            {
+                "utterance_id": f"debrief-{batch.events[-1].id}",
+                "text": reply,
+                "read_text": speech_text(reply),
+                "streaming": False,
+                "language": self._language,
+                "role": "supervisor",
+                "kind": "debrief",
+                "urgent": True,
+                "query_version": batch.query_version,
+                **(
+                    {"session_id": batch.session_key}
+                    if batch.session_key != _NO_SESSION_KEY
+                    else {}
+                ),
+            }
+        )
+
+    def _case_file(self, ctx: _SessionContext) -> str:
+        return ctx.case.render(goal=ctx.goal, progress=ctx.progress, files=sorted(ctx.files_edited))
+
+    # ------------------------------------------------------------- the advisor
+
+    def _advise_if_due(self, batch: _Batch, ctx: _SessionContext) -> None:
+        """The advisor looks when the agent commits to an approach, and when it touches a
+        file where mistakes cost more. Not at every checkpoint: a note interrupts."""
+        sup = self._cfg.supervisor
+        if sup.mode != "plus" or sup.advice == "off" or not ctx.files_edited:
+            return
+        if self._is_stale_batch(batch) or self._advice_in_flight(batch.session_key):
+            return
+        if not ctx.advised_plan:
+            ctx.advised_plan = True
+            reason = "plan: the agent started changing files"
+        elif ctx.sensitive_due and time.monotonic() - ctx.advised_at >= _ADVICE_GAP_S:
+            ctx.advised_files.add(ctx.sensitive_due)
+            reason = f"an edit to a sensitive file: {ctx.sensitive_due}"
+        else:
+            return
+        ctx.sensitive_due = None
+        ctx.advised_at = time.monotonic()
+        task = asyncio.create_task(
+            self._advise(batch, reason, ctx), name=f"commentator.advisor:{batch.session_key}"
+        )
+        self._supervisor_tasks.add(task)
+        task.add_done_callback(self._supervisor_tasks.discard)
+
+    def _advice_in_flight(self, session_key: str) -> bool:
+        return any(
+            not t.done() and t.get_name() == f"commentator.advisor:{session_key}"
+            for t in self._supervisor_tasks
+        )
+
+    async def _advise(self, batch: _Batch, reason: str, ctx: _SessionContext) -> None:
+        edits, _ = self._files_for_models(ctx)
+        user_content = build_advisor_user(
+            user_query=ctx.goal,
+            case_file=self._case_file(ctx),
+            watch=ctx.case.watch,
+            raised=[f"({n.status}) {n.text}" for n in ctx.case.notes],
+            reason=reason,
+            history=ctx.history,
+            edits=edits,
+            language=self._language,
+        )
+        reply = await self._ask_strong(
+            "advisor", user_content, load_advisor_prompt, batch.session_key, max_tokens=400
+        )
+        if reply is None or ctx.query_version != batch.query_version:
+            return
+        watch, text, send = parse_advice(reply)
+        if watch:
+            ctx.case.watch = watch
+        log.info("advisor (%s): %s", reason, text or "OK")
+        if not text or any(_same_note(n.text, text) for n in ctx.case.notes):
+            return  # nothing, or what the user has heard already
+        note = Note(id=uuid4().hex[:12], text=text, send=send)
+        ctx.case.notes.append(note)
+        session_payload = (
+            {"session_id": batch.session_key} if batch.session_key != _NO_SESSION_KEY else {}
+        )
+        await self._cue("advice", batch.session_key)
+        await self._bus.publish(
+            Event(
+                kind=EventKind.SUPERVISOR_NOTE,
+                source="commentator.advisor",
+                payload={
+                    "id": note.id,
+                    "text": text,
+                    "send": send,
+                    "reason": reason,
+                    **session_payload,
+                },
+            )
+        )
+        if send and self._cfg.supervisor.advice == "auto":
+            await self._send_note(note, batch.session_key)
+
+    async def _on_advice(self, event: Event) -> None:
+        """The user sends a note's instruction to the agent, or puts the note away."""
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        wanted = payload.get("id")
+        found = [
+            (key, note)
+            for key, ctx in self._contexts.items()
+            for note in ctx.case.notes
+            if (note.id == wanted if wanted else note.status == "open")
+        ]
+        if not found:
+            return
+        key, note = found[-1]  # `vc send` with no id: the latest open note
+        if payload.get("action") == "send" and note.send:
+            await self._send_note(note, key)
+        elif payload.get("action") == "dismiss":
+            note.status = "dismissed"
+            await self._note_decided(note, key)
+
+    async def _send_note(self, note: Note, session_key: str) -> None:
+        note.status = "sent"
+        sid = {"session_id": session_key} if session_key != _NO_SESSION_KEY else {}
+        # The user's own message, as one typed in the panel: the same route to the agent.
+        await self._bus.publish(
+            Event(
+                kind=EventKind.USER_MESSAGE,
+                source="web.advice",
+                payload={"text": note.send, **sid},
+            )
+        )
+        await self._note_decided(note, session_key)
+
+    async def _note_decided(self, note: Note, session_key: str) -> None:
+        await self._bus.publish(
+            Event(
+                kind=EventKind.SUPERVISOR_NOTE_DECIDED,
+                source="commentator.advisor",
+                payload={
+                    "id": note.id,
+                    "status": note.status,
+                    **({"session_id": session_key} if session_key != _NO_SESSION_KEY else {}),
+                },
+            )
+        )
+
+    async def _ask_strong(
+        self,
+        where: str,
+        user_content: str,
+        load: Any,
+        session_key: str,
+        *,
+        max_tokens: int,
+    ) -> str | None:
+        """One call to the supervisor's model with this prompt. Errors go to the panel."""
+        sid = {"session_id": session_key} if session_key != _NO_SESSION_KEY else {}
+
+        async def report(message: str) -> None:
+            await self._bus.publish(
+                Event(
+                    kind=EventKind.ERROR,
+                    source=f"commentator.{where}",
+                    payload={"where": where, "message": message, **sid},
+                )
+            )
+
+        pieces: list[str] = []
+        system = ""
+        try:
+            llm = await asyncio.to_thread(self._supervisor)
+            system = load(self._language, getattr(llm, "prompt_style", "api"))
+            async with asyncio.timeout(_LLM_TIMEOUT_S):
+                stream = llm.stream_chat(
+                    [LLMMessage(role="user", content=user_content)],
+                    system=system,
+                    max_tokens=max_tokens,
+                    temperature=0.2,
+                )
+                async for delta in stream:
+                    if delta:
+                        pieces.append(delta)
+        except TimeoutError:
+            await report(f"The {where}'s model didn't answer in {_LLM_TIMEOUT_S:.0f} s.")
+            return None
+        except RuntimeError as e:
+            if not _is_shutdown_error(e):
+                log.exception("%s LLM error", where)
+                await report(str(e))
+            return None
+        except Exception as e:
+            log.exception("%s LLM error", where)
+            await report(str(e))
+            return None
+        reply = "".join(pieces).strip()
+        if not reply:
+            await report(f"The {where}'s model returned no text.")
+            return None
+        self._count(where, system + user_content, reply)
+        return reply
+
+    # ------------------------------------------------------------- danger
+
+    def _danger_seen(self, event: Event) -> None:
+        """Supervisor+ outside plugin hooks: a dangerous command can only be called out.
+
+        The proxy sees the call as the model asks for it, a spawned CLI as it starts:
+        either way there is nothing to hold, so the reaction is to say so.
+        """
+        if event.kind is not EventKind.TOOL_CALL_STARTED or self._cfg.supervisor.mode != "plus":
+            return
+        if event.source.startswith("hooks."):
+            return  # the hook held it already, and reported it
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        ctx = self._contexts.get(self._session_key_of(event))
+        danger = check_tool(payload.get("tool"), payload.get("input"), ctx.cwd if ctx else None)
+        if danger is None:
+            return
+        sid = payload.get("session_id")
+        self._spawn(
+            self._bus.publish(
+                Event(
+                    kind=EventKind.SUPERVISOR_DANGER,
+                    source="commentator.supervisor",
+                    payload={
+                        "id": str(payload.get("tool_use_id") or event.id),
+                        "rule": danger.rule,
+                        "excerpt": danger.excerpt,
+                        "reaction": "say",
+                        "wait_s": None,
+                        "before_run": False,
+                        **({"session_id": sid} if sid else {}),
+                    },
+                )
+            )
+        )
+
+    async def _on_danger(self, event: Event) -> None:
+        """Say a caught command out loud, whichever session it came from, and log the outcome."""
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        rule = str(payload.get("rule") or "")
+        if rule not in RULES:
+            return
+        danger = Danger(rule, str(payload.get("excerpt") or ""))
+        key = self._session_key_of(event)
+        ctx = self._contexts.setdefault(key, _SessionContext())
+        # The call itself may still wait in the narrator's buffer: on record first, so the
+        # log reads in the order things happened.
+        self._record_events(key, [ev for ev in self._buffer if self._session_key_of(ev) == key])
+        if event.kind is EventKind.SUPERVISOR_DANGER_DECIDED:
+            ctx.log(_decided_line(danger.excerpt, payload))
+            ctx.case.held.append(_decided_line(danger.excerpt, payload).removeprefix("- "))
+            refused_edit = ctx.edit_of.pop(str(payload.get("id")), None)
+            if not payload.get("allowed") and refused_edit in ctx.edits:
+                ctx.edits.remove(refused_edit)  # it never happened
+            return
+        ctx.log(
+            f"- Supervisor+ caught a dangerous command ({danger.label('en')}): {danger.excerpt}"
+        )
+        reaction = str(payload.get("reaction") or "say")
+        wait = payload.get("wait_s")
+        phrases = _DANGER_SPOKEN.get(self._language, _DANGER_SPOKEN["en"])
+        text = phrases[reaction if reaction in ("hold", "pause") else "say"].format(
+            what=danger.label(self._language),
+            n=round(wait) if isinstance(wait, (int, float)) else 0,
+        )
+        await self._cue("critical", key)
+        await self._emit(
+            {
+                "utterance_id": f"danger-{payload.get('id') or event.id}",
+                "text": text,
+                "read_text": speech_text(text),
+                "streaming": False,
+                "language": self._language,
+                "role": "supervisor",
+                "urgent": True,
+                "query_version": ctx.query_version,
+                **({"session_id": key} if key != _NO_SESSION_KEY else {}),
+            }
+        )
+
+    async def _cue(self, name: str, session_key: str) -> None:
+        """A sound for the panel: the alarm, a warning, the end of the work."""
+        await self._bus.publish(
+            Event(
+                kind=EventKind.CUE,
+                source="commentator.supervisor",
+                payload={
+                    "cue": name,
+                    **({"session_id": session_key} if session_key != _NO_SESSION_KEY else {}),
+                },
+            )
+        )
+
+    def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(work, name="commentator.side")
+        self._side_tasks.add(task)
+        task.add_done_callback(self._side_tasks.discard)
 
     # ------------------------------------------------------------- summary
 
@@ -1207,6 +1872,28 @@ def _build_llm(cfg: CommentatorConfig) -> LLMProvider:
 
 #: How much of the transcript the supervisor gets to see.
 _SUPERVISOR_HISTORY_LINES = 80
+
+#: The running conversation starts over after this long without a review. Claude Code's
+#: prompt cache is the one-hour kind (measured: a turn after 21 idle minutes still read the
+#: whole conversation from it); past its life the next turn would write the whole
+#: conversation again, dearer than a fresh full message.
+_LIVE_IDLE_S = 50 * 60.0
+#: ...and when it has grown this big, as the model counts it.
+_LIVE_BUDGET_TOKENS = 60_000
+
+
+@dataclass
+class _LiveReview:
+    live: LiveClaude
+    key: str
+    query_version: int
+    #: How far into `history_total` / `edits_total` the conversation has been told.
+    sent_total: int = 0
+    edits_sent: int = 0
+    #: The warning it was last shown as "already told", so it isn't shown again.
+    told: str | None = None
+
+
 _SUPERVISOR_EDITS = 6
 
 #: `vc check`: what the supervisor is told, and how much of the recent past the line draws on.
@@ -1219,12 +1906,97 @@ _WHOLE_FILES = 3
 
 #: Spoken lead-ins so the user can tell the supervisor from the narrator.
 _SPOKEN_PREFIX: dict[str, dict[str, str]] = {
-    "ru": {"warn": "Внимание:", "stop": "Остановил агента."},
-    "en": {"warn": "Heads up:", "stop": "I paused the agent."},
-    "uk": {"warn": "Увага:", "stop": "Я зупинив агента."},
-    "es": {"warn": "Atención:", "stop": "He pausado al agente."},
-    "fr": {"warn": "Attention :", "stop": "J'ai mis l'agent en pause."},
+    "ru": {"warn": "Внимание:", "stop": "Остановил агента.", "pause": "Пауза на {n} секунд."},
+    "en": {
+        "warn": "Heads up:",
+        "stop": "I paused the agent.",
+        "pause": "Pausing the agent for {n} seconds.",
+    },
+    "uk": {"warn": "Увага:", "stop": "Я зупинив агента.", "pause": "Пауза на {n} секунд."},
+    "es": {
+        "warn": "Atención:",
+        "stop": "He pausado al agente.",
+        "pause": "Pauso al agente {n} segundos.",
+    },
+    "fr": {
+        "warn": "Attention :",
+        "stop": "J'ai mis l'agent en pause.",
+        "pause": "Je mets l'agent en pause {n} secondes.",
+    },
 }
+
+#: What Supervisor+ says about a dangerous command, by reaction.
+_DANGER_SPOKEN: dict[str, dict[str, str]] = {
+    "ru": {
+        "hold": "Опасная команда: {what}. Агент ждёт вашего решения в панели.",
+        "pause": "Опасная команда: {what}. Агент ждёт {n} секунд, отменить можно в панели.",
+        "say": "Внимание, опасная команда: {what}.",
+    },
+    "en": {
+        "hold": "Dangerous command: {what}. The agent waits for your answer in the panel.",
+        "pause": "Dangerous command: {what}. The agent waits {n} seconds; you can stop it in the panel.",
+        "say": "Heads up, a dangerous command: {what}.",
+    },
+    "uk": {
+        "hold": "Небезпечна команда: {what}. Агент чекає на ваше рішення в панелі.",
+        "pause": "Небезпечна команда: {what}. Агент чекає {n} секунд, скасувати можна в панелі.",
+        "say": "Увага, небезпечна команда: {what}.",
+    },
+    "es": {
+        "hold": "Comando peligroso: {what}. El agente espera tu respuesta en el panel.",
+        "pause": "Comando peligroso: {what}. El agente espera {n} segundos; puedes pararlo en el panel.",
+        "say": "Atención, un comando peligroso: {what}.",
+    },
+    "fr": {
+        "hold": "Commande dangereuse : {what}. L'agent attend votre réponse dans le panneau.",
+        "pause": "Commande dangereuse : {what}. L'agent attend {n} secondes ; vous pouvez l'arrêter dans le panneau.",
+        "say": "Attention, une commande dangereuse : {what}.",
+    },
+}
+
+#: Files where a mistake costs more: the advisor takes a look when the agent edits one.
+_SENSITIVE_PATH = re.compile(
+    r"auth|login|passw|session|token|secret|crypt|secur|permission|acl|payment|billing"
+    r"|stripe|migrat|schema|\.sql$|dockerfile|docker-compose|\.github/workflows|\.gitlab-ci"
+    r"|jenkinsfile|deploy|terraform|\.tf$|requirements[^/]*\.txt$|pyproject\.toml$"
+    r"|package\.json$|cargo\.toml$|go\.mod$|gemfile$|settings\.py$|\.env",
+    re.IGNORECASE,
+)
+#: The advisor after the plan: at most once in this long, so a burst of edits to config
+#: files doesn't become a burst of notes.
+_ADVICE_GAP_S = 60.0
+
+
+def _same_note(a: str, b: str) -> bool:
+    """A note that says again what was said already, in other words."""
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio() >= 0.6
+
+
+#: The supervisor's intake when no narrator filters it: everything a narrator could say.
+_SEE_ALL = CommentatorConfig(speak_tool_calls=True, speak_thinking=True, speak_file_edits=True)
+
+
+def _turn_is_over(events: list[Event]) -> bool:
+    """The agent's own turn ended: not a sub-agent's, not a step between tool calls."""
+    return any(
+        ev.kind is EventKind.TURN_ENDED
+        and ev.payload.get("final") is not False
+        and not ev.payload.get("subagent")
+        for ev in events
+    )
+
+
+def _decided_line(excerpt: str, payload: dict[str, Any]) -> str:
+    """How the user's answer on a held command reads in the supervisor's log."""
+    allowed, by = bool(payload.get("allowed")), payload.get("by")
+    if allowed:
+        if by == "timeout":
+            return f"- nobody stopped it during the pause, so it ran: {excerpt}"
+        return f"- the user said: run it anyway ({excerpt})"
+    if by == "timeout":
+        return f"- nobody answered about it, so it did not run: {excerpt}"
+    return f"- the user said: don't run it ({excerpt}); it did not run"
+
 
 _STATUS_WORDS = {"OK": "ok", "WARN": "warn", "STOP": "stop"}
 

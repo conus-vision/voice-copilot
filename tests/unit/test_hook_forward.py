@@ -337,7 +337,7 @@ def test_switch_endpoint_needs_the_token(client: TestClient) -> None:
 def test_supervisor_plus_can_only_be_ended_by_the_user(by_agent: bool, refused: bool) -> None:
     app = FastAPI()
     adapter = HookAdapter(EventBus(), SessionRegistry())
-    register_hook_routes(app, adapter, "secret", lambda: "guard")
+    register_hook_routes(app, adapter, "secret", lambda: "plus")
     response = TestClient(app).post(
         "/api/switch", json={"by_agent": by_agent}, headers={TOKEN_HEADER: "secret"}
     )
