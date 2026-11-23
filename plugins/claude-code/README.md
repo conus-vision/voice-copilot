@@ -1,9 +1,13 @@
 # Voice Copilot for Claude Code
 
-A second model watches what Claude Code does: a cheap one narrates the work aloud, and a
-stronger one checks it at a few moments in each task. If Claude says "fixed" while the
-tests still fail, you hear about it. You can answer from the panel or by voice, and your
-words reach Claude as your own message, mid-turn or while it's idle.
+A second engineer watching Claude Code. A stronger model checks the work at a few moments
+in each task: if Claude says "fixed" while the tests still fail, you hear about it. With
+Supervisor+ (`vc mode plus-narrator`) it also holds a dangerous command such as a force
+push until you answer, raises what the task needs and nobody asked (a password stored as
+is, a migration edited after it ran), and closes the work with a short spoken review of
+what was done and how it was checked. A cheap model narrates along the way. You can
+answer from the panel, and your words reach Claude as your own message, mid-turn or while
+it's idle.
 
 ## What you need
 

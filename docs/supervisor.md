@@ -1,5 +1,21 @@
 # Supervisor
 
+Voice Copilot's job is better work from the coding agent you already use. A second,
+stronger model reads the session from outside, with its own record and none of the
+agent's crowded context, and catches what the agent talks itself past. Supervisor+ is
+that model at full strength:
+
+| It | How | Where to read |
+|---|---|---|
+| stops a dangerous command before it runs | fixed rules in the `PreToolUse` hook; you answer Run it or Refuse | [Supervisor+](#supervisor) |
+| asks what you didn't | an advisor with a watch list worked out for the task at hand | [The advisor](#the-advisor) |
+| judges the work, not the agent's account of it | a case file the code keeps: checks, results, edits after the last passing one | [Checkpoints](#checkpoints), [Verdicts](#verdicts) |
+| closes the work with a spoken review | what was done, how it was checked, what is open, one next step | [When the work is done](#when-the-work-is-done) |
+| remembers the whole session cheaply | one running conversation through the Claude CLI, read from the prompt cache | [A running conversation](#a-running-conversation) |
+| can be a different vendor | Codex supervising Claude Code, or the other way round | [Another CLI as the supervisor](#another-cli-as-the-supervisor) |
+
+Every claim below that has a number was measured, and how is said next to it.
+
 Two models, two jobs. The **narrator** is cheap and talks every few seconds:
 what the agent is doing right now. The **supervisor** is the strongest model
 your CLI can run, and it speaks only at checkpoints — and only when something
