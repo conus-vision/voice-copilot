@@ -15,6 +15,7 @@ Protocol:
       { "type":"cmd", "cmd":"agent_toggle_pause" }
       { "type":"cmd", "cmd":"check_now" }
       { "type":"cmd", "cmd":"danger_decide", "id":"...", "allow":true|false }
+      { "type":"cmd", "cmd":"advice", "id":"...", "action":"send"|"dismiss" }
       { "type":"cmd", "cmd":"panel_state", "volume":70, "muted":false }
       { "type":"cmd", "cmd":"user_message", "text":"..." }
       { "type":"cmd", "cmd":"speak_start"|"speak_end" }
@@ -174,6 +175,19 @@ async def _handle_cmd(
                 },
             )
         )
+        return
+    if cmd == "advice":
+        # The user acts on an advisor's note: send its instruction to the agent, or put it away.
+        action = data.get("action")
+        if action in ("send", "dismiss"):
+            note_id = data.get("id")
+            await bus.publish(
+                Event(
+                    kind=EventKind.USER_ADVICE,
+                    source="web",
+                    payload={"id": note_id if isinstance(note_id, str) else None, "action": action},
+                )
+            )
         return
     if cmd == "agent_toggle_pause":
         # The panel's way to release an agent the supervisor (or the user)

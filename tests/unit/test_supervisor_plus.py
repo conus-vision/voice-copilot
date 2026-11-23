@@ -49,13 +49,45 @@ class _LLM:
         return gen()
 
 
+class _Routed(_LLM):
+    """One fake model for the supervisor, the advisor and the review, told apart by prompt."""
+
+    def __init__(self, verdict: str, advice: str = "WATCH: x\nOK", review: str = "Done.") -> None:
+        super().__init__(verdict)
+        self.replies = {"supervisor": verdict, "advisor": advice, "debrief": review}
+        self.by_role: dict[str, int] = {}
+
+    def stream_chat(self, messages, *, system=None, max_tokens=None, temperature=None):  # type: ignore[no-untyped-def]
+        role = (
+            "advisor"
+            if "WATCH" in (system or "")
+            else "debrief"
+            if "spoken review" in (system or "")
+            else "supervisor"
+        )
+        self.by_role[role] = self.by_role.get(role, 0) + 1
+        self.calls += 1
+        reply = self.replies[role]
+
+        async def gen() -> AsyncIterator[str]:
+            yield reply
+
+        return gen()
+
+
 def _commentator(
-    reply: str, *, mode: str = "plus", react: str = "hold", narrator: bool = True
+    reply: str,
+    *,
+    mode: str = "plus",
+    react: str = "hold",
+    narrator: bool = True,
+    llm: _LLM | None = None,
+    **sup: Any,
 ) -> tuple[Commentator, _LLM]:
-    llm = _LLM(reply)
+    llm = llm or _LLM(reply)
     cfg = CommentatorConfig(
         narrator=narrator,
-        supervisor=SupervisorConfig(mode=mode, react=react, pause_s=12),  # type: ignore[arg-type]
+        supervisor=SupervisorConfig(mode=mode, react=react, pause_s=12, **sup),  # type: ignore[arg-type]
     )
     c = Commentator(EventBus(), cfg, "en", llm=llm)  # type: ignore[arg-type]
     c._supervisor = lambda: llm  # type: ignore[method-assign, assignment, return-value]
@@ -226,14 +258,57 @@ async def test_a_warning_has_its_sound_under_supervisor_plus_only() -> None:
     assert said.payload["urgent"] is False
 
 
-async def test_finished_work_chimes_after_an_ok_verdict_and_a_chat_does_not() -> None:
-    c, _ = _commentator("OK", mode="plus")
+async def test_finished_work_chimes_then_the_review_is_spoken() -> None:
+    llm = _Routed("OK", review="The agent fixed the parser; tests passed after the edit.")
+    c, _ = _commentator("", llm=llm)
+    ctx = c._contexts.setdefault("s", _SessionContext())
     batch = _Batch(events=[_ev(EventKind.TURN_ENDED, final=True)], session_key="s")
-    events = await _published(c, lambda: c._supervise(batch, "turn ended"))
+    events = await _published(c, lambda: c._review(batch, "turn ended", ctx))
     assert EventKind.CUE not in _kinds(events)  # no tool calls: an answer, not work
-    c._contexts["s"].tool_calls = 3
-    events = await _published(c, lambda: c._supervise(batch, "turn ended"))
+    assert "debrief" not in llm.by_role
+    ctx.tool_calls = 3
+    events = await _published(c, lambda: c._review(batch, "turn ended", ctx))
+    kinds = [e.kind for e in events if e.kind in (EventKind.CUE, EventKind.COMMENTATOR_UTTERANCE)]
+    assert kinds == [EventKind.CUE, EventKind.COMMENTATOR_UTTERANCE]
+    review = events[[e.kind for e in events].index(EventKind.COMMENTATOR_UTTERANCE)].payload
+    assert review["kind"] == "debrief" and review["urgent"] is True
+    assert review["text"].startswith("The agent fixed the parser")
+
+
+async def test_without_the_review_the_ok_verdict_chimes_alone() -> None:
+    c, _ = _commentator("OK", debrief=False)
+    ctx = c._contexts.setdefault("s", _SessionContext())
+    ctx.tool_calls = 2
+    batch = _Batch(events=[_ev(EventKind.TURN_ENDED, final=True)], session_key="s")
+    events = await _published(c, lambda: c._review(batch, "turn ended", ctx))
     assert [e.payload["cue"] for e in events if e.kind is EventKind.CUE] == ["done"]
+    assert EventKind.COMMENTATOR_UTTERANCE not in _kinds(events)
+
+
+async def test_a_warning_at_the_end_comes_with_the_review_but_no_chime() -> None:
+    llm = _Routed("WARN\nNo test ran after the last edit.", review="Unchecked.")
+    c, _ = _commentator("", llm=llm)
+    ctx = c._contexts.setdefault("s", _SessionContext())
+    ctx.tool_calls = 2
+    batch = _Batch(events=[_ev(EventKind.TURN_ENDED, final=True)], session_key="s")
+    events = await _published(c, lambda: c._review(batch, "turn ended", ctx))
+    assert [e.payload["cue"] for e in events if e.kind is EventKind.CUE] == ["warn"]
+    said = [e.payload["text"] for e in events if e.kind is EventKind.COMMENTATOR_UTTERANCE]
+    assert said == ["Heads up: No test ran after the last edit.", "Unchecked."]
+    assert ctx.case.told == ["WARN: No test ran after the last edit."]
+
+
+def test_the_review_closes_the_turn_so_the_narrator_does_not() -> None:
+    c, _ = _commentator("OK")
+    ctx = c._contexts.setdefault("s", _SessionContext())
+    end = _Batch(events=[_ev(EventKind.TURN_ENDED, final=True)], session_key="s")
+    assert not c._review_speaks_for(end)  # nothing done: the narrator gives the answer
+    ctx.tool_calls = 1
+    assert c._review_speaks_for(end)
+    middle = _Batch(events=[_ev(EventKind.AGENT_TEXT, text="reading")], session_key="s")
+    assert not c._review_speaks_for(middle)
+    c._cfg.supervisor.debrief = False
+    assert not c._review_speaks_for(end)
 
 
 @pytest.mark.parametrize("mode", ["off", "watch"])
@@ -286,7 +361,8 @@ async def test_a_refused_edit_leaves_the_supervisors_recent_edits() -> None:
 
 
 async def test_supervisor_plus_alone_reviews_without_narrating() -> None:
-    c, llm = _commentator("WARN\nNo tests were run.", narrator=False)
+    llm = _Routed("WARN\nNo tests were run.", review="The agent edited parser.py; nothing ran.")
+    c, _ = _commentator("", narrator=False, llm=llm)
     q: asyncio.Queue[Event] = asyncio.Queue()
     loop = asyncio.get_running_loop()
     feed = [
@@ -301,15 +377,16 @@ async def test_supervisor_plus_alone_reviews_without_narrating() -> None:
         for ev in feed:
             q.put_nowait(ev)
             await c._step(q, loop, 0.01, 0.04)
-        for _ in range(20):
-            if not c._review_in_flight("s"):
+        for _ in range(50):
+            if not c._supervisor_tasks:
                 break
             await asyncio.sleep(0.01)
 
     events = await _published(c, run)
-    assert llm.calls == 1  # the review, and no narration call
+    # The advisor on the plan, the review at the end and the spoken review; no narration.
+    assert llm.by_role == {"advisor": 1, "supervisor": 1, "debrief": 1}
     spoken = [e for e in events if e.kind is EventKind.COMMENTATOR_UTTERANCE]
-    assert [e.payload["role"] for e in spoken] == ["supervisor"]
+    assert [e.payload["role"] for e in spoken] == ["supervisor", "supervisor"]
     assert "Files edited: parser.py." in c._contexts["s"].facts  # type: ignore[operator]
 
 
@@ -462,6 +539,10 @@ async def test_the_user_takes_over_a_timed_pause() -> None:
         ("vc review cli same", Command("review", ("cli", "same"))),
         ("vc model cli claude", Command("model", ("cli", "claude"))),
         ("vc анализ через codex", Command("review", ("cli", "codex"))),
+        ("vc send", Command("send")),
+        ("vc отправь", Command("send")),
+        ("vc advice auto", Command("advice", ("auto",))),
+        ("vc советы выкл", Command("advice", ("off",))),
     ],
 )
 def test_new_words(text: str, command: Command) -> None:
@@ -469,7 +550,124 @@ def test_new_words(text: str, command: Command) -> None:
 
 
 @pytest.mark.parametrize(
-    "text", ["vc mode turbo", "vc react later", "vc deny it", "vc review cli", "vc mode plus now"]
+    "text",
+    [
+        "vc mode turbo",
+        "vc react later",
+        "vc deny it",
+        "vc review cli",
+        "vc mode plus now",
+        "vc send it now",
+        "vc advice maybe",
+    ],
 )
 def test_new_words_are_strict(text: str) -> None:
     assert parse(text) is None
+
+
+# --- the advisor --------------------------------------------------------------------------
+
+_SQL_NOTE = (
+    "WATCH: SQL built from user input\nWATCH: empty query\n"
+    "NOTE: The search puts the query straight into SQL: an injection risk.\n"
+    "SEND: Use a parameterised query for the search."
+)
+
+
+def _edit_batch(c: Commentator, path: str) -> _Batch:
+    ctx = c._contexts.setdefault("s", _SessionContext())
+    ctx.files_edited.add(path)
+    return _Batch(events=[_ev(EventKind.FILE_EDITED, path=path)], session_key="s")
+
+
+async def test_the_advisor_looks_at_the_plan_and_puts_a_note_in_the_panel() -> None:
+    llm = _Routed("OK", advice=_SQL_NOTE)
+    c, _ = _commentator("", llm=llm)
+    ctx = c._contexts.setdefault("s", _SessionContext())
+    batch = _edit_batch(c, "web/customers.py")
+    events = await _published(c, lambda: c._advise(batch, "plan", ctx))
+    note = next(e.payload for e in events if e.kind is EventKind.SUPERVISOR_NOTE)
+    assert note["text"].startswith("The search puts the query")
+    assert note["send"] == "Use a parameterised query for the search."
+    assert [e.payload["cue"] for e in events if e.kind is EventKind.CUE] == ["advice"]
+    assert EventKind.COMMENTATOR_UTTERANCE not in _kinds(events)  # not spoken mid-task
+    assert ctx.case.watch == ["SQL built from user input", "empty query"]
+    # The same worry in other words is not raised twice.
+    events = await _published(c, lambda: c._advise(batch, "8 tool calls", ctx))
+    assert EventKind.SUPERVISOR_NOTE not in _kinds(events)
+
+
+async def test_the_advisor_runs_on_the_plan_then_on_a_sensitive_file() -> None:
+    c, _ = _commentator("OK", llm=_Routed("OK"))
+    ctx = c._contexts.setdefault("s", _SessionContext())
+    names: list[str] = []
+    c._advise = lambda batch, reason, ctx: _record(names, reason)  # type: ignore[method-assign]
+    c._advise_if_due(_edit_batch(c, "src/report.py"), ctx)
+    c._advise_if_due(_edit_batch(c, "src/report2.py"), ctx)  # nothing new to look at
+    await asyncio.sleep(0.01)
+    ctx.sensitive_due, ctx.advised_at = "app/auth.py", 0.0
+    c._advise_if_due(_edit_batch(c, "app/auth.py"), ctx)
+    await asyncio.sleep(0.01)
+    assert names == [
+        "plan: the agent started changing files",
+        "an edit to a sensitive file: app/auth.py",
+    ]
+
+
+async def _record(names: list[str], reason: str) -> None:
+    names.append(reason)
+
+
+def test_sensitive_files_are_noticed_on_record() -> None:
+    c, _ = _commentator("OK")
+    c._record_events("s", [_ev(EventKind.FILE_EDITED, path="migrations/0008_add_flag.py")])
+    assert c._contexts["s"].sensitive_due == "migrations/0008_add_flag.py"
+    c._record_events("s", [_ev(EventKind.FILE_EDITED, path="README.md")])
+    assert c._contexts["s"].sensitive_due == "migrations/0008_add_flag.py"
+
+
+async def test_a_note_goes_to_the_agent_only_when_the_user_sends_it() -> None:
+    c, _ = _commentator("OK", llm=_Routed("OK", advice=_SQL_NOTE))
+    ctx = c._contexts.setdefault("s", _SessionContext())
+    events = await _published(c, lambda: c._advise(_edit_batch(c, "a.py"), "plan", ctx))
+    assert EventKind.USER_MESSAGE not in _kinds(events)
+    note_id = next(e.payload["id"] for e in events if e.kind is EventKind.SUPERVISOR_NOTE)
+    send = Event(
+        kind=EventKind.USER_ADVICE, source="web", payload={"id": note_id, "action": "send"}
+    )
+    events = await _published(c, lambda: c._on_advice(send))
+    message = next(e for e in events if e.kind is EventKind.USER_MESSAGE)
+    assert message.source == "web.advice"
+    assert message.payload["text"] == "Use a parameterised query for the search."
+    decided = next(e.payload for e in events if e.kind is EventKind.SUPERVISOR_NOTE_DECIDED)
+    assert decided["status"] == "sent"
+    assert ctx.case.notes[0].status == "sent"
+
+
+async def test_vc_send_takes_the_latest_open_note_and_dismiss_puts_one_away() -> None:
+    c, _ = _commentator("OK", llm=_Routed("OK", advice=_SQL_NOTE))
+    ctx = c._contexts.setdefault("s", _SessionContext())
+    await c._advise(_edit_batch(c, "a.py"), "plan", ctx)
+    away = Event(kind=EventKind.USER_ADVICE, source="web", payload={"action": "dismiss"})
+    await c._on_advice(away)
+    assert ctx.case.notes[0].status == "dismissed"
+    nothing = Event(kind=EventKind.USER_ADVICE, source="commands", payload={"action": "send"})
+    events = await _published(c, lambda: c._on_advice(nothing))
+    assert EventKind.USER_MESSAGE not in _kinds(events)  # nothing open is left to send
+
+
+async def test_advice_auto_sends_at_once() -> None:
+    c, _ = _commentator("OK", llm=_Routed("OK", advice=_SQL_NOTE), advice="auto")
+    ctx = c._contexts.setdefault("s", _SessionContext())
+    events = await _published(c, lambda: c._advise(_edit_batch(c, "a.py"), "plan", ctx))
+    assert [e.payload["text"] for e in events if e.kind is EventKind.USER_MESSAGE] == [
+        "Use a parameterised query for the search."
+    ]
+
+
+def test_the_advisor_stays_off_when_switched_off_or_outside_supervisor_plus() -> None:
+    for mode, advice in (("plus", "off"), ("watch", "on")):
+        c, _ = _commentator("OK", mode=mode, advice=advice)
+        ctx = c._contexts.setdefault("s", _SessionContext())
+        c._advise_if_due(_edit_batch(c, "a.py"), ctx)
+        assert not ctx.advised_plan

@@ -94,13 +94,59 @@ Supervisor modes stay as they were, without them:
 | two tones down | a WARN |
 | three short low pulses | a STOP, or a dangerous command. It cuts the line being read, and it plays even when the voice is muted |
 | a rising arpeggio | the agent's turn ended after real work (tool calls), and the verdict, if any, was OK |
-| a soft rising pair | advice (reserved for the advisor that comes next) |
+| a soft rising pair | a note from the advisor |
 
 The end-of-work sound waits for the turn-end verdict, so "done" is never followed by a
 warning. Out of focus the narrator stays quiet (`focus.narrate_only_when_focused`), but
 Supervisor+'s warnings and alarms are still spoken, and heard whichever session they are
 about. The browser starts sound only after the page has been clicked once: until then the
 panel shows its "click to enable audio" button, as it does for speech.
+
+## When the work is done
+
+When the agent's turn ends after real work (tool calls), Supervisor+ closes it with a short
+spoken review instead of the narrator's last line, so the end of the work has one voice:
+the chime (if the verdict was OK), then two to four sentences on what was done against what
+was asked, how it was checked, what is still open, and at most one next step. A question
+answered without tools still gets the narrator's answer. **Settings → Supervisor+ reviews
+the work out loud** turns it off; the verdict and the chime stay.
+
+The review reads the **case file**, which the code keeps from the events rather than a
+model: the checks that ran (tests, type check, lint, build) and how they ended, whether the
+code changed after the last one that passed, what Supervisor+ held and what the user said
+about it, what the user was already told, and the advisor's notes. So "the tests pass" is
+only said when a test passed after the latest edit. Measured on Claude Sonnet in Russian:
+42–46 words a review; it said so when the last edit was never checked, and when the agent's
+"all 48 tests pass" rested on one test file.
+
+## The advisor
+
+The supervisor asks whether the agent is on track. The advisor asks what the user hasn't:
+the security of a login form, data loss in a migration, a dependency added for one line, a
+rewrite where a one-line fix would do, an assumption nobody checked. It has no fixed list of
+questions. Each time it is asked, it keeps a watch list of two to five things that can go
+wrong in *this* task, worked out from the request and the code, and raises a note only when
+the events show the agent getting near one of them. A date-format fix gets no security
+questions; a sign-up form does.
+
+It looks twice at most, not at every checkpoint: when the agent starts changing files (the
+plan is clear by then), and when it edits a sensitive file (auth, payments, migrations,
+CI, dependency manifests, settings), at most once a minute. A note it has already raised,
+in any words, isn't raised again, and the supervisor's own territory (loops, failing tests,
+"done" without checking, destructive commands) is left to the supervisor.
+
+A note comes with the soft chime and waits in the panel, not spoken while the agent works:
+what the advisor noticed, and one instruction for the agent. **Send to agent** (or `vc send`,
+for the latest one) passes the instruction on as your own message; **Dismiss** puts it
+away. `vc advice auto` sends each one at once, `vc advice off` turns the advisor off. The
+review at the end mentions the notes still open. Under Supervisor+ the agent can't run
+`vc send` or `vc advice` itself.
+
+`scripts/eval_advisor.py` scores the prompt against `scripts/advisor_checkpoints.py`: eight
+cases where it should speak up and eight traps (healthy work, a note already raised, the
+agent doing it right, the supervisor's job). On Claude Sonnet in Russian: 16 of 16. On
+`gemma4:12b`: 13 of 16, one miss and two false alarms, one of them a repeat that the
+pipeline drops anyway.
 
 ## Another CLI as the supervisor
 
@@ -211,6 +257,9 @@ failed. On Ollama, thinking models run with `reasoning_effort: none`, because ot
 they spend the budget on reasoning and return no text.
 
 ## Cost
+
+Supervisor+ adds two calls to the supervisor's model a task at most for the advisor, and
+one for the review when the work is done. The narrator's closing line is not made then.
 
 One supervisor call per checkpoint, on a transcript of at most ~80 short lines.
 For a typical task that is a handful of calls to the strong model against

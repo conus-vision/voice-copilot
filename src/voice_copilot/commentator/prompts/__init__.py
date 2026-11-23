@@ -1,7 +1,7 @@
 """System prompts for the commentator: English instructions, any output language.
 
 Each prompt is one English template (``narrator.md``, ``summary.md``,
-``supervisor.md``, ``ask.md``). The narration language only changes two things:
+``supervisor.md``, ``ask.md``, ``debrief.md``, ``advisor.md``). The narration language only changes two things:
 
 * ``languages/<code>.md`` adds a short note on register plus native example
   lines, so the voice sounds like a person speaking that language rather
@@ -98,3 +98,13 @@ def load_ask(language: str, style: str = "api") -> str:
 def load_supervisor(language: str, style: str = "api") -> str:
     """System prompt for the supervisor's checkpoint review."""
     return _render("supervisor.md", language, style)
+
+
+def load_debrief(language: str, style: str = "api") -> str:
+    """System prompt for Supervisor+'s spoken review when the work is done."""
+    return _render("debrief.md", language, style)
+
+
+def load_advisor(language: str, style: str = "api") -> str:
+    """System prompt for Supervisor+'s advisor: the questions this task raises."""
+    return _render("advisor.md", language, style)

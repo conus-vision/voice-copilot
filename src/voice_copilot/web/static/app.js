@@ -1034,6 +1034,34 @@
     send({ type: "cmd", cmd: "danger_decide", id, allow });
   }
   qs("#btn-danger-allow")?.addEventListener("click", () => answerDanger(true));
+
+  // The advisor's notes: not spoken mid-task, they wait here with what to tell the agent.
+  const adviceBox = qs("#advice-notes");
+  function showAdviceNote(p) {
+    if (!adviceBox || !p.id || adviceBox.querySelector(`[data-note="${CSS.escape(p.id)}"]`)) return;
+    const card = document.createElement("div");
+    card.className = "advice-note";
+    card.dataset.note = p.id;
+    card.innerHTML =
+      `<span class="material-symbols-rounded" aria-hidden="true">help</span>` +
+      `<div class="advice-body"><span class="advice-text"></span>` +
+      (p.send ? `<span class="advice-send"></span>` : "") + `</div>` +
+      `<div class="advice-actions">` +
+      (p.send ? `<button type="button" class="primary" data-advice="send">Send to agent</button>` : "") +
+      `<button type="button" class="ghost" data-advice="dismiss">Dismiss</button></div>`;
+    card.querySelector(".advice-text").textContent = p.text || "";
+    if (p.send) card.querySelector(".advice-send").textContent = `→ ${p.send}`;
+    card.addEventListener("click", (e) => {
+      const action = e.target?.closest?.("[data-advice]")?.dataset.advice;
+      if (action) send({ type: "cmd", cmd: "advice", id: p.id, action });
+    });
+    adviceBox.appendChild(card);
+    adviceBox.hidden = false;
+  }
+  function adviceDecided(p) {
+    adviceBox?.querySelector(`[data-note="${CSS.escape(p.id || "")}"]`)?.remove();
+    if (adviceBox && !adviceBox.children.length) adviceBox.hidden = true;
+  }
   qs("#btn-danger-deny")?.addEventListener("click", () => answerDanger(false));
   qs("#btn-check")?.addEventListener("click", () => send({ type: "cmd", cmd: "check_now" }));
 
@@ -1153,6 +1181,8 @@
           if (!isMini && msg.kind === "cue") playCue((msg.payload || {}).cue);
           if (msg.kind === "supervisor.danger") showDangerHeld(msg.payload || {});
           if (msg.kind === "supervisor.danger.decided") dangerDecided(msg.payload || {});
+          if (msg.kind === "supervisor.note") showAdviceNote(msg.payload || {});
+          if (msg.kind === "supervisor.note.decided") adviceDecided(msg.payload || {});
           traceAppend(msg);
         } else if (!isMini && msg.type === "audio_header") {
           currentUtt = {
@@ -1470,6 +1500,10 @@
       }
       case "cue":
         return { cls: "supervisor-ok", tag: "SOUND", text: p.cue || "" };
+      case "supervisor.note":
+        return { cls: "supervisor", tag: "ADVICE", text: p.send ? `${p.text} → ${p.send}` : (p.text || "") };
+      case "supervisor.note.decided":
+        return { cls: "supervisor-ok", tag: "ADVICE", text: `note ${p.status || ""}` };
       case "agent.paused":
         return { cls: "supervisor", tag: "PAUSED", text: `agent paused (${p.reason || "?"})` };
       case "agent.resumed":

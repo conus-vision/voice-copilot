@@ -65,6 +65,9 @@
     <button type="button" id="btn-danger-deny" class="danger-deny">Refuse</button>
   </div>
 
+  <!-- Supervisor+'s advisor: notes the user may pass on to the agent, or put away. -->
+  <div id="advice-notes" class="advice-notes" hidden></div>
+
   <div id="launch-notice" class="launch-notice" hidden></div>
 
   <!-- Shown when attached through a CLI plugin. -->
@@ -177,6 +180,18 @@
           <label>Hold for, seconds
             <input type="number" name="commentator.supervisor.pause_s" min="5" max="300" step="5" />
           </label>
+          <label class="row">
+            <input type="checkbox" name="commentator.supervisor.debrief" />
+            Supervisor+ reviews the work out loud when the agent is done
+          </label>
+          <label>Supervisor+'s advisor
+            <select name="commentator.supervisor.advice">
+              <option value="on">Notes in the panel; I send them to the agent</option>
+              <option value="auto">Notes go to the agent at once</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
+          <p class="hint">The advisor works out what can go wrong in this particular task (security, data, scope, a simpler way) and speaks up when the agent gets near it: when it starts changing files, and when it edits a sensitive one. Its notes come with a soft chime and wait in the panel; the review at the end mentions the ones still open.</p>
           <label>Supervisor runs through
             <select name="commentator.supervisor.cli">
               <option value="">the CLI it watches</option>

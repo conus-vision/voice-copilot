@@ -123,6 +123,14 @@ _TEXTS: dict[str, dict[str, Any]] = {
         "held_allowed": "The held command goes ahead.",
         "held_denied": "The held command is refused, and the agent is told why.",
         "nothing_held": "Supervisor+ isn't holding any command now.",
+        "note_sent": "Sent to the agent: {text}",
+        "no_note": "The advisor has no open note with something to send.",
+        "advice_now": "The advisor: {value}. Change it with vc advice on, off or auto.",
+        "advice_set": {
+            "on": "The advisor puts its notes in the panel; vc send passes one to the agent.",
+            "off": "The advisor is off. Supervisor+ still guards and reviews.",
+            "auto": "The advisor's notes go to the agent at once, and to the panel.",
+        },
         "who": {"narrator": "narrator", "supervisor": "supervisor"},
         "cli_set": "The {who} now runs through {cli}, on {cli}'s own login.",
         "cli_same": "The {who} runs through the watched CLI again.",
@@ -228,6 +236,14 @@ _TEXTS: dict[str, dict[str, Any]] = {
         "held_allowed": "Задержанная команда выполняется.",
         "held_denied": "Задержанная команда отклонена, агенту сказано почему.",
         "nothing_held": "Supervisor+ сейчас не держит ни одной команды.",
+        "note_sent": "Отправлено агенту: {text}",
+        "no_note": "У советника нет открытой заметки, которую можно отправить.",
+        "advice_now": "Советник: {value}. Изменить: vc advice on, off или auto.",
+        "advice_set": {
+            "on": "Советник кладёт заметки в панель; vc send передаёт заметку агенту.",
+            "off": "Советник выключен. Supervisor+ по-прежнему охраняет и делает обзор.",
+            "auto": "Заметки советника сразу уходят агенту и появляются в панели.",
+        },
         "who": {"narrator": "Рассказчик", "supervisor": "Супервизор"},
         "cli_set": "{who} теперь работает через {cli}, по его собственному входу.",
         "cli_same": "{who} снова работает через тот CLI, за которым смотрит.",
@@ -427,6 +443,32 @@ class CommandCenter:
         return {
             "text": self._say("held_denied" if self._decide_held(allow=False) else "nothing_held")
         }
+
+    async def _do_send(self, _args: list[str], _sid: str | None) -> dict[str, Any]:
+        note = self._commentator.latest_open_note()
+        if note is None or not note.send:
+            return {"text": self._say("no_note")}
+        await self._bus.publish(
+            Event(
+                kind=EventKind.USER_ADVICE,
+                source="commands",
+                payload={"id": note.id, "action": "send"},
+            )
+        )
+        return {"text": self._say("note_sent", text=note.send)}
+
+    async def _do_advice(self, args: list[str], _sid: str | None) -> dict[str, Any]:
+        cfg: Config = self._state.config.model_copy(deep=True)
+        if not args:
+            return {
+                "text": self._say("advice_now", value=cfg.commentator.supervisor.advice),
+                "choices": ["on", "off", "auto"],
+                "pick": "vc advice",
+            }
+        cfg.commentator.supervisor.advice = args[0]  # type: ignore[assignment]
+        await self._apply(cfg)
+        off = "" if self._commentator.supervisor_mode == "plus" else self._say("react_needs_plus")
+        return {"text": self._say_choice("advice_set", args[0]) + off}
 
     def _decide_held(self, *, allow: bool) -> bool:
         """Answer the oldest command Supervisor+ holds. Only plugin hooks can hold one."""

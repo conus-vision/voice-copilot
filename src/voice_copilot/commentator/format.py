@@ -324,6 +324,54 @@ def build_supervisor_user(
     )
 
 
+def build_debrief_user(
+    *,
+    user_query: str | None,
+    case_file: str,
+    verdict: str | None,
+    history: list[str],
+    edits: list[str] | None = None,
+    language: str = "en",
+) -> str:
+    """The message for Supervisor+'s spoken review at the end of the work."""
+    question = _extract_question(user_query) if user_query else None
+    parts = [
+        f"REQUEST:\n{_trim(question or user_query or '', 600) or '(not known)'}",
+        f"CASE FILE:\n{case_file}",
+        f"VERDICT:\n{verdict or '(nothing said)'}",
+        "RECENT EVENTS:\n" + ("\n".join(history[-60:]) or "(no events)"),
+        "RECENT EDITS:\n" + "\n".join(edits) if edits else "",
+        f"The spoken review, in {language_name(language)}, two to four sentences:",
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
+def build_advisor_user(
+    *,
+    user_query: str | None,
+    case_file: str,
+    watch: list[str],
+    raised: list[str],
+    reason: str,
+    history: list[str],
+    edits: list[str] | None = None,
+    language: str = "en",
+) -> str:
+    """The message for Supervisor+'s advisor at a checkpoint."""
+    question = _extract_question(user_query) if user_query else None
+    parts = [
+        f"REQUEST:\n{_trim(question or user_query or '', 600) or '(not known)'}",
+        f"CASE FILE:\n{case_file}",
+        "WATCH LIST:\n" + ("\n".join(f"- {w}" for w in watch) or "(empty: build it now)"),
+        "ALREADY RAISED:\n" + ("\n".join(f"- {r}" for r in raised) or "(nothing)"),
+        f"CHECKPOINT:\n{reason}",
+        "RECENT EVENTS:\n" + ("\n".join(history[-60:]) or "(no events)"),
+        "RECENT EDITS:\n" + "\n".join(edits) if edits else "",
+        f"Your answer: WATCH lines, then OK, or NOTE and SEND in {language_name(language)}:",
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
 def build_summary_user(
     *,
     prev_summary: str | None,

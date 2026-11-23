@@ -56,6 +56,10 @@ _VERBS = {
     "реакция": "react",
     "deny": "deny",
     "отказ": "deny",
+    "send": "send",
+    "отправь": "send",
+    "advice": "advice",
+    "советы": "advice",
     "detail": "detail",
     "детали": "detail",
     "access": "access",
@@ -100,6 +104,14 @@ _VALUES = {
         "плюс-комментатор": "plus-narrator",
         "плюс-рассказчик": "plus-narrator",
     },
+    "advice": {
+        "on": "on",
+        "вкл": "on",
+        "off": "off",
+        "выкл": "off",
+        "auto": "auto",
+        "авто": "auto",
+    },
     "react": {
         "hold": "hold",
         "ждать": "hold",
@@ -135,6 +147,7 @@ _NO_ARGS = {
     "pause",
     "go",
     "deny",
+    "send",
     "settings",
     "log",
     "cost",
@@ -219,6 +232,8 @@ _TEXTS: dict[str, dict[str, str]] = {
             "  vc mode narrator|supervisor|plus|plus-narrator   how it works with the agent\n"
             "  vc react hold|pause|say  Supervisor+ on a STOP or a dangerous command\n"
             "  vc go | vc deny         run or refuse a command Supervisor+ holds\n"
+            "  vc send                 send the advisor's latest note to the agent\n"
+            "  vc advice on|off|auto   the advisor; auto sends its notes at once\n"
             "  vc review model | vc review cli codex   the supervisor's model; another CLI\n"
             "  vc detail low|normal|high   how much the narrator says\n"
             "  vc access events|edits|files   what the models may read\n"
@@ -251,6 +266,8 @@ _TEXTS: dict[str, dict[str, str]] = {
             "  vc mode narrator|supervisor|plus|plus-narrator   режим работы\n"
             "  vc react hold|pause|say  что делает Supervisor+ на STOP и опасную команду\n"
             "  vc go | vc deny         выполнить или отклонить команду, задержанную Supervisor+\n"
+            "  vc send                 отправить агенту последнюю заметку советника\n"
+            "  vc advice on|off|auto   советник; auto отправляет заметки сразу\n"
             "  vc review model | vc review cli codex   модель супервизора; другой CLI\n"
             "  vc detail low|normal|high   сколько говорит рассказчик\n"
             "  vc access events|edits|files   что могут читать модели\n"

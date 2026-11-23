@@ -34,9 +34,12 @@ from difflib import SequenceMatcher
 from typing import Any, cast
 from uuid import uuid4
 
+from voice_copilot.commentator.casefile import CaseFile, Note, parse_advice
 from voice_copilot.commentator.cli_profiles import NARRATION_PROFILES, strong_model_for
 from voice_copilot.commentator.format import (
+    build_advisor_user,
     build_ask_user,
+    build_debrief_user,
     build_narration_user,
     build_summary_user,
     build_supervisor_user,
@@ -48,7 +51,9 @@ from voice_copilot.commentator.format import (
 )
 from voice_copilot.commentator.importance import classify, meets_threshold
 from voice_copilot.commentator.prompts import load as load_prompt
+from voice_copilot.commentator.prompts import load_advisor as load_advisor_prompt
 from voice_copilot.commentator.prompts import load_ask as load_ask_prompt
+from voice_copilot.commentator.prompts import load_debrief as load_debrief_prompt
 from voice_copilot.commentator.prompts import load_summary as load_summary_prompt
 from voice_copilot.commentator.prompts import load_supervisor as load_supervisor_prompt
 from voice_copilot.core.bus import EventBus
@@ -113,6 +118,16 @@ class _SessionContext:
     #: Events on record already: `vc ask` may get to them before the narrator does.
     recorded: set[str] = field(default_factory=set)
     last_event_at: float | None = None
+    #: Facts about the request in hand, for the end-of-work review and the advisor.
+    case: CaseFile = field(default_factory=CaseFile)
+    #: The supervisor's word on the turn that just ended, for the review to build on.
+    turn_verdict: str | None = None
+    #: Advisor: whether it has looked at the plan yet, which sensitive files it has
+    #: been asked about, and when it last ran.
+    advised_plan: bool = False
+    advised_files: set[str] = field(default_factory=set)
+    sensitive_due: str | None = None
+    advised_at: float = 0.0
 
     @property
     def quiet_s(self) -> int | None:
@@ -220,6 +235,11 @@ class Commentator:
     @property
     def narrator_on(self) -> bool:
         return self._cfg.narrator
+
+    def latest_open_note(self) -> Note | None:
+        """The advisor's latest note the user hasn't acted on, for `vc send`."""
+        notes = [n for ctx in self._contexts.values() for n in ctx.case.notes if n.status == "open"]
+        return notes[-1] if notes else None
 
     def gate_policy(self) -> tuple[str, int] | None:
         """Supervisor+'s reaction to a dangerous command, or None when it isn't on."""
@@ -384,6 +404,9 @@ class Commentator:
         if control == "danger":
             await self._on_danger(event)
             return
+        if control == "advice":
+            await self._on_advice(event)
+            return
         if control == "consume":
             return  # USER_MESSAGE etc. — context-only, not narrated
         if not self._cfg.narrator:
@@ -418,6 +441,9 @@ class Commentator:
                     continue
                 if control == "danger":
                     await self._on_danger(event)
+                    continue
+                if control == "advice":
+                    await self._on_advice(event)
                     continue
                 if control == "consume":
                     continue
@@ -463,6 +489,9 @@ class Commentator:
 
         if event.kind in (EventKind.SUPERVISOR_DANGER, EventKind.SUPERVISOR_DANGER_DECIDED):
             return "danger"
+
+        if event.kind is EventKind.USER_ADVICE:
+            return "advice"
 
         if event.kind is EventKind.NARRATION_STOP:
             only = event.payload.get("session_id")
@@ -520,6 +549,8 @@ class Commentator:
                 ctx.tool_calls = 0
                 ctx.files_edited = set()
                 ctx.edits = []
+                ctx.case = CaseFile()
+                ctx.advised_plan, ctx.advised_files, ctx.sensitive_due = False, set(), None
                 ctx.summary = None  # fresh question → forget previous thread
                 ctx.query_version += 1
                 ctx.playback_ready_for_next = False
@@ -675,7 +706,7 @@ class Commentator:
         """Narrate one batch, update summary, then re-flush if more piled up."""
         given_up = False
         try:
-            if self._cfg.narrator:
+            if self._cfg.narrator and not self._review_speaks_for(batch):
                 await self._narrate(batch)
             # Whatever became of the narration: a narrator that fails or stays silent
             # must not take the supervisor down with it.
@@ -877,9 +908,11 @@ class Commentator:
 
     async def _review(self, batch: _Batch, reason: str, ctx: _SessionContext) -> None:
         await self._supervise(batch, reason)
+        await self._debrief_if_due(batch, reason)
         due, ctx.final_review_due = ctx.final_review_due, None
         if due is not None and due.query_version == ctx.query_version:
             await self._supervise(due, "turn ended")
+            await self._debrief_if_due(due, "turn ended")
 
     def _review_if_due(self, batch: _Batch) -> None:
         """Add the batch to the supervisor's transcript; review at a checkpoint.
@@ -891,6 +924,7 @@ class Commentator:
             return
         ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
         self._record_for_supervisor(batch)
+        self._advise_if_due(batch, ctx)
         reason = self._checkpoint_reason(batch, ctx)
         if reason is None:
             return
@@ -915,18 +949,33 @@ class Commentator:
         if len(ctx.history) > _SUPERVISOR_HISTORY_LINES:
             ctx.history = ctx.history[-_SUPERVISOR_HISTORY_LINES:]
         for ev in fresh:
+            ctx.case.tick()
+            tool_id = ev.payload.get("tool_use_id") if isinstance(ev.payload, dict) else None
             if ev.kind is EventKind.TOOL_CALL_STARTED:
                 ctx.tools_since_review += 1
                 ctx.tool_calls += 1
                 edit = edit_excerpt(ev.payload)
                 if edit:
                     ctx.edits = [*ctx.edits, edit][-_SUPERVISOR_EDITS:]
-                    if ev.payload.get("tool_use_id"):
-                        ctx.edit_of[str(ev.payload["tool_use_id"])] = edit
+                    ctx.case.edited()
+                    if tool_id:
+                        ctx.edit_of[str(tool_id)] = edit
+                tool_input = ev.payload.get("input")
+                if isinstance(tool_input, dict):
+                    command = tool_input.get("command") or tool_input.get("cmd")
+                    ctx.case.started(str(tool_id) if tool_id else None, command)
             elif ev.kind is EventKind.FILE_EDITED:
-                ctx.files_edited.add(str(ev.payload.get("path")))
-                ctx.recent_files.append(str(ev.payload.get("path")))
-            elif ev.kind is EventKind.TOOL_CALL_FINISHED and ev.payload.get("is_error"):
+                path = str(ev.payload.get("path"))
+                ctx.files_edited.add(path)
+                ctx.recent_files.append(path)
+                ctx.case.edited()
+                if _SENSITIVE_PATH.search(path) and path not in ctx.advised_files:
+                    ctx.sensitive_due = path
+            elif ev.kind is EventKind.TOOL_CALL_FINISHED:
+                ctx.case.finished(
+                    str(tool_id) if tool_id else None, bool(ev.payload.get("is_error"))
+                )
+            if ev.kind is EventKind.TOOL_CALL_FINISHED and ev.payload.get("is_error"):
                 key, description = _describe_failure(ev.payload)
                 count = ctx.failures[key] = ctx.failures.get(key, 0) + 1
                 if count >= 2:
@@ -1114,6 +1163,8 @@ class Commentator:
         )
         if status != "ok":
             ctx.last_verdict = (status, message)
+        if reason == "turn ended":
+            ctx.turn_verdict = "OK" if status == "ok" else f"{status.upper()}: {message}"
         log.info(
             "supervisor: %s%s — %s", status.upper(), " (pausing agent)" if acted else "", message
         )
@@ -1135,9 +1186,10 @@ class Commentator:
         )
         plus = sup.mode == "plus"
         if status == "ok" or not message or (repeat and not acted):
-            if plus and reason == "turn ended" and ctx.tool_calls:
-                await self._cue("done", batch.session_key)
+            if plus and reason == "turn ended" and ctx.tool_calls and not sup.debrief:
+                await self._cue("done", batch.session_key)  # with a review, it chimes first
             return
+        ctx.case.told.append(f"{status.upper()}: {message}")
         if acted:
             await self._bus.publish(
                 Event(
@@ -1173,6 +1225,241 @@ class Commentator:
                 **session_payload,
             }
         )
+
+    # ------------------------------------------------------- the review at the end
+
+    def _review_speaks_for(self, batch: _Batch) -> bool:
+        """Supervisor+'s review will close this turn, so the narrator's closing line would
+        only say the same twice: the end of the work has one voice."""
+        sup = self._cfg.supervisor
+        if sup.mode != "plus" or not sup.debrief or not _turn_is_over(batch.events):
+            return False
+        ctx = self._contexts.get(batch.session_key)
+        return ctx is not None and ctx.tool_calls > 0
+
+    async def _debrief_if_due(self, batch: _Batch, reason: str) -> None:
+        """When the work is done: the chime, then a short spoken review."""
+        sup = self._cfg.supervisor
+        ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
+        if reason != "turn ended" or sup.mode != "plus" or not sup.debrief or not ctx.tool_calls:
+            return
+        if ctx.query_version != batch.query_version:
+            return
+        edits, _ = self._files_for_models(ctx)
+        user_content = build_debrief_user(
+            user_query=ctx.goal,
+            case_file=self._case_file(ctx),
+            verdict=ctx.turn_verdict,
+            history=ctx.history,
+            edits=edits,
+            language=self._language,
+        )
+        reply = await self._ask_strong(
+            "debrief", user_content, load_debrief_prompt, batch.session_key, max_tokens=300
+        )
+        if reply is None or ctx.query_version != batch.query_version:
+            return
+        log.info("debrief: %s", _truncate_log(reply))
+        if ctx.turn_verdict == "OK":
+            await self._cue("done", batch.session_key)
+        await self._emit(
+            {
+                "utterance_id": f"debrief-{batch.events[-1].id}",
+                "text": reply,
+                "read_text": speech_text(reply),
+                "streaming": False,
+                "language": self._language,
+                "role": "supervisor",
+                "kind": "debrief",
+                "urgent": True,
+                "query_version": batch.query_version,
+                **(
+                    {"session_id": batch.session_key}
+                    if batch.session_key != _NO_SESSION_KEY
+                    else {}
+                ),
+            }
+        )
+
+    def _case_file(self, ctx: _SessionContext) -> str:
+        return ctx.case.render(goal=ctx.goal, progress=ctx.progress, files=sorted(ctx.files_edited))
+
+    # ------------------------------------------------------------- the advisor
+
+    def _advise_if_due(self, batch: _Batch, ctx: _SessionContext) -> None:
+        """The advisor looks when the agent commits to an approach, and when it touches a
+        file where mistakes cost more. Not at every checkpoint: a note interrupts."""
+        sup = self._cfg.supervisor
+        if sup.mode != "plus" or sup.advice == "off" or not ctx.files_edited:
+            return
+        if self._is_stale_batch(batch) or self._advice_in_flight(batch.session_key):
+            return
+        if not ctx.advised_plan:
+            ctx.advised_plan = True
+            reason = "plan: the agent started changing files"
+        elif ctx.sensitive_due and time.monotonic() - ctx.advised_at >= _ADVICE_GAP_S:
+            ctx.advised_files.add(ctx.sensitive_due)
+            reason = f"an edit to a sensitive file: {ctx.sensitive_due}"
+        else:
+            return
+        ctx.sensitive_due = None
+        ctx.advised_at = time.monotonic()
+        task = asyncio.create_task(
+            self._advise(batch, reason, ctx), name=f"commentator.advisor:{batch.session_key}"
+        )
+        self._supervisor_tasks.add(task)
+        task.add_done_callback(self._supervisor_tasks.discard)
+
+    def _advice_in_flight(self, session_key: str) -> bool:
+        return any(
+            not t.done() and t.get_name() == f"commentator.advisor:{session_key}"
+            for t in self._supervisor_tasks
+        )
+
+    async def _advise(self, batch: _Batch, reason: str, ctx: _SessionContext) -> None:
+        edits, _ = self._files_for_models(ctx)
+        user_content = build_advisor_user(
+            user_query=ctx.goal,
+            case_file=self._case_file(ctx),
+            watch=ctx.case.watch,
+            raised=[f"({n.status}) {n.text}" for n in ctx.case.notes],
+            reason=reason,
+            history=ctx.history,
+            edits=edits,
+            language=self._language,
+        )
+        reply = await self._ask_strong(
+            "advisor", user_content, load_advisor_prompt, batch.session_key, max_tokens=400
+        )
+        if reply is None or ctx.query_version != batch.query_version:
+            return
+        watch, text, send = parse_advice(reply)
+        if watch:
+            ctx.case.watch = watch
+        log.info("advisor (%s): %s", reason, text or "OK")
+        if not text or any(_same_note(n.text, text) for n in ctx.case.notes):
+            return  # nothing, or what the user has heard already
+        note = Note(id=uuid4().hex[:12], text=text, send=send)
+        ctx.case.notes.append(note)
+        session_payload = (
+            {"session_id": batch.session_key} if batch.session_key != _NO_SESSION_KEY else {}
+        )
+        await self._cue("advice", batch.session_key)
+        await self._bus.publish(
+            Event(
+                kind=EventKind.SUPERVISOR_NOTE,
+                source="commentator.advisor",
+                payload={
+                    "id": note.id,
+                    "text": text,
+                    "send": send,
+                    "reason": reason,
+                    **session_payload,
+                },
+            )
+        )
+        if send and self._cfg.supervisor.advice == "auto":
+            await self._send_note(note, batch.session_key)
+
+    async def _on_advice(self, event: Event) -> None:
+        """The user sends a note's instruction to the agent, or puts the note away."""
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        wanted = payload.get("id")
+        found = [
+            (key, note)
+            for key, ctx in self._contexts.items()
+            for note in ctx.case.notes
+            if (note.id == wanted if wanted else note.status == "open")
+        ]
+        if not found:
+            return
+        key, note = found[-1]  # `vc send` with no id: the latest open note
+        if payload.get("action") == "send" and note.send:
+            await self._send_note(note, key)
+        elif payload.get("action") == "dismiss":
+            note.status = "dismissed"
+            await self._note_decided(note, key)
+
+    async def _send_note(self, note: Note, session_key: str) -> None:
+        note.status = "sent"
+        sid = {"session_id": session_key} if session_key != _NO_SESSION_KEY else {}
+        # The user's own message, as one typed in the panel: the same route to the agent.
+        await self._bus.publish(
+            Event(
+                kind=EventKind.USER_MESSAGE,
+                source="web.advice",
+                payload={"text": note.send, **sid},
+            )
+        )
+        await self._note_decided(note, session_key)
+
+    async def _note_decided(self, note: Note, session_key: str) -> None:
+        await self._bus.publish(
+            Event(
+                kind=EventKind.SUPERVISOR_NOTE_DECIDED,
+                source="commentator.advisor",
+                payload={
+                    "id": note.id,
+                    "status": note.status,
+                    **({"session_id": session_key} if session_key != _NO_SESSION_KEY else {}),
+                },
+            )
+        )
+
+    async def _ask_strong(
+        self,
+        where: str,
+        user_content: str,
+        load: Any,
+        session_key: str,
+        *,
+        max_tokens: int,
+    ) -> str | None:
+        """One call to the supervisor's model with this prompt. Errors go to the panel."""
+        sid = {"session_id": session_key} if session_key != _NO_SESSION_KEY else {}
+
+        async def report(message: str) -> None:
+            await self._bus.publish(
+                Event(
+                    kind=EventKind.ERROR,
+                    source=f"commentator.{where}",
+                    payload={"where": where, "message": message, **sid},
+                )
+            )
+
+        pieces: list[str] = []
+        system = ""
+        try:
+            llm = await asyncio.to_thread(self._supervisor)
+            system = load(self._language, getattr(llm, "prompt_style", "api"))
+            async with asyncio.timeout(_LLM_TIMEOUT_S):
+                stream = llm.stream_chat(
+                    [LLMMessage(role="user", content=user_content)],
+                    system=system,
+                    max_tokens=max_tokens,
+                    temperature=0.2,
+                )
+                async for delta in stream:
+                    if delta:
+                        pieces.append(delta)
+        except TimeoutError:
+            await report(f"The {where}'s model didn't answer in {_LLM_TIMEOUT_S:.0f} s.")
+            return None
+        except RuntimeError as e:
+            if not _is_shutdown_error(e):
+                log.exception("%s LLM error", where)
+                await report(str(e))
+            return None
+        except Exception as e:
+            log.exception("%s LLM error", where)
+            await report(str(e))
+            return None
+        reply = "".join(pieces).strip()
+        if not reply:
+            await report(f"The {where}'s model returned no text.")
+            return None
+        self._count(where, system + user_content, reply)
+        return reply
 
     # ------------------------------------------------------------- danger
 
@@ -1224,6 +1511,7 @@ class Commentator:
         self._record_events(key, [ev for ev in self._buffer if self._session_key_of(ev) == key])
         if event.kind is EventKind.SUPERVISOR_DANGER_DECIDED:
             ctx.history.append(_decided_line(danger.excerpt, payload))
+            ctx.case.held.append(_decided_line(danger.excerpt, payload).removeprefix("- "))
             refused_edit = ctx.edit_of.pop(str(payload.get("id")), None)
             if not payload.get("allowed") and refused_edit in ctx.edits:
                 ctx.edits.remove(refused_edit)  # it never happened
@@ -1476,6 +1764,24 @@ _DANGER_SPOKEN: dict[str, dict[str, str]] = {
         "say": "Attention, une commande dangereuse : {what}.",
     },
 }
+
+#: Files where a mistake costs more: the advisor takes a look when the agent edits one.
+_SENSITIVE_PATH = re.compile(
+    r"auth|login|passw|session|token|secret|crypt|secur|permission|acl|payment|billing"
+    r"|stripe|migrat|schema|\.sql$|dockerfile|docker-compose|\.github/workflows|\.gitlab-ci"
+    r"|jenkinsfile|deploy|terraform|\.tf$|requirements[^/]*\.txt$|pyproject\.toml$"
+    r"|package\.json$|cargo\.toml$|go\.mod$|gemfile$|settings\.py$|\.env",
+    re.IGNORECASE,
+)
+#: The advisor after the plan: at most once in this long, so a burst of edits to config
+#: files doesn't become a burst of notes.
+_ADVICE_GAP_S = 60.0
+
+
+def _same_note(a: str, b: str) -> bool:
+    """A note that says again what was said already, in other words."""
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio() >= 0.6
+
 
 #: The supervisor's intake when no narrator filters it: everything a narrator could say.
 _SEE_ALL = CommentatorConfig(speak_tool_calls=True, speak_thinking=True, speak_file_edits=True)

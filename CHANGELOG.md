@@ -26,6 +26,13 @@ Supervisor+ grows up: it guards the agent before a command runs, not after.
   what still waits.
 - **Another CLI as the supervisor or the narrator**, on its own login:
   `vc review cli codex` has Codex supervise Claude Code, and the other way round.
+- **A spoken review when the work is done:** Supervisor+ closes the turn with what
+  was done, how it was checked, what is open and one next step, from a case file
+  the code keeps (checks, their results, edits after the last passing one).
+- **The advisor:** it works out what can go wrong in the task at hand (security,
+  data, scope, a simpler way) and leaves a note in the panel when the agent gets
+  near it. `vc send` passes its instruction to the agent, `vc advice auto` sends
+  at once. `scripts/eval_advisor.py` scores its prompt.
 
 ### Changed
 - `guard` is now `plus`. Old configs, per-CLI rows and `vc review guard` still work.

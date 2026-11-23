@@ -59,6 +59,12 @@ class EventKind(StrEnum):
     CUE = "cue"
     #: The user's answer on a held command, from the panel: id (or none: the oldest), allow.
     USER_DANGER_DECISION = "user.danger.decision"
+    #: Supervisor+'s advisor raised something: id, text, send (an instruction for the agent).
+    SUPERVISOR_NOTE = "supervisor.note"
+    #: What became of a note: id, status = sent | dismissed.
+    SUPERVISOR_NOTE_DECIDED = "supervisor.note.decided"
+    #: The user acts on a note, from the panel or `vc send`: id (or none: the latest), action.
+    USER_ADVICE = "user.advice"
     TTS_STARTED = "tts.started"
     TTS_FINISHED = "tts.finished"
     PLAYBACK_STATE = "playback.state"

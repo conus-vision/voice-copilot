@@ -64,9 +64,12 @@ gets the goal, a running summary and the recent transcript, then answers `OK`
 or says what is wrong. Supervisor+ also checks every command before it runs,
 stops a dangerous one (a force push, `git reset --hard`, a delete outside the
 project) until you answer, and has its own sounds for a warning, an alarm and
-finished work. It can run quietly on its own, without the narrator, and it can
-run through another CLI you are logged in to: Codex supervising Claude Code, or
-the other way round.
+finished work. When the agent is done it says what was done, how it
+was checked and what is still open. Its advisor works out what can go wrong in
+the task at hand, a login form's security or a migration's data, say, and leaves
+a note you can pass on to the agent. It can run quietly on its own, without the
+narrator, and it can run through another CLI you are logged in to: Codex
+supervising Claude Code, or the other way round.
 
 ```
  coding agent  ──►  event stream  ──►  narrator (cheap)     ──►  spoken update        ──►  you

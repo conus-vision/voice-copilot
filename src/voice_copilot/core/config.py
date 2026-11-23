@@ -191,6 +191,11 @@ class SupervisorConfig(BaseModel):
     #: The CLI the supervisor runs through, on that CLI's own login. Empty: the
     #: narrator's (in `auto`, the CLI being watched).
     cli: str | None = None
+    #: Supervisor+: a spoken review when the agent's work is done.
+    debrief: bool = True
+    #: Supervisor+'s advisor: off; on (notes in the panel, sent to the agent when the
+    #: user says so); auto (sent at once).
+    advice: Literal["off", "on", "auto"] = "on"
 
     _legacy_mode = field_validator("mode", mode="before")(_legacy_supervisor_mode)
 

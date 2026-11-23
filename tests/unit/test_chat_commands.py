@@ -822,3 +822,21 @@ async def test_a_held_command_with_no_panel_open_opens_one(
     await asyncio.sleep(0.05)
     watching.cancel()
     assert seen == (["http://127.0.0.1:1/"] if opened else [])
+
+
+async def test_vc_send_passes_the_latest_open_note_and_vc_advice_is_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from voice_copilot.commentator.casefile import Note
+    from voice_copilot.commentator.pipeline import _SessionContext
+
+    w = _center(monkeypatch)
+    assert "no open note" in (await w["center"].run("send", []))["text"]
+    ctx = w["commentator"]._contexts.setdefault("s1", _SessionContext())
+    ctx.case.notes.append(Note(id="n1", text="SQL from user input", send="Use parameters."))
+    answer, events = await _published(w["bus"], w["center"].run("send", []))
+    assert "Use parameters." in answer["text"]
+    asked = [e.payload for e in events if e.kind is EventKind.USER_ADVICE]
+    assert asked == [{"id": "n1", "action": "send"}]
+    await w["center"].run("advice", ["auto"])
+    assert w["saved"][-1].commentator.supervisor.advice == "auto"

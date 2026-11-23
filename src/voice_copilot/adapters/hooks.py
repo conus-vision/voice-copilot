@@ -76,7 +76,7 @@ GatePolicy = tuple[str, int]
 
 #: `vc` words the agent may not run under Supervisor+: they let a held command go, or
 #: loosen the watch on the agent itself. The rest (`vc check`, `vc ask`) are fine.
-_USERS_WORDS = {"go", "react", "mode", "review", "off"}
+_USERS_WORDS = {"go", "react", "mode", "review", "off", "send", "advice"}
 _SELF_APPROVAL = (
     "Under Voice Copilot's Supervisor+ only the user may run `vc {verb}`: it lets a held "
     "command go or loosens the watch on you. It did not run. If it is needed, ask the user."
