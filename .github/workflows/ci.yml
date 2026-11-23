@@ -81,7 +81,9 @@ jobs:
     # Opens the panel in Chromium against a running `voice-copilot serve`:
     # script errors, failed requests, the icon font and the live WebSocket.
     name: Panel in a browser
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: that moved to 26.04, where the Playwright this job installs
+    # has no Chromium build ("Playwright does not support chromium on ubuntu26.04-x64").
+    runs-on: ubuntu-24.04
     # The Chromium download stalled once on a runner and held the check;
     # the job takes about a minute.
     timeout-minutes: 10

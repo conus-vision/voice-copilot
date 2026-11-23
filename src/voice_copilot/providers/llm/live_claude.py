@@ -70,7 +70,8 @@ class LiveClaude:
         self._stderr_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
         self.turns = 0
-        self.last_turn_at = 0.0
+        # Now, not 0.0: on Linux the monotonic clock counts from boot.
+        self.last_turn_at = time.monotonic()
         self.context_tokens = 0
 
     @property

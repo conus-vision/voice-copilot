@@ -134,7 +134,9 @@ class _SessionContext:
     advised_plan: bool = False
     advised_files: set[str] = field(default_factory=set)
     sensitive_due: str | None = None
-    advised_at: float = 0.0
+    #: Never, at first. Not 0.0: on Linux the monotonic clock counts from boot, and a
+    #: machine up for less than the gap would hold the advisor back.
+    advised_at: float = float("-inf")
 
     @property
     def quiet_s(self) -> int | None:

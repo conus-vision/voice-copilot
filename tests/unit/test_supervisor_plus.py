@@ -5,6 +5,7 @@ and a narrator or supervisor that runs through another CLI on its own login.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -12,7 +13,7 @@ import pytest
 import yaml
 
 from voice_copilot.adapters.base import CLIAdapter, QuickAsideCapability
-from voice_copilot.commentator.pipeline import Commentator, _Batch, _SessionContext
+from voice_copilot.commentator.pipeline import _ADVICE_GAP_S, Commentator, _Batch, _SessionContext
 from voice_copilot.commentator.provider_select import (
     resolve_commentator_provider,
     resolve_for_launch,
@@ -605,7 +606,9 @@ async def test_the_advisor_runs_on_the_plan_then_on_a_sensitive_file() -> None:
     c._advise_if_due(_edit_batch(c, "src/report.py"), ctx)
     c._advise_if_due(_edit_batch(c, "src/report2.py"), ctx)  # nothing new to look at
     await asyncio.sleep(0.01)
-    ctx.sensitive_due, ctx.advised_at = "app/auth.py", 0.0
+    # A minute and more since the plan, counted from now: CI machines can be younger than that.
+    ctx.sensitive_due = "app/auth.py"
+    ctx.advised_at = time.monotonic() - _ADVICE_GAP_S - 1
     c._advise_if_due(_edit_batch(c, "app/auth.py"), ctx)
     await asyncio.sleep(0.01)
     assert names == [
