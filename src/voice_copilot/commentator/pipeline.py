@@ -1306,15 +1306,23 @@ class Commentator:
         model = sup.model or strong_model_for("claude")
         key = f"{model}|{self._language}|{self._cfg.file_access}"
         conv = self._live.get(session_key)
-        stale = conv is not None and (
-            conv.key != key
-            or conv.query_version != ctx.query_version
-            or not conv.live.alive
-            or time.monotonic() - conv.live.last_turn_at > _LIVE_IDLE_S
-            or conv.live.context_tokens > _LIVE_BUDGET_TOKENS
-            or ctx.history_total - conv.sent_total > len(ctx.history)
-        )
-        if conv is not None and stale:
+        why = None
+        if conv is not None:
+            why = (
+                "the model, language or access changed"
+                if conv.key != key
+                else "a new task"
+                if conv.query_version != ctx.query_version
+                else "its process ended"
+                if not conv.live.alive
+                else "a long pause"
+                if time.monotonic() - conv.live.last_turn_at > _LIVE_IDLE_S
+                else "it grew large"
+                if conv.live.context_tokens > _LIVE_BUDGET_TOKENS
+                else None
+            )
+        if conv is not None and why is not None:
+            log.info("supervisor: starting the conversation over for %s: %s", session_key, why)
             self._end_live(session_key)
             conv = None
         if conv is None:
@@ -1332,7 +1340,14 @@ class Commentator:
             self._live[session_key] = conv
             content = full
         else:
-            new_lines = ctx.history[len(ctx.history) - (ctx.history_total - conv.sent_total) :]
+            unsent = ctx.history_total - conv.sent_total
+            new_lines = ctx.history[max(0, len(ctx.history) - unsent) :]
+            if unsent > len(ctx.history):
+                # More happened than the transcript keeps: the latest part, and say so.
+                new_lines = [
+                    f"- (… {unsent - len(ctx.history)} earlier lines not shown)",
+                    *new_lines,
+                ]
             new_edits = (
                 ctx.edits[max(0, len(ctx.edits) - (ctx.edits_total - conv.edits_sent)) :]
                 if self._cfg.file_access != "events"

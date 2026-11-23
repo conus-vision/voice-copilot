@@ -148,3 +148,28 @@ def test_only_the_claude_cli_keeps_a_conversation() -> None:
     c._cfg.supervisor.cli = None
     c._cfg.provider = ProviderConfig(name="anthropic", options={"model": "x"})
     assert c._live_binary() is None
+
+
+async def test_a_burst_of_events_stays_in_the_conversation() -> None:
+    c = _commentator()
+    c._contexts["s"] = _SessionContext(user_query="fix it")
+    await _review(c, _tool(1))
+    # Three batches between reviews, a line for each said-and-done: more than the 80 lines
+    # the transcript keeps (one batch is at most 40).
+    for start in (100, 200, 300):
+        burst: list[Event] = []
+        for i in range(start, start + 25):
+            burst.append(
+                Event(
+                    kind=EventKind.AGENT_TEXT,
+                    source="hooks.claude",
+                    payload={"session_id": "s", "text": f"thought {i}"},
+                )
+            )
+            burst.append(_tool(i))
+        c._record_events("s", burst)
+    await _review(c, _tool(999))
+    live = _FakeLive.made[0]
+    assert len(_FakeLive.made) == 1  # no costly start over
+    assert "earlier lines not shown" in live.sent[1]
+    assert "step 999" in live.sent[1]
