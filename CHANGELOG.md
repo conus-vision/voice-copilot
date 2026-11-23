@@ -34,6 +34,12 @@ Supervisor+ grows up: it guards the agent before a command runs, not after.
   near it. `vc send` passes its instruction to the agent, `vc advice auto` sends
   at once. `scripts/eval_advisor.py` scores its prompt.
 
+- **The supervisor keeps one running conversation per session** through the
+  Claude CLI: each review sends only what is new and reads the rest from the prompt
+  cache. On Opus, a review after the first costs about $0.0055 instead of $0.05, and
+  judges the same (`scripts/eval_supervisor.py --live`). `vc review memory off`
+  goes back to a fresh call per review.
+
 ### Changed
 - `guard` is now `plus`. Old configs, per-CLI rows and `vc review guard` still work.
 - Out of focus, Supervisor+'s warnings and alarms are still spoken; the narrator

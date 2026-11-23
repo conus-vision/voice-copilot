@@ -132,6 +132,17 @@ _TEXTS: dict[str, dict[str, Any]] = {
             "auto": "The advisor's notes go to the agent at once, and to the panel.",
         },
         "who": {"narrator": "narrator", "supervisor": "supervisor"},
+        "memory_set": {
+            "on": (
+                "The supervisor keeps one running conversation per session through the "
+                "Claude CLI: each review sends only what is new."
+            ),
+            "off": "Each review is a fresh call again, with the whole recent record.",
+        },
+        "cost_cache": (
+            " The supervisor's running conversation read {read}k tokens from the prompt "
+            "cache and wrote {write}k."
+        ),
         "cli_set": "The {who} now runs through {cli}, on {cli}'s own login.",
         "cli_same": "The {who} runs through the watched CLI again.",
         "cli_missing": "{cli} isn't on PATH. Install it and log in to it first.",
@@ -245,6 +256,16 @@ _TEXTS: dict[str, dict[str, Any]] = {
             "auto": "Заметки советника сразу уходят агенту и появляются в панели.",
         },
         "who": {"narrator": "Рассказчик", "supervisor": "Супервизор"},
+        "memory_set": {
+            "on": (
+                "Супервизор ведёт один разговор на сессию через Claude CLI: каждая проверка "
+                "отправляет только новое."
+            ),
+            "off": "Каждая проверка снова отдельный вызов со всей недавней историей.",
+        },
+        "cost_cache": (
+            " Разговор супервизора прочитал из кэша промпта {read} тыс. токенов и записал {write} тыс."
+        ),
         "cli_set": "{who} теперь работает через {cli}, по его собственному входу.",
         "cli_same": "{who} снова работает через тот CLI, за которым смотрит.",
         "cli_missing": "{cli} не найден в PATH. Сначала установите его и войдите в него.",
@@ -582,6 +603,11 @@ class CommandCenter:
             return await self._pick_model(args[1:], for_supervisor=True)
         if args and args[0] == "cli":
             return await self._set_cli(args[1], for_supervisor=True)
+        if args and args[0] == "memory":
+            memory: Config = self._state.config.model_copy(deep=True)
+            memory.commentator.supervisor.keep_session = args[1] == "on"
+            await self._apply(memory)
+            return {"text": self._say_choice("memory_set", args[1])}
         if not args:
             return {
                 "text": self._say("review_now", value=self._commentator.supervisor_mode),
@@ -707,6 +733,15 @@ class CommandCenter:
                 question=usage["question.calls"],
                 tokens_in=_thousands(sum(v for k, v in usage.items() if k.endswith(".in"))),
                 tokens_out=_thousands(sum(v for k, v in usage.items() if k.endswith(".out"))),
+            )
+            + (
+                self._say(
+                    "cost_cache",
+                    read=f"{usage['supervisor.cache_read'] / 1000:.1f}",
+                    write=f"{usage['supervisor.cache_write'] / 1000:.1f}",
+                )
+                if usage["supervisor.cache_read"] or usage["supervisor.cache_write"]
+                else ""
             )
         }
 

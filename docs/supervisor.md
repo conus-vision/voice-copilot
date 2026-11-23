@@ -86,6 +86,10 @@ EDITS and the count of files edited. Measured on Claude Sonnet with the supervis
 as it is: a force push the user allowed gets OK at the end of the turn, and "Done, pushed"
 after the user refused it gets a STOP.
 
+The review numbers above (42–46 words) are from Claude Sonnet; with `auto_tier_models`
+the supervisor, the advisor and the review run on the CLI's strongest model, `opus` for
+Claude Code.
+
 **It has its own sounds**, played in the panel, one per meaning. The Narrator and the
 Supervisor modes stay as they were, without them:
 
@@ -144,8 +148,9 @@ review at the end mentions the notes still open. Under Supervisor+ the agent can
 
 `scripts/eval_advisor.py` scores the prompt against `scripts/advisor_checkpoints.py`: eight
 cases where it should speak up and eight traps (healthy work, a note already raised, the
-agent doing it right, the supervisor's job). On Claude Sonnet in Russian: 16 of 16. On
-`gemma4:12b`: 13 of 16, one miss and two false alarms, one of them a repeat that the
+agent doing it right, the supervisor's job). In Russian: Claude Sonnet 16 of 16; Claude
+Opus 15 of 16, no misses and one false alarm (a note on adding reportlab for PDF export);
+`gemma4:12b` 13 of 16, one miss and two false alarms, one of them a repeat that the
 pipeline drops anyway.
 
 ## Another CLI as the supervisor
@@ -255,6 +260,48 @@ A narrator or supervisor call gets 120 s. A timeout or an empty reply shows up i
 panel as an error, and the supervisor still reviews if the narrator was the one that
 failed. On Ollama, thinking models run with `reasoning_effort: none`, because otherwise
 they spend the budget on reasoning and return no text.
+
+## A running conversation
+
+Through the Claude CLI the supervisor keeps one conversation per session: one `claude -p`
+that stays running, fed review after review. The first message is the one-shot review's,
+word for word; each later one carries only what happened since the last verdict ("new
+since your last verdict"), and the goal and the earlier events stay in the conversation
+above it. The prompt cache then holds everything before the new message.
+
+That is where the saving is. A one-shot `claude -p` marks its whole prompt for the cache
+every time, so each review writes 8–9k tokens at the cache-write price and reads back only
+the system prompt. Measured on the real message (Opus, a 4.5k-token first review, then
+checkpoints of eight tool lines and an edit):
+
+| Review | One-shot | Running conversation |
+|---|---|---|
+| first | 9.7k written, $0.056 | 7.7k written, $0.046 |
+| each next one | 8–9k written, 2k read, about $0.05 | 0.5–0.9k written, 10–13k read, about $0.0055 |
+| eight reviews | $0.43 | $0.09 |
+
+At API prices; through a subscription the same tokens count against its limits.
+
+It judges as well. `scripts/eval_supervisor.py --live` splits each checkpoint in two, so
+the second half arrives as the new part of a running conversation, and
+`scripts/supervisor_sequences.py` adds reviews in a row: a warning followed by nothing new,
+quiet reviews and then a force push, the user changing course midway, the same failure at
+three checkpoints, "done" with nothing run. On Opus in Russian, one-shot and running alike:
+43 of 44 right, one missed alert (the same case both ways), no false alarms, no false STOPs.
+
+It starts over with a full message when the task changes, when the conversation passes
+60k tokens, when the model, the language or `vc access` changes, after 50 minutes without a review (Claude Code's
+prompt cache is the one-hour kind: a review after 21 idle minutes still read the whole
+conversation from it), and after
+any review that didn't finish (`vc check` cutting in, a timeout, a dead process): a half
+answered turn is never reused, and the error goes to the panel. The process ends with the
+session, with `vc off` and with Voice Copilot; if Voice Copilot is killed, the process sees
+its input close and exits too.
+
+`vc review memory off` (or **Settings → Keep one running conversation**) goes back to a
+fresh call per review. Codex, Gemini and the API providers review one-shot for now. The
+advisor and the end-of-work review stay one-shot too: they have their own prompts, and run
+two or three times a task.
 
 ## Cost
 

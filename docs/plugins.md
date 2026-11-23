@@ -77,6 +77,7 @@ tokens, with one exception on Codex below. The same words work in a terminal.
 | `vc advice on`, `off` or `auto` | The advisor: notes in the panel, off, or sent to the agent at once |
 | `vc review off`, `watch` or `plus` | The supervisor alone |
 | `vc review model` | The same as `vc model`, for the supervisor |
+| `vc review memory on` or `off` | One running conversation with the supervisor per session (Claude CLI), or a fresh call per review |
 | `vc review cli codex`, `vc model cli claude` | Run the supervisor or the narrator through another CLI, on its own login; `same` goes back |
 | `vc detail low`, `normal` or `high` | How much the narrator says |
 | `vc access events`, `edits` or `files` | What the models may read, below |

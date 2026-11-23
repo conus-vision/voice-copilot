@@ -699,3 +699,16 @@ async def test_a_panel_message_goes_on_record_of_the_session_it_was_sent_to() ->
     ctx = c._contexts["s1"]
     assert ctx.user_query == "fix the parser"
     assert ctx.corrections == ["skip the README"]
+
+
+@pytest.mark.parametrize(
+    ("text", "command"),
+    [
+        ("vc review memory on", Command("review", ("memory", "on"))),
+        ("vc анализ память выкл", Command("review", ("memory", "off"))),
+        ("vc review memory maybe", None),
+        ("vc review memory", None),
+    ],
+)
+def test_review_memory_words(text: str, command: Command | None) -> None:
+    assert parse(text) == command

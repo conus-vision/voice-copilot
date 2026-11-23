@@ -324,6 +324,38 @@ def build_supervisor_user(
     )
 
 
+def build_supervisor_delta(
+    *,
+    new_lines: list[str],
+    reason: str,
+    progress: str | None = None,
+    already_said: str | None = None,
+    edits: list[str] | None = None,
+    language: str = "en",
+) -> str:
+    """A later review in a running conversation: only what happened since the last verdict.
+
+    The first message of the conversation is `build_supervisor_user`, word for word, so the
+    first review reads exactly as a one-shot one. The goal, the summary and the earlier
+    events stay in the conversation above this message.
+    """
+    told = f"ALREADY TOLD THE USER:\n{already_said}\n\n" if already_said else ""
+    counts = f"PROGRESS:\n{progress}\n\n" if progress else ""
+    code = "RECENT EDITS:\n" + "\n".join(edits) + "\n\n" if edits else ""
+    events = "\n".join(new_lines) or "(no new events)"
+    return (
+        "NEW SINCE YOUR LAST VERDICT (the goal and the earlier events are above, and "
+        "still count):\n"
+        f"{events}\n\n"
+        f"{counts}"
+        f"{told}"
+        f"CHECKPOINT REASON:\n{reason}\n\n"
+        f"{code}"
+        f"Verdict (line 1: OK, WARN or STOP; for WARN and STOP, then one sentence "
+        f"in {language_name(language)}):"
+    )
+
+
 def build_debrief_user(
     *,
     user_query: str | None,

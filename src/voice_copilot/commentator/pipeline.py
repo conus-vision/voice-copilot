@@ -42,6 +42,7 @@ from voice_copilot.commentator.format import (
     build_debrief_user,
     build_narration_user,
     build_summary_user,
+    build_supervisor_delta,
     build_supervisor_user,
     edit_excerpt,
     format_events,
@@ -63,6 +64,8 @@ from voice_copilot.core.events import Event, EventKind
 from voice_copilot.core.user_query import clean_user_query
 from voice_copilot.providers import registry
 from voice_copilot.providers.llm.base import LLMMessage, LLMProvider
+from voice_copilot.providers.llm.live_claude import LiveClaude
+from voice_copilot.providers.llm.live_claude import stats as live_stats
 from voice_copilot.proxy.session import SessionRegistry
 
 log = logging.getLogger(__name__)
@@ -118,6 +121,10 @@ class _SessionContext:
     #: Events on record already: `vc ask` may get to them before the narrator does.
     recorded: set[str] = field(default_factory=set)
     last_event_at: float | None = None
+    #: Lines ever added to `history` and edits ever added to `edits`: both are trimmed
+    #: from the front, and a running conversation needs to know what it hasn't seen.
+    history_total: int = 0
+    edits_total: int = 0
     #: Facts about the request in hand, for the end-of-work review and the advisor.
     case: CaseFile = field(default_factory=CaseFile)
     #: The supervisor's word on the turn that just ended, for the review to build on.
@@ -142,6 +149,13 @@ class _SessionContext:
             f"{spent} since the request, {self.tool_calls} tool calls, "
             f"{len(self.files_edited)} files edited"
         )
+
+    def log(self, *lines: str) -> None:
+        """Add to the supervisor's transcript: the one way it grows."""
+        self.history.extend(lines)
+        self.history_total += len(lines)
+        if len(self.history) > _SUPERVISOR_HISTORY_LINES:
+            self.history = self.history[-_SUPERVISOR_HISTORY_LINES:]
 
     @property
     def facts(self) -> str | None:
@@ -207,6 +221,8 @@ class Commentator:
         self._supervisor_tasks: set[asyncio.Task[None]] = set()
         #: Sounds and alarms on their way to the bus, held so the GC doesn't drop them.
         self._side_tasks: set[asyncio.Task[None]] = set()
+        #: The supervisor's running conversation per session, where the CLI allows one.
+        self._live: dict[str, _LiveReview] = {}
 
         self._buffer: list[Event] = []
         self._max_buffer = 60
@@ -361,6 +377,16 @@ class Commentator:
         """Main loop — subscribe to the bus and narrate until cancelled."""
         loop = asyncio.get_event_loop()
 
+        try:
+            await self._run_loop(loop)
+        finally:
+            # A running `claude -p` per session: none may outlive the run.
+            await asyncio.gather(
+                *(c.live.close() for c in self._live.values()), return_exceptions=True
+            )
+            self._live.clear()
+
+    async def _run_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         async with self._bus.subscribe() as q:
             while True:
                 # Read per batch: a debounce saved in the panel applies at once.
@@ -504,7 +530,12 @@ class Commentator:
                 if only in (None, key):
                     ctx.query_version += 1  # whatever is being generated now comes back stale
                     ctx.final_review_due = None
+            self._end_live(only)
             return "consume"
+
+        if event.kind is EventKind.SESSION_ENDED:
+            self._end_live(self._session_key_of(event))
+            return None
 
         if event.kind is EventKind.SESSION_STARTED:
             # Not consumed: only noted, for what `vc access files` may read.
@@ -542,7 +573,7 @@ class Commentator:
                 # look unrelated, and the supervisor would stop the agent for it.
                 if text != ctx.user_query and text not in ctx.corrections:
                     ctx.corrections.append(text)
-                    ctx.history.append(f"- the user said: {text}")
+                    ctx.log(f"- the user said: {text}")
                 return "consume"
             if ctx.user_query != text:
                 dropped = sum(1 for ev in self._buffer if self._session_key_of(ev) == key)
@@ -557,6 +588,7 @@ class Commentator:
                 ctx.files_edited = set()
                 ctx.edits = []
                 ctx.case = CaseFile()
+                self._end_live(key)  # a new task: the conversation starts over with it
                 ctx.advised_plan, ctx.advised_files, ctx.sensitive_due = False, set(), None
                 ctx.summary = None  # fresh question → forget previous thread
                 ctx.query_version += 1
@@ -952,9 +984,7 @@ class Commentator:
             ev for ev in events if ev.kind is not EventKind.USER_CHECK and ev.id not in ctx.recorded
         ]
         ctx.recorded.update(ev.id for ev in fresh)
-        ctx.history.extend(format_events(fresh).splitlines())
-        if len(ctx.history) > _SUPERVISOR_HISTORY_LINES:
-            ctx.history = ctx.history[-_SUPERVISOR_HISTORY_LINES:]
+        ctx.log(*format_events(fresh).splitlines())
         for ev in fresh:
             ctx.case.tick()
             tool_id = ev.payload.get("tool_use_id") if isinstance(ev.payload, dict) else None
@@ -964,6 +994,7 @@ class Commentator:
                 edit = edit_excerpt(ev.payload)
                 if edit:
                     ctx.edits = [*ctx.edits, edit][-_SUPERVISOR_EDITS:]
+                    ctx.edits_total += 1
                     ctx.case.edited()
                     if tool_id:
                         ctx.edit_of[str(tool_id)] = edit
@@ -1065,6 +1096,9 @@ class Commentator:
 
     async def _supervise(self, batch: _Batch, reason: str) -> None:
         ctx = self._contexts.setdefault(batch.session_key, _SessionContext())
+        if reason == "turn ended":
+            # This turn's word, or none: a review that fails must not hand on the last one's OK.
+            ctx.turn_verdict = None
         ctx.tools_since_review = 0
         edits, files = self._files_for_models(ctx)
         user_content = build_supervisor_user(
@@ -1086,20 +1120,26 @@ class Commentator:
         pieces: list[str] = []
         system = ""
         try:
-            # Off the event loop: building a provider can read the keychain or
-            # run `gh auth token`, and the proxy shares this loop.
-            llm = await asyncio.to_thread(self._supervisor)
-            system = self._supervisor_system(llm)
-            async with asyncio.timeout(_LLM_TIMEOUT_S):
-                stream = llm.stream_chat(
-                    [LLMMessage(role="user", content=user_content)],
-                    system=system,
-                    max_tokens=200,
-                    temperature=0.2,
-                )
-                async for delta in stream:
-                    if delta:
-                        pieces.append(delta)
+            if self._live_binary() is not None:
+                async with asyncio.timeout(_LLM_TIMEOUT_S):
+                    pieces.append(
+                        await self._live_review(batch.session_key, ctx, user_content, reason)
+                    )
+            else:
+                # Off the event loop: building a provider can read the keychain or
+                # run `gh auth token`, and the proxy shares this loop.
+                llm = await asyncio.to_thread(self._supervisor)
+                system = self._supervisor_system(llm)
+                async with asyncio.timeout(_LLM_TIMEOUT_S):
+                    stream = llm.stream_chat(
+                        [LLMMessage(role="user", content=user_content)],
+                        system=system,
+                        max_tokens=200,
+                        temperature=0.2,
+                    )
+                    async for delta in stream:
+                        if delta:
+                            pieces.append(delta)
         except TimeoutError:
             log.warning("supervisor: no answer in %.0f s", _LLM_TIMEOUT_S)
             await self._bus.publish(
@@ -1152,7 +1192,8 @@ class Commentator:
                 )
             )
             return
-        self._count("supervisor", system + user_content, reply)
+        if system:
+            self._count("supervisor", system + user_content, reply)
         status, message = parse_supervisor_verdict(reply)
         if ctx.query_version != batch.query_version:
             log.info("supervisor: dropping stale verdict for session=%s", batch.session_key)
@@ -1232,6 +1273,108 @@ class Commentator:
                 **session_payload,
             }
         )
+
+    # ------------------------------------------------- the running conversation
+
+    def _live_binary(self) -> str | None:
+        """The `claude` to keep a conversation with, or None: one-shot reviews then.
+
+        Only through the Claude CLI: it is the one measured, and the one that takes a
+        conversation on stdin. Other CLIs and the API providers review one-shot.
+        """
+        sup = self._cfg.supervisor
+        if not sup.keep_session:
+            return None
+        provider = self._cfg.provider
+        through = sup.cli or (
+            str(provider.options.get("cli") or "") if provider.name == "auto" else ""
+        )
+        if through != "claude":
+            return None
+        return shutil.which("claude") or "claude"  # not found: the start fails, out loud
+
+    async def _live_review(
+        self, session_key: str, ctx: _SessionContext, full: str, reason: str
+    ) -> str:
+        """One review in the session's running conversation: only what is new goes out.
+
+        The first message is the one-shot review's, word for word. A new task, a long
+        pause (the cache has gone cold), a conversation grown large, a changed model or
+        language, or a turn that didn't finish: each starts over with a full message.
+        """
+        sup = self._cfg.supervisor
+        model = sup.model or strong_model_for("claude")
+        key = f"{model}|{self._language}|{self._cfg.file_access}"
+        conv = self._live.get(session_key)
+        stale = conv is not None and (
+            conv.key != key
+            or conv.query_version != ctx.query_version
+            or not conv.live.alive
+            or time.monotonic() - conv.live.last_turn_at > _LIVE_IDLE_S
+            or conv.live.context_tokens > _LIVE_BUDGET_TOKENS
+            or ctx.history_total - conv.sent_total > len(ctx.history)
+        )
+        if conv is not None and stale:
+            self._end_live(session_key)
+            conv = None
+        if conv is None:
+            binary = self._live_binary() or "claude"
+            conv = _LiveReview(
+                live=LiveClaude(
+                    binary,
+                    system=load_supervisor_prompt(self._language, "cli"),
+                    model=model,
+                    args=NARRATION_PROFILES["claude"].args,
+                ),
+                key=key,
+                query_version=ctx.query_version,
+            )
+            self._live[session_key] = conv
+            content = full
+        else:
+            new_lines = ctx.history[len(ctx.history) - (ctx.history_total - conv.sent_total) :]
+            new_edits = (
+                ctx.edits[max(0, len(ctx.edits) - (ctx.edits_total - conv.edits_sent)) :]
+                if self._cfg.file_access != "events"
+                else []
+            )
+            told = ctx.last_verdict[1] if ctx.last_verdict else None
+            content = build_supervisor_delta(
+                new_lines=new_lines,
+                reason=reason,
+                progress=ctx.progress,
+                already_said=told if told != conv.told else None,
+                edits=new_edits,
+                language=self._language,
+            )
+        try:
+            reply = await conv.live.turn(content)
+        except BaseException:
+            # Whatever happened, this conversation can't go on: the next review starts over.
+            if self._live.get(session_key) is conv:
+                self._end_live(session_key)
+            raise
+        conv.sent_total, conv.edits_sent = ctx.history_total, ctx.edits_total
+        conv.told = ctx.last_verdict[1] if ctx.last_verdict else None
+        for field_name, name in (
+            ("cache_read_input_tokens", "cache_read"),
+            ("cache_creation_input_tokens", "cache_write"),
+            ("input_tokens", "uncached"),
+        ):
+            self._usage[f"supervisor.{name}"] += reply.usage.get(field_name, 0)
+        log.info(
+            "supervisor: live turn %d for session=%s (%s)",
+            conv.live.turns,
+            session_key,
+            live_stats(reply.usage),
+        )
+        self._count("supervisor", content, reply.text)
+        return reply.text
+
+    def _end_live(self, session_key: str | None) -> None:
+        """Close the running conversation of this session, or of all of them."""
+        for key in [k for k in self._live if session_key in (None, k)]:
+            self._spawn(self._live.pop(key).live.close())
 
     # ------------------------------------------------------- the review at the end
 
@@ -1517,13 +1660,13 @@ class Commentator:
         # log reads in the order things happened.
         self._record_events(key, [ev for ev in self._buffer if self._session_key_of(ev) == key])
         if event.kind is EventKind.SUPERVISOR_DANGER_DECIDED:
-            ctx.history.append(_decided_line(danger.excerpt, payload))
+            ctx.log(_decided_line(danger.excerpt, payload))
             ctx.case.held.append(_decided_line(danger.excerpt, payload).removeprefix("- "))
             refused_edit = ctx.edit_of.pop(str(payload.get("id")), None)
             if not payload.get("allowed") and refused_edit in ctx.edits:
                 ctx.edits.remove(refused_edit)  # it never happened
             return
-        ctx.history.append(
+        ctx.log(
             f"- Supervisor+ caught a dangerous command ({danger.label('en')}): {danger.excerpt}"
         )
         reaction = str(payload.get("reaction") or "say")
@@ -1712,6 +1855,28 @@ def _build_llm(cfg: CommentatorConfig) -> LLMProvider:
 
 #: How much of the transcript the supervisor gets to see.
 _SUPERVISOR_HISTORY_LINES = 80
+
+#: The running conversation starts over after this long without a review. Claude Code's
+#: prompt cache is the one-hour kind (measured: a turn after 21 idle minutes still read the
+#: whole conversation from it); past its life the next turn would write the whole
+#: conversation again, dearer than a fresh full message.
+_LIVE_IDLE_S = 50 * 60.0
+#: ...and when it has grown this big, as the model counts it.
+_LIVE_BUDGET_TOKENS = 60_000
+
+
+@dataclass
+class _LiveReview:
+    live: LiveClaude
+    key: str
+    query_version: int
+    #: How far into `history_total` / `edits_total` the conversation has been told.
+    sent_total: int = 0
+    edits_sent: int = 0
+    #: The warning it was last shown as "already told", so it isn't shown again.
+    told: str | None = None
+
+
 _SUPERVISOR_EDITS = 6
 
 #: `vc check`: what the supervisor is told, and how much of the recent past the line draws on.

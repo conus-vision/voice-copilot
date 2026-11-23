@@ -191,6 +191,9 @@ class SupervisorConfig(BaseModel):
     #: The CLI the supervisor runs through, on that CLI's own login. Empty: the
     #: narrator's (in `auto`, the CLI being watched).
     cli: str | None = None
+    #: Keep one running conversation with the supervisor per session, so each review
+    #: sends only what is new and the rest comes from the prompt cache. Claude CLI only.
+    keep_session: bool = True
     #: Supervisor+: a spoken review when the agent's work is done.
     debrief: bool = True
     #: Supervisor+'s advisor: off; on (notes in the panel, sent to the agent when the

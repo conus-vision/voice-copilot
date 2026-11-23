@@ -174,6 +174,9 @@ def _fits(verb: str, args: list[str]) -> Command | None:
         return _one_of(verb, args, _SPEED)
     if verb == "volume":
         return _one_of(verb, args, _VOLUME)
+    if verb == "review" and args and args[0].lower() in ("memory", "память"):
+        switch = _VALUES["advice"].get(args[1].lower()) if len(args) == 2 else None
+        return Command(verb, ("memory", switch)) if switch in ("on", "off") else None
     if verb in ("model", "review") and args and args[0].lower() in _CLI_WORDS:
         if len(args) != 2 or not _MODEL.fullmatch(args[1]):
             return None
