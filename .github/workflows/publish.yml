@@ -8,7 +8,10 @@ name: Publish
 #   workflow: publish.yml   environment: pypi
 #
 # Release: bump `version` in pyproject.toml and `__version__` in
-# src/voice_copilot/__init__.py, add a CHANGELOG entry, then
+# src/voice_copilot/__init__.py, and the copies tests/unit/test_version_strings.py
+# names (the panel, the Hermes plugin, the four plugin manifests); run `uv lock`;
+# turn "Unreleased" in CHANGELOG.md into "X.Y.Z — date", which becomes the release
+# page's text. Then
 #   git tag vX.Y.Z && git push origin main vX.Y.Z
 
 on:
@@ -99,6 +102,17 @@ jobs:
           path: dist/
 
       - name: Create release with the built artifacts
+        # The body is this version's CHANGELOG entry, so the release page says what
+        # changed rather than listing pull requests.
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" 'index($0, "## " v " ") == 1 {on=1; next} on && /^## / {exit} on' \
+            CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md
+          else
+            echo "::warning::no CHANGELOG entry for $version: the release gets generated notes"
+            gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+          fi
