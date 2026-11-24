@@ -1,5 +1,8 @@
 :root {
-  color-scheme: dark light;
+  /* One palette, a dark one. `dark light` let a light Windows theme draw the
+     browser's own controls light: Firefox showed the chosen item of an open
+     <select> in dark text on the panel's dark background. */
+  color-scheme: dark;
   --bg: #14151a;
   --panel: #1d1f27;
   --panel-hi: #262934;
@@ -316,7 +319,6 @@ input:focus, select:focus {
   outline: none;
   border-color: var(--accent);
 }
-
 .actions {
   display: flex;
   align-items: center;

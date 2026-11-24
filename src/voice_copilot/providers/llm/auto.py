@@ -34,6 +34,8 @@ def _explain_silence(stderr: str) -> str:
     lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
     for line in reversed(lines):
         if line.lower().startswith(("error", "warning: model")):
+            if "model_not_found" in line or "model is not supported" in line:
+                return f"{line[:400]} Pick another model in Settings."
             return line[:400]
     return lines[-1][:400] if lines else "no output on stdout or stderr"
 
@@ -111,7 +113,7 @@ class AutoCommentatorProvider(LLMProvider):
             # Fail loud: silence here used to look exactly like "the commentator
             # never started", with the real cause (a model the account cannot
             # use, an expired login) buried in the log file.
-            raise RuntimeError(
-                f"auto commentator: {self._cli} narrated nothing — {_explain_silence(stderr)}"
-            )
+            # Neutral words: the supervisor, the advisor and the review call this too.
+            model = f" ({self._model})" if self._model else ""
+            raise RuntimeError(f"{self._cli}{model} gave no answer — {_explain_silence(stderr)}")
         yield text

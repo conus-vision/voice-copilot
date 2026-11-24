@@ -5,11 +5,15 @@ supervisor wants the most capable one the account has. Hard-coding either rots
 the moment a vendor renames a tier, so where a CLI keeps a live catalog we read
 it, and only fall back to the static tiers in `cli_profiles` otherwise.
 
-Codex is the one with a real catalog: it refreshes `models_cache.json` under
-`$CODEX_HOME` on every start, with the account's own slugs, a `priority` (lower
-is the more capable, preferred tier) and a `visibility` flag. Claude Code has
-no such file — its CLI takes the `haiku` / `sonnet` / `opus` aliases — so its
-tiers are static by necessity.
+Codex is the one with a real catalog: the account's own slugs, a `priority`
+(lower is the more capable, preferred tier) and a `visibility` flag. The catalog
+depends on the Codex version as well as the account, and `models_cache.json`
+under `$CODEX_HOME` is shared by every Codex on the machine: the desktop app of a
+newer version rewrites it with models an older CLI is refused ("not supported
+when using Codex with a ChatGPT account"). So the CLI is asked for its own list
+(`codex debug models`), and the file is read only when it can't answer. Claude
+Code has no catalog — its CLI takes the `haiku` / `sonnet` / `opus` aliases — so
+its tiers are static by necessity.
 """
 
 from __future__ import annotations
@@ -20,8 +24,10 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -34,8 +40,8 @@ log = logging.getLogger(__name__)
 class ModelTiers:
     weakest: str
     strongest: str
-    #: Where the pair came from — surfaces in the panel so a surprising pick
-    #: can be traced ("catalog" = read from the CLI's own list).
+    #: Where the pair came from, so a surprising pick can be traced: "codex" (the
+    #: CLI listed its models), "cache" (its catalog file) or "static".
     source: str
     #: Everything the catalog offered, strongest first; empty for static tiers.
     catalog: tuple[str, ...] = ()
@@ -55,13 +61,70 @@ def codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
 
 
+#: `codex debug models` takes 0.2 s from a fresh cache and about a second when it
+#: refetches. It runs where the launch is resolved, on the event loop, so its answer
+#: (or its failure) is kept for an hour rather than asked for on every settings save.
+_CODEX_ASK_TIMEOUT_S = 10.0
+_CODEX_ASK_TTL_S = 3600.0
+_codex_answers: dict[str, tuple[float, list[tuple[int, str]] | None]] = {}
+
+
+def _ask_codex(binary: str) -> list[tuple[int, str]] | None:
+    """The installed Codex's own catalog, or None if it can't say."""
+    try:
+        done = subprocess.run(
+            [binary, "debug", "models"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_CODEX_ASK_TIMEOUT_S,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "NO_COLOR": "1"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.warning("model catalog: `codex debug models` failed: %s", e)
+        return None
+    if done.returncode != 0:
+        log.warning(
+            "model catalog: `codex debug models` exited %d: %s",
+            done.returncode,
+            (done.stderr or "").strip()[:300],
+        )
+        return None
+    try:
+        ranked = _ranked(json.loads(done.stdout))
+    except ValueError as e:
+        log.warning("model catalog: `codex debug models` printed no JSON: %s", e)
+        return None
+    return ranked or None
+
+
+def _codex_from_cli() -> list[tuple[int, str]] | None:
+    binary = shutil.which("codex")
+    if binary is None:
+        return None
+    now = time.monotonic()
+    kept = _codex_answers.get(binary)
+    if kept is not None and now - kept[0] < _CODEX_ASK_TTL_S:
+        return kept[1]
+    ranked = _ask_codex(binary)
+    _codex_answers[binary] = (now, ranked)
+    return ranked
+
+
 def _codex_catalog(path: Path) -> list[tuple[int, str]]:
-    """(priority, slug) for every listed, general-purpose model in the cache."""
+    """(priority, slug) for every listed, general-purpose model in the cache file."""
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         log.debug("model catalog: cannot read %s: %s", path, e)
         return []
+    return _ranked(doc)
+
+
+def _ranked(doc: Any) -> list[tuple[int, str]]:
+    """(priority, slug) for every listed, general-purpose model, strongest first."""
     models = doc.get("models") if isinstance(doc, dict) else None
     out: list[tuple[int, str]] = []
     for m in models or []:
@@ -98,11 +161,20 @@ def model_tiers(cli: str | None) -> ModelTiers | None:
     if not cli:
         return None
     if cli == "codex":
-        ranked = _codex_catalog(codex_home() / "models_cache.json")
+        ranked, source = _codex_from_cli(), "codex"
+        if ranked is None:
+            path = codex_home() / "models_cache.json"
+            ranked, source = _codex_catalog(path), "cache"
+            if ranked:
+                log.warning(
+                    "model catalog: Codex didn't list its models; reading %s, which may "
+                    "have been written by another Codex version",
+                    path,
+                )
         if len(ranked) >= 2:
             slugs = tuple(slug for _, slug in ranked)
             return ModelTiers(
-                weakest=_narrator_pick(slugs), strongest=slugs[0], source="catalog", catalog=slugs
+                weakest=_narrator_pick(slugs), strongest=slugs[0], source=source, catalog=slugs
             )
     static = _STATIC_TIERS.get(cli)
     if static is not None:
@@ -177,7 +249,7 @@ async def listed_models(cli: str | None) -> list[str]:
         return list(_ALIASES[cli])
     if cli in _LIST_COMMANDS:
         return await asyncio.to_thread(_run_listing, cli)
-    tiers = model_tiers(cli)
+    tiers = await asyncio.to_thread(model_tiers, cli)  # Codex is asked in a subprocess
     if tiers is None:
         return []
     return list(tiers.catalog) if tiers.catalog else [tiers.weakest, tiers.strongest]

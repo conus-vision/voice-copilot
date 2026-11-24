@@ -225,9 +225,11 @@ counts as `OK`, so an unreadable reply never stops the agent.
 With **Pick models automatically** on, Voice Copilot chooses the weakest model
 the CLI offers for the narrator and the strongest for the supervisor:
 
-- **Codex** reads the account's own catalog (`$CODEX_HOME/models_cache.json`,
-  refreshed by Codex on every start), ranked by the catalog's priority: the top
-  entry supervises. For the narrator the cheapest *general* model wins — a
+- **Codex** asks the installed CLI for its models (`codex debug models`, once an
+  hour), ranked by the catalog's priority: the top entry supervises. The list
+  depends on the Codex version as well as the account, so the shared
+  `$CODEX_HOME/models_cache.json` is read only when the CLI can't answer: the
+  desktop app of a newer version rewrites it with models an older CLI is refused. For the narrator the cheapest *general* model wins — a
   `mini` tier if the account has one — because the code-tuned fast tier at the
   very bottom echoes event labels instead of writing prose. Hidden and
   special-purpose entries are skipped.
