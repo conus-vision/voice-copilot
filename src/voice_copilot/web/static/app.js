@@ -1508,8 +1508,13 @@
         return { cls: "supervisor", tag: "PAUSED", text: `agent paused (${p.reason || "?"})` };
       case "agent.resumed":
         return { cls: "supervisor-ok", tag: "RESUMED", text: `agent resumed (${p.reason || "?"})` };
-      case "error":
-        return { cls: "error", tag: "ERROR", text: p.message || JSON.stringify(p) };
+      case "error": {
+        // A model's failure says whose: the narrator, the supervisor, the advisor
+        // and the review can each run on a different model.
+        const role = { llm: "narrator", supervisor: "supervisor", advisor: "advisor", debrief: "review" }[p.where];
+        const text = p.message || JSON.stringify(p);
+        return { cls: "error", tag: "ERROR", text: role ? `${role}: ${text}` : text };
+      }
       default:
         return null;
     }

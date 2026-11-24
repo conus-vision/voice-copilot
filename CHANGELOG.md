@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Codex picked a model it can't run.** With "Pick models automatically" on, the
+  supervisor's model came from `~/.codex/models_cache.json`, which every Codex on
+  the machine rewrites. After the newer desktop app wrote it, the strongest entry
+  was one the installed CLI is refused ("not supported when using Codex with a
+  ChatGPT account"), and every review failed. Voice Copilot now asks the installed
+  CLI for its own list (`codex debug models`) and reads the file only if it can't
+  answer.
+- A model's error in the panel says whose it is (narrator, supervisor, advisor or
+  review) and which model failed, and a refused model comes with "Pick another
+  model in Settings". It used to read "codex narrated nothing" even when the
+  supervisor failed.
+- With a light Windows theme, Firefox showed the chosen item of an open dropdown
+  in the panel as dark text on a dark background. The panel now declares its one,
+  dark colour scheme.
+
 ## 0.4.0 — 2026-11-24
 
 Supervisor+: a second engineer watching your coding agent. It used to review the
